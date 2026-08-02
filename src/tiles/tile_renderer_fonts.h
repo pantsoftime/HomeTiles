@@ -106,6 +106,14 @@ inline const lv_font_t* mono_font_24() {
   return &ui_font_mono_24;
 }
 
+inline const lv_font_t* mono_bold_font_20() {
+  return &ui_font_mono_bold_20;
+}
+
+inline const lv_font_t* mono_bold_font_24() {
+  return &ui_font_mono_bold_24;
+}
+
 inline const lv_font_t* content_font_20() {
 #if defined(DEVICE_LAYOUT_1024X600)
   return &ui_font_16;

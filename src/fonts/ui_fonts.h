@@ -32,6 +32,8 @@ LV_FONT_DECLARE(ui_font_96);
 // tables, logs and any fixed-width layout.
 LV_FONT_DECLARE(ui_font_mono_20);
 LV_FONT_DECLARE(ui_font_mono_24);
+LV_FONT_DECLARE(ui_font_mono_bold_20);
+LV_FONT_DECLARE(ui_font_mono_bold_24);
 
 // Gemeinsamer Zugriff fuer Uhr, Wochentage und kuenftige UI-Texte. Alle
 // deklarierten Groessen enthalten denselben vollstaendigen UI-Zeichensatz.
