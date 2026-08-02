@@ -259,7 +259,10 @@ jobs:
             --device-key "${{ matrix.key }}"
 
       - name: Archive private debug symbols
-        if: startsWith(github.ref, 'refs/tags/') && matrix.publish
+        # Upstream-only: pushes ELF symbols to GalusPeres' private symbols repo
+        # with a deploy key that forks do not (and should not) have. Without the
+        # repository guard this step fails every tag build on a fork.
+        if: startsWith(github.ref, 'refs/tags/') && matrix.publish && github.repository == 'GalusPeres/HomeTiles'
         shell: bash
         env:
           SYMBOLS_DEPLOY_KEY: ${{ secrets.SYMBOLS_DEPLOY_KEY }}
