@@ -54,6 +54,8 @@ void append_navigate_fields_html(String& html,
                 <option value="2">24</option>
                 <option value="3">32</option>
                 <option value="4">40</option>
+                <option value="5">20 Mono</option>
+                <option value="6">24 Mono</option>
               </select>
             </div>
 )html";

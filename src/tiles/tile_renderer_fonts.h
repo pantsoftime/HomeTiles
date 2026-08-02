@@ -95,6 +95,17 @@ constexpr lv_coord_t scale_480(lv_coord_t value) {
 #endif
 }
 
+// Monospace (JetBrains Mono). Same nominal sizes as content_font_20/24 but
+// fixed-width, so numeric columns line up. Not scaled per device layout: a
+// table's column alignment matters more than matching the layout's text size.
+inline const lv_font_t* mono_font_20() {
+  return &ui_font_mono_20;
+}
+
+inline const lv_font_t* mono_font_24() {
+  return &ui_font_mono_24;
+}
+
 inline const lv_font_t* content_font_20() {
 #if defined(DEVICE_LAYOUT_1024X600)
   return &ui_font_16;

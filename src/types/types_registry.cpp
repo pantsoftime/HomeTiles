@@ -236,7 +236,7 @@ bool apply_navigate_wrapper(WebServer& server, Tile& tile, const TileTypeApplyCo
   if (!ctx.tile_config || !ctx.error_message) {
     return false;
   }
-  return apply_navigate_fields_from_request(server, tile, ctx.folder_id, *ctx.tile_config, *ctx.error_message, ctx.previous_navigate_target);
+  return apply_navigate_fields_from_request(server, tile, ctx.folder_id, *ctx.tile_config, *ctx.error_message, ctx.previous_navigate_target, ctx.previous_type);
 }
 
 bool apply_switch_wrapper(WebServer& server, Tile& tile, const TileTypeApplyContext&) {

@@ -29,6 +29,10 @@ struct TileTypeApplyContext {
   // folder tile). Lets the navigate apply reuse the existing folder on a
   // rename instead of orphaning it and creating a duplicate.
   uint16_t previous_navigate_target = 0;
+  // Type this tile had before the edit. Lets an apply() tell a genuine edit of
+  // its own tile type from a conversion out of some other type, whose leftover
+  // field values must not be inherited.
+  TileType previous_type = TILE_EMPTY;
 };
 
 using TileRenderFn = lv_obj_t* (*)(lv_obj_t* parent,

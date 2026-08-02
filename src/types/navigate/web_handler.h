@@ -9,4 +9,5 @@ bool apply_navigate_fields_from_request(
     uint16_t folder_id,
     TileConfig& tileConfig,
     String& error_message,
-    uint16_t previous_target = 0);
+    uint16_t previous_target = 0,
+    TileType previous_type = TILE_EMPTY);
