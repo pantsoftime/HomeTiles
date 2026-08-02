@@ -10,10 +10,54 @@
 
 // True when the entity's current value spans multiple lines. The cache is the
 // same source the value label is filled from, so alignment and content agree.
+// Only a hint at render time: on a cold boot the tile is built before any state
+// has arrived, so the cache is empty and this returns false for what will turn
+// out to be a table. update_sensor_tile_value() corrects it from the real text.
 static bool value_is_multiline(const Tile& tile) {
   String payload;
   if (!tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) return false;
   return payload.indexOf('\n') >= 0;
+}
+
+void sensor_apply_value_layout(lv_obj_t* value_label,
+                               const Tile& tile,
+                               bool multiline,
+                               bool gauge_enabled,
+                               bool graph_enabled) {
+  if (!value_label) return;
+
+  // A multi-line value is a block of rows (a small table), and centring each
+  // row independently makes it hard to scan. Left-align those; single-line
+  // values keep the original centred look.
+  lv_obj_set_style_text_align(
+      value_label, multiline ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
+
+  // Get value y offset from tile settings (with defaults and clamping)
+  int16_t value_y_offset = tile.sensor_value_y_offset;
+  if (value_y_offset < -100) value_y_offset = -100;
+  if (value_y_offset > 200) value_y_offset = 200;
+  value_y_offset = tile_layout::scale_i16(value_y_offset);
+
+  if (gauge_enabled) {
+    lv_obj_align(value_label, LV_ALIGN_BOTTOM_MID, 0,
+                 tile_layout::scale(12) + value_y_offset);
+  } else if (graph_enabled) {
+    // Value above graph: center vertically in upper area
+    lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(-20) + value_y_offset);
+  } else if (multiline) {
+    // Anchor a multi-line block to the top. Centring it vertically moves its
+    // first row every time the number of rows changes, so a growing/shrinking
+    // table appears to drift up and down - and a tall one collides with the
+    // title. Top alignment keeps the first row in a fixed place; the offset
+    // clears the title, and sensor_value_y_offset still tunes it.
+    lv_obj_align(value_label, LV_ALIGN_TOP_LEFT,
+                 tile_layout::scale_480(6),
+                 tile_layout::scale(36) + value_y_offset);
+  } else {
+    lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(28) + value_y_offset);
+  }
 }
 
 static const lv_font_t* get_sensor_value_font(const Tile& tile) {
@@ -248,41 +292,13 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   set_label_style(v, lv_color_white(), get_sensor_value_font(tile));
   lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(v, LV_PCT(100));
-  // A multi-line value is a block of rows (a small table), and centring each
-  // row independently makes it hard to scan. Left-align those; single-line
-  // values keep the original centred look.
-  const bool multiline = tile.sensor_entity.length() && value_is_multiline(tile);
-  lv_obj_set_style_text_align(
-      v, multiline ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_line_space(v, 8, 0);
+  // Best guess at render time; update_sensor_tile_value() re-applies this from
+  // the actual text on every update, which is what makes it correct after a
+  // cold boot (see sensor_apply_value_layout).
+  const bool multiline = tile.sensor_entity.length() && value_is_multiline(tile);
+  sensor_apply_value_layout(v, tile, multiline, gauge_enabled, graph_enabled);
   lv_label_set_text(v, "--");
-
-  // Get value y offset from tile settings (with defaults and clamping)
-  int16_t value_y_offset = tile.sensor_value_y_offset;
-  if (value_y_offset < -100) value_y_offset = -100;
-  if (value_y_offset > 200) value_y_offset = 200;
-  value_y_offset = tile_layout::scale_i16(value_y_offset);
-
-  if (gauge_enabled) {
-    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0,
-                 tile_layout::scale(12) + value_y_offset);
-  } else if (graph_enabled) {
-    // Value above graph: center vertically in upper area
-    lv_obj_align(v, LV_ALIGN_CENTER, 0,
-                 tile_layout::scale(-20) + value_y_offset);
-  } else if (multiline) {
-    // Anchor a multi-line block to the top. Centring it vertically moves its
-    // first row every time the number of rows changes, so a growing/shrinking
-    // table appears to drift up and down - and a tall one collides with the
-    // title. Top alignment keeps the first row in a fixed place; the offset
-    // clears the title, and sensor_value_y_offset still tunes it.
-    lv_obj_align(v, LV_ALIGN_TOP_LEFT,
-                 tile_layout::scale_480(6),
-                 tile_layout::scale(36) + value_y_offset);
-  } else {
-    lv_obj_align(v, LV_ALIGN_CENTER, 0,
-                 tile_layout::scale(28) + value_y_offset);
-  }
 
   // Speichern für spätere Updates
   SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);

@@ -5,6 +5,7 @@
 #include "src/tiles/mdi_icons.h"
 #include "src/types/climate/visuals.h"
 #include "src/types/climate/renderer.h"
+#include "src/types/sensor/renderer.h"
 #include "src/ui/ui_manager.h"
 #include "src/ui/light_popup.h"
 #include "src/ui/sensor_popup.h"
@@ -4660,4 +4661,21 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
     combined += unit;
   }
   lv_label_set_text(value_label, combined.c_str());
+
+  // Re-decide the layout from the text we just set. Whether a value is a single
+  // number or a multi-line block is a property of the value, not of the tile,
+  // and the render-time guess is made from the entity cache -- which is still
+  // empty on a cold boot, so a table would otherwise stay stuck in the centred
+  // single-line layout until the tile happened to be rebuilt.
+  // Restricted to real sensor tiles on purpose: energy and folder tiles also
+  // register a value_label in this same array but position it with their own
+  // geometry, so re-aligning theirs here would move it to the wrong place.
+  const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
+  if (tile && tile->type == TILE_SENSOR) {
+    sensor_apply_value_layout(value_label,
+                              *tile,
+                              combined.indexOf('\n') >= 0,
+                              target[grid_index].gauge != nullptr,
+                              target[grid_index].chart != nullptr);
+  }
 }
