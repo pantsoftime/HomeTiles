@@ -27,8 +27,12 @@
 // das wuerde den Redirect kaputt machen.
 namespace GithubUpdate {
 
+// FORK: point the on-device updater at this fork's releases instead of
+// upstream, so devices running our customized builds are not offered (and
+// silently overwritten by) upstream firmware. Upstream changes are merged
+// into this fork and re-released under our own version line; see README-FORK.md.
 constexpr const char* kRepoUrl =
-    "https://github.com/GalusPeres/HomeTiles";
+    "https://github.com/pantsoftime/HomeTiles";
 
 struct CheckResult {
   bool ok = false;                // Anfrage erfolgreich beantwortet

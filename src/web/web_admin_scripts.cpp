@@ -1488,6 +1488,7 @@ void appendAdminScripts(String& html) {
       .then(data => {
         if (!data || !data.success) return;
         rebuildEntitySelect(tab + '_sensor_entity', data.sensors);
+        rebuildEntitySelect(tab + '_navigate_sensor_entity', data.sensors);
         rebuildEntitySelect(tab + '_energy_entity', data.energy);
         rebuildEntitySelect(tab + '_weather_entity', data.weathers);
         rebuildEntitySelect(tab + '_switch_entity', data.switches);
@@ -3555,6 +3556,16 @@ void appendAdminScripts(String& html) {
         }
       }
       fd.append('navigate_target', target);
+      // Optionaler Live-Wert der Ordner-Kachel (sensor_entity ist bei
+      // Ordnern frei, das Navigationsziel liegt in key_code/key_modifier).
+      fd.append('sensor_entity', tile.sensor_entity || '');
+      if (tile.sensor_entity) {
+        const navDec = (tile.sensor_decimals !== undefined && tile.sensor_decimals !== null
+                        && Number(tile.sensor_decimals) >= 0 && Number(tile.sensor_decimals) <= 6)
+          ? tile.sensor_decimals : '-1';
+        fd.append('sensor_decimals', navDec);
+        fd.append('sensor_value_font', tile.sensor_value_font || '0');
+      }
     } else if (safeType === 5) {
       fd.append('switch_entity', tile.sensor_entity || '');
       const style = (tile.switch_style !== undefined && tile.switch_style !== null)

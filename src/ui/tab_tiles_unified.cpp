@@ -565,14 +565,16 @@ static void apply_cached_states(GridType grid_type, const TileGridConfig& config
     const Tile& tile = config.tiles[i];
     if (tile.type != TILE_SENSOR && tile.type != TILE_SWITCH &&
         tile.type != TILE_WEATHER && tile.type != TILE_ENERGY &&
-        tile.type != TILE_MEDIA && tile.type != TILE_CLIMATE) continue;
+        tile.type != TILE_MEDIA && tile.type != TILE_CLIMATE &&
+        tile.type != TILE_FOLDER) continue;
     if (!include_media && tile.type == TILE_MEDIA) continue;
     if (tile.sensor_entity.length() == 0) continue;
 
     String payload;
     if (!get_cached_or_initial_payload(tile, payload)) continue;
 
-    if (tile.type == TILE_SENSOR || tile.type == TILE_ENERGY) {
+    if (tile.type == TILE_SENSOR || tile.type == TILE_ENERGY ||
+        tile.type == TILE_FOLDER) {
       String unit = resolve_tile_sensor_unit(tile);
       const char* unit_cstr = unit.length() > 0 ? unit.c_str() : nullptr;
       queue_sensor_tile_update(grid_type, i, payload.c_str(), unit_cstr);
@@ -658,7 +660,8 @@ static void refresh_cache_from_grid_config(const TileGridConfig& config, uint32_
     const Tile& tile = config.tiles[i];
     if (tile.type != TILE_SENSOR && tile.type != TILE_SWITCH &&
         tile.type != TILE_WEATHER && tile.type != TILE_ENERGY &&
-        tile.type != TILE_MEDIA && tile.type != TILE_CLIMATE) continue;
+        tile.type != TILE_MEDIA && tile.type != TILE_CLIMATE &&
+        tile.type != TILE_FOLDER) continue;
     if (!tile.sensor_entity.length()) continue;
 
     uint32_t t_lookup0 = millis();
@@ -678,7 +681,8 @@ static void refresh_cache_from_entity_views(const FolderEntitySlotView* slots, s
     const FolderEntitySlotView& slot = slots[i];
     if (slot.type != TILE_SENSOR && slot.type != TILE_SWITCH &&
         slot.type != TILE_WEATHER && slot.type != TILE_ENERGY &&
-        slot.type != TILE_MEDIA && slot.type != TILE_CLIMATE) continue;
+        slot.type != TILE_MEDIA && slot.type != TILE_CLIMATE &&
+        slot.type != TILE_FOLDER) continue;
     if (!slot.entity[0]) continue;
 
     uint32_t t_lookup0 = millis();
@@ -779,13 +783,15 @@ static void apply_cached_state_for_index(GridType grid_type, const TileGridConfi
   const Tile& tile = config.tiles[index];
   if (tile.type != TILE_SENSOR && tile.type != TILE_SWITCH &&
       tile.type != TILE_WEATHER && tile.type != TILE_ENERGY &&
-      tile.type != TILE_MEDIA && tile.type != TILE_CLIMATE) return;
+      tile.type != TILE_MEDIA && tile.type != TILE_CLIMATE &&
+      tile.type != TILE_FOLDER) return;
   if (tile.sensor_entity.length() == 0) return;
 
   String payload;
   if (!get_cached_or_initial_payload(tile, payload)) return;
 
-  if (tile.type == TILE_SENSOR || tile.type == TILE_ENERGY) {
+  if (tile.type == TILE_SENSOR || tile.type == TILE_ENERGY ||
+      tile.type == TILE_FOLDER) {
     String unit = resolve_tile_sensor_unit(tile);
     const char* unit_cstr = unit.length() > 0 ? unit.c_str() : nullptr;
     queue_sensor_tile_update(grid_type, index, payload.c_str(), unit_cstr);
@@ -1436,7 +1442,8 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
   // Find tile with matching sensor_entity
   for (uint8_t i = 0; i < TILES_PER_GRID; i++) {
     const Tile& tile = config.tiles[i];
-    if ((tile.type == TILE_SENSOR || tile.type == TILE_ENERGY) &&
+    if ((tile.type == TILE_SENSOR || tile.type == TILE_ENERGY ||
+         tile.type == TILE_FOLDER) &&
         tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       String unit = resolve_tile_sensor_unit(tile);
       const char* unit_cstr = unit.length() > 0 ? unit.c_str() : nullptr;
