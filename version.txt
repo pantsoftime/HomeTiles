@@ -2,4 +2,7 @@
 //   1. FW_VERSION unten erhoehen (erst wenn der Stand wirklich released werden soll!)
 //   2. git commit  ->  git tag vX.Y.Z  ->  git push --follow-tags
 // Wichtig: Der Build startet NUR beim Tag-Push, und der Tag muss exakt FW_VERSION entsprechen.
-#define FW_VERSION "v0.6.32"
+// Fork line: upstream base + an extra patch digit (see README-FORK.md).
+// Upstream is on the v0.6.3b1 beta, which the device's parseVersion() reads as
+// 0.6.3, so 0.6.3x still sorts above it.
+#define FW_VERSION "v0.6.33"
