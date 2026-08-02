@@ -5,4 +5,4 @@
 // Fork line: upstream base + an extra patch digit (see README-FORK.md).
 // Upstream is on the v0.6.3b1 beta, which the device's parseVersion() reads as
 // 0.6.3, so 0.6.3x still sorts above it.
-#define FW_VERSION "v0.6.33"
+#define FW_VERSION "v0.6.34"
