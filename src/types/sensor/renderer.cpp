@@ -349,7 +349,8 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   // the tile could ever show one, because the decision depends on the value,
   // which has usually not arrived yet when the tile is first built.
   lv_obj_t* subtitle = nullptr;
-  if (sensor_tile_caption_mode(tile) && !gauge_enabled && !graph_enabled) {
+  if ((sensor_tile_caption_mode(tile) || sensor_tile_has_caption_entity(tile)) &&
+      !gauge_enabled && !graph_enabled) {
     subtitle = lv_label_create(card);
     if (subtitle) {
       set_label_style(subtitle, lv_color_white(), tile_layout::content_font_20());
