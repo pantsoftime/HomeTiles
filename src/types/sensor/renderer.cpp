@@ -19,12 +19,30 @@ static bool value_is_multiline(const Tile& tile) {
   return payload.indexOf('\n') >= 0;
 }
 
+void sensor_split_subtitle(const String& combined, String& head, String& tail) {
+  const int nl = combined.indexOf('\n');
+  if (nl < 0) {
+    head = combined;
+    tail = "";
+    return;
+  }
+  head = combined.substring(0, nl);
+  tail = combined.substring(nl + 1);
+  head.trim();
+  tail.trim();
+}
+
 void sensor_apply_value_layout(lv_obj_t* value_label,
                                const Tile& tile,
                                bool multiline,
                                bool gauge_enabled,
                                bool graph_enabled) {
   if (!value_label) return;
+
+  // A subtitle tile's payload also contains a newline, but it is a headline
+  // plus a caption rather than a table -- the two halves live in separate
+  // labels, so the value label itself stays single-line and centred.
+  if (sensor_tile_has_subtitle(tile)) multiline = false;
 
   // A multi-line value is a block of rows (a small table), and centring each
   // row independently makes it hard to scan. Left-align those; single-line
@@ -51,13 +69,30 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
     // table appears to drift up and down - and a tall one collides with the
     // title. Top alignment keeps the first row in a fixed place; the offset
     // clears the title, and sensor_value_y_offset still tunes it.
+    // 16 = the old 6, plus the 10px of card padding that was given back above,
+    // so the block starts at the same place on screen as before; the extra
+    // width is taken on the right where the table has room for it.
     lv_obj_align(value_label, LV_ALIGN_TOP_LEFT,
-                 tile_layout::scale_480(6),
+                 tile_layout::scale_480(16),
                  tile_layout::scale(36) + value_y_offset);
+  } else if (sensor_tile_has_subtitle(tile)) {
+    // Lift the headline to make room for the small line underneath, the same
+    // stacking the clock tile uses for time over date.
+    lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(14) + value_y_offset);
   } else {
     lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
                  tile_layout::scale(28) + value_y_offset);
   }
+}
+
+// Y position of the small second line, kept next to the headline offsets above
+// so the two stay in step if either is retuned.
+lv_coord_t sensor_subtitle_y(const Tile& tile) {
+  int16_t value_y_offset = tile.sensor_value_y_offset;
+  if (value_y_offset < -100) value_y_offset = -100;
+  if (value_y_offset > 200) value_y_offset = 200;
+  return tile_layout::scale(48) + tile_layout::scale_i16(value_y_offset);
 }
 
 static const lv_font_t* get_sensor_value_font(const Tile& tile) {
@@ -140,7 +175,14 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
-  lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
+  // 20px each side left the value label about 110px on a 4-wide grid, which is
+  // under what a wide-glyph value like "48.0 kWh" needs at the default font --
+  // so whether a reading wrapped depended on which digits it happened to
+  // contain ("12.6 kWh" fits, "48.0 kWh" did not). Reclaiming 10px per side
+  // buys a full character without touching the font size. The multi-line
+  // branch in sensor_apply_value_layout() compensates so the table block's
+  // left edge does not move.
+  lv_obj_set_style_pad_hor(card, tile_layout::scale_480(10), 0);
   lv_obj_set_style_pad_ver(card, tile_layout::scale_480(24), 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
@@ -300,10 +342,26 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   sensor_apply_value_layout(v, tile, multiline, gauge_enabled, graph_enabled);
   lv_label_set_text(v, "--");
 
+  // Optional small second line, filled from the tail of the same payload.
+  lv_obj_t* subtitle = nullptr;
+  if (sensor_tile_has_subtitle(tile) && !gauge_enabled && !graph_enabled) {
+    subtitle = lv_label_create(card);
+    if (subtitle) {
+      set_label_style(subtitle, lv_color_white(), tile_layout::content_font_20());
+      lv_obj_set_style_text_opa(subtitle, LV_OPA_80, 0);
+      lv_label_set_long_mode(subtitle, LV_LABEL_LONG_CLIP);
+      lv_obj_set_width(subtitle, LV_PCT(100));
+      lv_obj_set_style_text_align(subtitle, LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_align(subtitle, LV_ALIGN_CENTER, 0, sensor_subtitle_y(tile));
+      lv_label_set_text(subtitle, "");
+    }
+  }
+
   // Speichern für spätere Updates
   SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
   if (target && index < TILES_PER_GRID) {
     target[index].value_label = v;
+    target[index].subtitle_label = subtitle;
     target[index].unit_label = nullptr;
     target[index].gauge = gauge;
     target[index].gauge_min = gauge_min;

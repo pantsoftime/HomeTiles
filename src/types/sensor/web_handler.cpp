@@ -4,6 +4,13 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
   tile.sensor_entity = server.hasArg("sensor_entity") ? server.arg("sensor_entity") : "";
   tile.sensor_unit = server.hasArg("sensor_unit") ? server.arg("sensor_unit") : "";
 
+  // Opt-in small second line. Sensor tiles do not use key_code, so the flag
+  // rides along there and the stored config format is unchanged.
+  tile.key_code = (server.hasArg("sensor_subtitle") &&
+                   server.arg("sensor_subtitle").toInt() == 1)
+                      ? 1
+                      : 0;
+
   uint8_t decimals = 0xFF;
   if (server.hasArg("sensor_decimals")) {
     String decStr = server.arg("sensor_decimals");

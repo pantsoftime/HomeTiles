@@ -4660,7 +4660,20 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
     combined += " ";
     combined += unit;
   }
-  lv_label_set_text(value_label, combined.c_str());
+  const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
+  lv_obj_t* subtitle_label = target[grid_index].subtitle_label;
+
+  // A subtitle tile splits one payload across two labels: "82.2 °F\n55 %"
+  // becomes a normal-size headline with a small caption below it.
+  if (tile && subtitle_label && sensor_tile_has_subtitle(*tile)) {
+    String head, tail;
+    sensor_split_subtitle(combined, head, tail);
+    lv_label_set_text(value_label, head.c_str());
+    lv_label_set_text(subtitle_label, tail.c_str());
+  } else {
+    lv_label_set_text(value_label, combined.c_str());
+    if (subtitle_label) lv_label_set_text(subtitle_label, "");
+  }
 
   // Re-decide the layout from the text we just set. Whether a value is a single
   // number or a multi-line block is a property of the value, not of the tile,
@@ -4670,7 +4683,6 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
   // Restricted to real sensor tiles on purpose: energy and folder tiles also
   // register a value_label in this same array but position it with their own
   // geometry, so re-aligning theirs here would move it to the wrong place.
-  const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
   if (tile && tile->type == TILE_SENSOR) {
     sensor_apply_value_layout(value_label,
                               *tile,
