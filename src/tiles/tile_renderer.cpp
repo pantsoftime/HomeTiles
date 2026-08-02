@@ -6,6 +6,10 @@
 #include "src/types/climate/visuals.h"
 #include "src/types/climate/renderer.h"
 #include "src/types/sensor/renderer.h"
+
+// Defined further down, next to the sensor tile's caption handling; the climate
+// tile's caption uses it too and is compiled first.
+static void caption_append_unit(String& text, const String& unit);
 #include "src/ui/ui_manager.h"
 #include "src/ui/light_popup.h"
 #include "src/ui/sensor_popup.h"
@@ -2109,11 +2113,8 @@ static void update_climate_tile_state(
       if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
           !cv.equalsIgnoreCase("unavailable")) {
         text = cv;
-        const String cu = haBridgeConfig.findSensorUnit(tile->key_macro);
-        if (cu.length()) {
-          text += " ";
-          text += cu;
-        }
+        caption_append_unit(text,
+                            haBridgeConfig.findSensorUnit(tile->key_macro));
       }
     }
     lv_label_set_text(widget.caption_label, text.c_str());
@@ -4659,6 +4660,15 @@ lv_obj_t* render_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint
   return render_empty_tile(parent, col, row);
 }
 
+// Join a caption value to its unit. A percent sign is set tight against the
+// number ("54.9% RH"), matching the weather tile's humidity line and normal
+// typographic practice; everything else keeps the separating space ("77.2 °F").
+static void caption_append_unit(String& text, const String& unit) {
+  if (!unit.length()) return;
+  if (unit[0] != '%') text += " ";
+  text += unit;
+}
+
 void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char* value, const char* unit) {
   if (grid_index >= TILES_PER_GRID) {
     return;
@@ -4726,11 +4736,8 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
     if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
         !cv.equalsIgnoreCase("unavailable")) {
       caption_text = cv;
-      const String cu = haBridgeConfig.findSensorUnit(tile->key_macro);
-      if (cu.length()) {
-        caption_text += " ";
-        caption_text += cu;
-      }
+      caption_append_unit(caption_text,
+                          haBridgeConfig.findSensorUnit(tile->key_macro));
       caption = true;
     }
     lv_label_set_text(value_label, combined.c_str());
