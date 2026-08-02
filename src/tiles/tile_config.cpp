@@ -280,7 +280,8 @@ static uint8_t clampDecimals(uint8_t val) {
 }
 
 static uint8_t clampSensorValueFont(uint8_t val) {
-  if (val > 4) return 0;
+  // 0-4 proportional, 5-6 monospace 20/24, 7-8 monospace bold 20/24.
+  if (val > 8) return 0;
   return val;
 }
 

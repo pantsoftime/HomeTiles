@@ -5,7 +5,16 @@
 #include "src/tiles/mdi_icons.h"
 #include "src/network/ha_bridge_config.h"
 #include "src/ui/sensor_popup.h"
+#include "src/ui/tab_tiles_unified.h"
 #include <Arduino.h>
+
+// True when the entity's current value spans multiple lines. The cache is the
+// same source the value label is filled from, so alignment and content agree.
+static bool value_is_multiline(const Tile& tile) {
+  String payload;
+  if (!tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) return false;
+  return payload.indexOf('\n') >= 0;
+}
 
 static const lv_font_t* get_sensor_value_font(const Tile& tile) {
   switch (tile.sensor_value_font) {
@@ -17,6 +26,14 @@ static const lv_font_t* get_sensor_value_font(const Tile& tile) {
       return tile_layout::content_font_32();
     case 4:
       return tile_layout::content_font_40();
+    case 5:
+      return tile_layout::mono_font_20();
+    case 6:
+      return tile_layout::mono_font_24();
+    case 7:
+      return tile_layout::mono_bold_font_20();
+    case 8:
+      return tile_layout::mono_bold_font_24();
     default:
       return FONT_VALUE;
   }
@@ -231,7 +248,12 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   set_label_style(v, lv_color_white(), get_sensor_value_font(tile));
   lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(v, LV_PCT(100));
-  lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
+  // A multi-line value is a block of rows (a small table), and centring each
+  // row independently makes it hard to scan. Left-align those; single-line
+  // values keep the original centred look.
+  const bool multiline = tile.sensor_entity.length() && value_is_multiline(tile);
+  lv_obj_set_style_text_align(
+      v, multiline ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_line_space(v, 8, 0);
   lv_label_set_text(v, "--");
 
@@ -248,6 +270,15 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     // Value above graph: center vertically in upper area
     lv_obj_align(v, LV_ALIGN_CENTER, 0,
                  tile_layout::scale(-20) + value_y_offset);
+  } else if (multiline) {
+    // Anchor a multi-line block to the top. Centring it vertically moves its
+    // first row every time the number of rows changes, so a growing/shrinking
+    // table appears to drift up and down - and a tall one collides with the
+    // title. Top alignment keeps the first row in a fixed place; the offset
+    // clears the title, and sensor_value_y_offset still tunes it.
+    lv_obj_align(v, LV_ALIGN_TOP_LEFT,
+                 tile_layout::scale_480(6),
+                 tile_layout::scale(36) + value_y_offset);
   } else {
     lv_obj_align(v, LV_ALIGN_CENTER, 0,
                  tile_layout::scale(28) + value_y_offset);

@@ -19,7 +19,8 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
   uint8_t value_font = 0;
   if (server.hasArg("sensor_value_font")) {
     int raw = server.arg("sensor_value_font").toInt();
-    value_font = (raw >= 1 && raw <= 4) ? static_cast<uint8_t>(raw) : 0;
+    // 1-4 proportional, 5-6 mono, 7-8 mono bold (JetBrains Mono 20/24).
+    value_font = (raw >= 1 && raw <= 8) ? static_cast<uint8_t>(raw) : 0;
   }
   tile.sensor_value_font = value_font;
   uint8_t popup_mode = TILE_POPUP_OPEN_SHORT_PRESS;

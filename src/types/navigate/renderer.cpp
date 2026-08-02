@@ -29,6 +29,14 @@ static const lv_font_t* get_navigate_value_font(const Tile& tile) {
       return tile_layout::content_font_32();
     case 4:
       return tile_layout::content_font_40();
+    case 5:
+      return tile_layout::mono_font_20();
+    case 6:
+      return tile_layout::mono_font_24();
+    case 7:
+      return tile_layout::mono_bold_font_20();
+    case 8:
+      return tile_layout::mono_bold_font_24();
     default:
       return tile_layout::content_font_28();
   }

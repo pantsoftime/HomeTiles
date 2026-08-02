@@ -27,6 +27,14 @@ LV_FONT_DECLARE(ui_font_72);
 LV_FONT_DECLARE(ui_font_80);
 LV_FONT_DECLARE(ui_font_96);
 
+// Monospace (JetBrains Mono, OFL - see JetBrainsMono-LICENSE.txt). ASCII only.
+// Proportional fonts cannot align columns; these give tabular output for
+// tables, logs and any fixed-width layout.
+LV_FONT_DECLARE(ui_font_mono_20);
+LV_FONT_DECLARE(ui_font_mono_24);
+LV_FONT_DECLARE(ui_font_mono_bold_20);
+LV_FONT_DECLARE(ui_font_mono_bold_24);
+
 // Gemeinsamer Zugriff fuer Uhr, Wochentage und kuenftige UI-Texte. Alle
 // deklarierten Groessen enthalten denselben vollstaendigen UI-Zeichensatz.
 static inline const lv_font_t* ui_font_for_size(uint8_t size) {

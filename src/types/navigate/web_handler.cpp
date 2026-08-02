@@ -7,7 +7,8 @@ bool apply_navigate_fields_from_request(
     uint16_t folder_id,
     TileConfig& tileConfig,
     String& error_message,
-    uint16_t previous_target) {
+    uint16_t previous_target,
+    TileType previous_type) {
   const bool has_arg = server.hasArg("navigate_target");
   int raw = has_arg ? server.arg("navigate_target").toInt() : -1;
   uint16_t target_id = 0;
@@ -41,6 +42,12 @@ bool apply_navigate_fields_from_request(
     String entity = server.arg("sensor_entity");
     entity.trim();
     tile.sensor_entity = entity;
+  } else if (previous_type != TILE_FOLDER) {
+    // The tile just became a folder. sensor_entity still holds whatever the
+    // previous type stored there (a weather/climate entity, say) and folders
+    // never cleared it, so without this the new value label would display a
+    // leftover, unrelated entity.
+    tile.sensor_entity = "";
   }
 
   if (tile.sensor_entity.length()) {
