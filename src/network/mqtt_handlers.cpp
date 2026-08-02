@@ -1157,7 +1157,7 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
       const FolderEntitySlotView& slot = slots[i];
       if ((slot.type == TILE_SENSOR || slot.type == TILE_ENERGY ||
            slot.type == TILE_SWITCH || slot.type == TILE_MEDIA ||
-           slot.type == TILE_CLIMATE) &&
+           slot.type == TILE_CLIMATE || slot.type == TILE_FOLDER) &&
           slot.entity[0]) {
         add_route(String(slot.entity), -1);
         if (slot.type == TILE_MEDIA) {

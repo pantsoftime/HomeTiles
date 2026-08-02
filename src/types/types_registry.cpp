@@ -117,9 +117,9 @@ lv_obj_t* render_navigate_wrapper(lv_obj_t* parent,
                                   int row,
                                   const Tile& tile,
                                   uint8_t index,
-                                  GridType,
+                                  GridType grid_type,
                                   scene_publish_cb_t) {
-  return render_navigate_tile(parent, col, row, tile, index);
+  return render_navigate_tile(parent, col, row, tile, index, grid_type);
 }
 
 lv_obj_t* render_switch_wrapper(lv_obj_t* parent,
@@ -318,7 +318,8 @@ void append_scene_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
 }
 
 void append_navigate_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
-  append_navigate_fields_html(html, safeString(ctx.tab_id), safeString(ctx.navigate_options_html));
+  append_navigate_fields_html(html, safeString(ctx.tab_id), safeString(ctx.navigate_options_html),
+                              safeStrings(ctx.sensor_options));
 }
 
 void append_switch_fields_wrapper(String& html, const TileTypeWebContext& ctx) {

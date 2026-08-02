@@ -16,7 +16,26 @@ static uint16_t navFolderIdFromTile(const Tile& tile) {
   return static_cast<uint16_t>((static_cast<uint16_t>(tile.key_modifier) << 8) | tile.key_code);
 }
 
-lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index) {
+// Schriftgroesse des optionalen Live-Werts -- gleiche Auswahl wie bei
+// Sensor-Kacheln (sensor_value_font), nur mit kleinerem Default, weil sich der
+// Wert die Kachel mit Icon und Titel teilt.
+static const lv_font_t* get_navigate_value_font(const Tile& tile) {
+  switch (tile.sensor_value_font) {
+    case 1:
+      return tile_layout::content_font_20();
+    case 2:
+      return tile_layout::content_font_24();
+    case 3:
+      return tile_layout::content_font_32();
+    case 4:
+      return tile_layout::content_font_40();
+    default:
+      return tile_layout::content_font_28();
+  }
+}
+
+lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index,
+                               GridType grid_type) {
   lv_obj_t* btn = lv_button_create(parent);
   lv_obj_set_style_radius(btn, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(btn, 0, 0);
@@ -63,6 +82,11 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   }
   bool has_icon = iconChar.length() > 0;
   bool has_title = tile.title.length() > 0;
+  // Optionaler Live-Wert: Ordner-Kacheln legen ihr Navigationsziel in
+  // key_code/key_modifier ab, sensor_entity ist daher frei und wird hier fuer
+  // eine mitlaufende Sensor-Anzeige genutzt (z.B. "Aircraft" + Anzahl).
+  bool has_value = tile.sensor_entity.length() > 0 &&
+                   grid_type != GridType::SCREENSAVER;
 
   if (has_icon) {
     icon_lbl = lv_label_create(btn);
@@ -70,12 +94,42 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       set_label_style(icon_lbl, lv_color_white(), FONT_MDI_ICONS);
       lv_label_set_text(icon_lbl, iconChar.c_str());
 
-      // Flexible Positionierung: Icon + Title = 2 Zeilen mittig, nur Icon = 1 Zeile mittig
-      if (has_title) {
+      // Flexible Positionierung: Icon + Title = 2 Zeilen mittig, nur Icon = 1 Zeile mittig.
+      // Mit zusaetzlichem Wert ruecken drei Zeilen uebereinander.
+      if (has_value) {
+        lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
+                     tile_layout::scale_i16(-48));
+      } else if (has_title) {
         lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                      tile_layout::scale_i16(-20));
       } else {
         lv_obj_center(icon_lbl);  // Icon mittig (ohne Title)
+      }
+    }
+  }
+
+  // Value Label (optional, nur bei hinterlegter Entity)
+  if (has_value) {
+    lv_obj_t* v = lv_label_create(btn);
+    if (v) {
+      set_label_style(v, lv_color_white(), get_navigate_value_font(tile));
+      lv_label_set_long_mode(v, LV_LABEL_LONG_CLIP);
+      lv_obj_set_width(v, LV_PCT(100));
+      lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
+      lv_label_set_text(v, "--");
+      lv_obj_align(v, LV_ALIGN_CENTER, 0,
+                   tile_layout::scale(has_icon ? 2 : -12));
+
+      // In dieselbe Widget-Tabelle eintragen, aus der auch Sensor-Kacheln
+      // aktualisiert werden -- update_sensor_tile_value() arbeitet rein ueber
+      // den Grid-Index und ist damit typunabhaengig.
+      SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
+      if (target && index < TILES_PER_GRID) {
+        target[index].value_label = v;
+        target[index].unit_label = nullptr;
+        target[index].gauge = nullptr;
+        target[index].chart = nullptr;
+        target[index].series = nullptr;
       }
     }
   }
@@ -88,7 +142,9 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       lv_label_set_text(l, tile.title.c_str());
 
       // Flexible Positionierung: mit Icon unten, ohne Icon mittig
-      if (icon_lbl) {
+      if (has_value) {
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(46));
+      } else if (icon_lbl) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
       } else {
         lv_obj_center(l);  // Title mittig (ohne Icon)
