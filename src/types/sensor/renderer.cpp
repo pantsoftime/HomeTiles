@@ -36,13 +36,13 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
                                const Tile& tile,
                                bool multiline,
                                bool gauge_enabled,
-                               bool graph_enabled) {
+                               bool graph_enabled,
+                               bool has_caption) {
   if (!value_label) return;
 
-  // A subtitle tile's payload also contains a newline, but it is a headline
-  // plus a caption rather than a table -- the two halves live in separate
-  // labels, so the value label itself stays single-line and centred.
-  if (sensor_tile_has_subtitle(tile)) multiline = false;
+  // In caption mode the two halves live in separate labels, so the value label
+  // itself is single-line and stays centred.
+  if (has_caption) multiline = false;
 
   // A multi-line value is a block of rows (a small table), and centring each
   // row independently makes it hard to scan. Left-align those; single-line
@@ -75,9 +75,10 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
     lv_obj_align(value_label, LV_ALIGN_TOP_LEFT,
                  tile_layout::scale_480(16),
                  tile_layout::scale(36) + value_y_offset);
-  } else if (sensor_tile_has_subtitle(tile)) {
+  } else if (has_caption) {
     // Lift the headline to make room for the small line underneath, the same
-    // stacking the clock tile uses for time over date.
+    // stacking the clock tile uses for time over date. Only when a caption is
+    // actually being shown -- a single-line value keeps the normal position.
     lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
                  tile_layout::scale(14) + value_y_offset);
   } else {
@@ -339,12 +340,16 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   // the actual text on every update, which is what makes it correct after a
   // cold boot (see sensor_apply_value_layout).
   const bool multiline = tile.sensor_entity.length() && value_is_multiline(tile);
-  sensor_apply_value_layout(v, tile, multiline, gauge_enabled, graph_enabled);
+  const bool caption = multiline && sensor_tile_caption_mode(tile);
+  sensor_apply_value_layout(v, tile, multiline, gauge_enabled, graph_enabled,
+                            caption);
   lv_label_set_text(v, "--");
 
-  // Optional small second line, filled from the tail of the same payload.
+  // Caption label for the small second line. Created up front (empty) whenever
+  // the tile could ever show one, because the decision depends on the value,
+  // which has usually not arrived yet when the tile is first built.
   lv_obj_t* subtitle = nullptr;
-  if (sensor_tile_has_subtitle(tile) && !gauge_enabled && !graph_enabled) {
+  if (sensor_tile_caption_mode(tile) && !gauge_enabled && !graph_enabled) {
     subtitle = lv_label_create(card);
     if (subtitle) {
       set_label_style(subtitle, lv_color_white(), tile_layout::content_font_20());

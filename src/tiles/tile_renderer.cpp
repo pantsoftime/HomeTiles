@@ -4678,9 +4678,12 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
   const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
   lv_obj_t* subtitle_label = target[grid_index].subtitle_label;
 
-  // A subtitle tile splits one payload across two labels: "82.2 °F\n55 %"
-  // becomes a normal-size headline with a small caption below it.
-  if (tile && subtitle_label && sensor_tile_has_subtitle(*tile)) {
+  // Caption mode splits one payload across two labels: "82.2 °F\n55 %" becomes
+  // a normal-size headline with a small caption below it.
+  const bool has_newline = combined.indexOf('\n') >= 0;
+  const bool caption = tile && subtitle_label && has_newline &&
+                       sensor_tile_caption_mode(*tile);
+  if (caption) {
     String head, tail;
     sensor_split_subtitle(combined, head, tail);
     lv_label_set_text(value_label, head.c_str());
@@ -4701,8 +4704,9 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
   if (tile && tile->type == TILE_SENSOR) {
     sensor_apply_value_layout(value_label,
                               *tile,
-                              combined.indexOf('\n') >= 0,
+                              has_newline,
                               target[grid_index].gauge != nullptr,
-                              target[grid_index].chart != nullptr);
+                              target[grid_index].chart != nullptr,
+                              caption);
   }
 }

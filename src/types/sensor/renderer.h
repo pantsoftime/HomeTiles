@@ -12,15 +12,20 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
                                const Tile& tile,
                                bool multiline,
                                bool gauge_enabled,
-                               bool graph_enabled);
+                               bool graph_enabled,
+                               bool has_caption);
 
-// Opt-in second line. key_code is unused by sensor tiles, so it carries the
-// flag without touching the stored config format. When set, a value payload
-// of "82.2 °F\n55 %" renders the first line at the normal size and the rest
-// small underneath -- both come from the tile's single entity, so an HA
-// template sensor decides what the second line says.
-static inline bool sensor_tile_has_subtitle(const Tile& tile) {
-  return tile.key_code == 1;
+// How a two-line value is presented, decided by the tile's font rather than by
+// a stored flag: fonts 5-8 are the monospace faces, which exist precisely so
+// that tabular data lines up, so those keep the left-aligned block. Every other
+// font is proportional and gets the headline-plus-small-caption treatment --
+// "82.2 °F\n55 %" reads as a temperature with humidity under it.
+//
+// This deliberately carries no configuration. key_code and key_modifier look
+// free on a sensor tile but are zeroed for TILE_SENSOR when the grid is
+// loaded, so a flag stored there does not survive a save/load cycle.
+static inline bool sensor_tile_caption_mode(const Tile& tile) {
+  return tile.sensor_value_font <= 4;
 }
 
 // Split a rendered value into its headline and subtitle halves.
