@@ -2228,6 +2228,21 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
   }
   decode_basic_json_escapes(unit);
 
+  // Humidity rides along as an attribute of the weather entity, so the caption
+  // costs nothing extra on the wire. Hidden rather than blanked when absent, so
+  // a provider that omits it does not leave a gap under the temperature.
+  if (widgets.humidity_label) {
+    float humidity = 0.0f;
+    if (extract_json_number_or_string_field(json, "humidity", humidity)) {
+      String text = String(static_cast<int>(humidity + 0.5f));
+      text += "% RH";
+      lv_label_set_text(widgets.humidity_label, text.c_str());
+      lv_obj_clear_flag(widgets.humidity_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(widgets.humidity_label, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+
   if (widgets.icon_label) {
     if (icon_name.length()) {
       String iconChar = getMdiChar(icon_name);

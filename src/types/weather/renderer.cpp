@@ -241,6 +241,25 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   lv_coord_t value_row_y = base_center - (row_h / 2) + kWeatherTileContentYOffset;
   lv_obj_align(value_row, LV_ALIGN_TOP_MID, 0, value_row_y);
 
+  // Humidity caption under the temperature. A forecast row already occupies
+  // that space, so this is only for the compact (1-row) form of the tile.
+  lv_obj_t* humidity_label = nullptr;
+  if (!show_forecast) {
+    humidity_label = lv_label_create(card);
+    if (humidity_label) {
+      set_label_style(humidity_label, lv_color_white(),
+                      tile_layout::content_font_20());
+      lv_obj_set_style_text_opa(humidity_label, LV_OPA_80, 0);
+      lv_label_set_long_mode(humidity_label, LV_LABEL_LONG_CLIP);
+      lv_obj_set_width(humidity_label, LV_PCT(100));
+      lv_obj_set_style_text_align(humidity_label, LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_align(humidity_label, LV_ALIGN_TOP_MID, 0,
+                   value_row_y + row_h + tile_layout::scale_480(4));
+      lv_label_set_text(humidity_label, "");
+      enable_bubble(humidity_label);
+    }
+  }
+
   lv_obj_t* forecast_row = nullptr;
   if (show_forecast) {
     constexpr lv_coord_t kTileForecastTopHeadroom =
@@ -267,6 +286,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     WeatherTileWidgets widgets{};
     widgets.icon_label = icon_label;
     widgets.temp_label = temp_label;
+    widgets.humidity_label = humidity_label;
     widgets.condition_label = condition_label;
     widgets.condition_sep_label = sep_label;
     widgets.location_label = location_label;

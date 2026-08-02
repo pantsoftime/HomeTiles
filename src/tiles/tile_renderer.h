@@ -237,6 +237,11 @@ inline uint8_t weather_forecast_count(uint8_t span_w) {
 struct WeatherTileWidgets {
   lv_obj_t* icon_label = nullptr;
   lv_obj_t* temp_label = nullptr;
+  // Small caption under the temperature, matching the sensor tile's second
+  // line. Weather payloads already carry humidity as an attribute, so this
+  // needs no extra subscription. Only created when the tile has no forecast
+  // row to collide with.
+  lv_obj_t* humidity_label = nullptr;
   lv_obj_t* condition_label = nullptr;
   lv_obj_t* condition_sep_label = nullptr;
   lv_obj_t* location_label = nullptr;
