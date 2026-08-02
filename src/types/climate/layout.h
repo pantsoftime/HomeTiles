@@ -13,6 +13,8 @@ inline constexpr int kGap = 7;
 // The 15 px outer card radius minus the 4 px inset keeps both arcs concentric.
 inline constexpr int kControlRadius = 11;
 inline constexpr int kContentTop = 46;
+// Height reserved under the mini grid for an optional caption line.
+inline constexpr int kCaptionReserve = 26;
 #elif defined(DEVICE_LAYOUT_1024X600)
 inline constexpr int kCardPaddingHorizontal = 20;
 inline constexpr int kCardPaddingVertical = 24;
@@ -21,6 +23,8 @@ inline constexpr int kGap = 8;
 // Outer card radius 22 minus the 5 px inset keeps both corner arcs concentric.
 inline constexpr int kControlRadius = 17;
 inline constexpr int kContentTop = 69;
+// Height reserved under the mini grid for an optional caption line.
+inline constexpr int kCaptionReserve = 26;
 #else
 inline constexpr int kCardPaddingHorizontal = 20;
 inline constexpr int kCardPaddingVertical = 24;
@@ -28,6 +32,8 @@ inline constexpr int kOuterInset = 6;
 inline constexpr int kGap = 10;
 inline constexpr int kControlRadius = 16;
 inline constexpr int kContentTop = 69;
+// Height reserved under the mini grid for an optional caption line.
+inline constexpr int kCaptionReserve = 26;
 #endif
 
 inline constexpr int kContentTopInPaddedCard =

@@ -546,9 +546,18 @@ void layout_climate_slots(
       tile_w - climate_layout::kOuterInset * 2;
   const lv_coord_t grid_top =
       climate_layout::kContentTopInPaddedCard;
+  // A caption is drawn under the mini grid, so take its height out of the
+  // grid's box rather than letting the two share the same space. The slot text
+  // is centred within this box, so shrinking it is what actually lifts the
+  // visible value -- the value_label is hidden whenever slots exist, which is
+  // every size including 1x1.
+  const lv_coord_t caption_reserve =
+      (tile.key_macro.length() > 0 && span_w == 1 && span_h == 1)
+          ? climate_layout::kCaptionReserve
+          : 0;
   const lv_coord_t grid_bottom =
       tile_h - climate_layout::kCardPaddingVertical -
-      climate_layout::kOuterInset;
+      climate_layout::kOuterInset - caption_reserve;
   const lv_coord_t grid_h =
       std::max<lv_coord_t>(1, grid_bottom - grid_top);
 
