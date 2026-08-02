@@ -191,6 +191,11 @@ inline String climateHorizontalSwingModesCsv(uint8_t mask) {
 struct ClimateTileWidgets {
   lv_obj_t* icon_label = nullptr;
   lv_obj_t* value_label = nullptr;
+  // Optional small line under the value, same idea as the sensor tile's: a
+  // thermostat shows its setpoint, the caption can show what is actually
+  // coming out of the vent. Only built for 1x1 tiles, where the value label is
+  // the whole content -- larger climate tiles fill that space with mini slots.
+  lv_obj_t* caption_label = nullptr;
   static constexpr uint8_t kMaxSlots = 6;
   lv_obj_t* slot_roots[kMaxSlots] = {};
   uint8_t slot_kinds[kMaxSlots] = {};

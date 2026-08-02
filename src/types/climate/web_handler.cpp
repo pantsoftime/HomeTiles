@@ -3,6 +3,14 @@
 void apply_climate_fields_from_request(WebServer& server, Tile& tile) {
   tile.sensor_entity =
       server.hasArg("climate_entity") ? server.arg("climate_entity") : "";
+
+  // Optional entity for the small second line, stored the same way sensor
+  // tiles store theirs: key_macro belongs to TILE_TEXT and is left alone for
+  // climate tiles, unlike key_code (zeroed on load) and scene_alias (used
+  // here for the tile geometry).
+  tile.key_macro = server.hasArg("sensor_caption_entity")
+                       ? server.arg("sensor_caption_entity")
+                       : String();
   uint8_t popup_mode = TILE_POPUP_OPEN_SHORT_PRESS;
   if (server.hasArg("popup_open_mode")) {
     popup_mode =

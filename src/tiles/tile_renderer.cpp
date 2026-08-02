@@ -2097,6 +2097,28 @@ static void update_climate_tile_state(
                    "C";
     lv_label_set_text(widget.value_label, value.c_str());
   }
+
+  // Caption entity, read from the bridge snapshot -- same source and cadence
+  // the sensor tile's caption uses.
+  if (widget.caption_label) {
+    const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
+    String text;
+    if (tile && tile->key_macro.length()) {
+      String cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+      cv.trim();
+      if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
+          !cv.equalsIgnoreCase("unavailable")) {
+        text = cv;
+        const String cu = haBridgeConfig.findSensorUnit(tile->key_macro);
+        if (cu.length()) {
+          text += " ";
+          text += cu;
+        }
+      }
+    }
+    lv_label_set_text(widget.caption_label, text.c_str());
+  }
+
   refresh_climate_tile_content(grid_type, grid_index, state);
   if (widget.icon_label) {
     if (widget.dynamic_icon) {
