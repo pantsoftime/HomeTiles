@@ -242,6 +242,11 @@ struct WeatherTileWidgets {
   // needs no extra subscription. Only created when the tile has no forecast
   // row to collide with.
   lv_obj_t* humidity_label = nullptr;
+  // Where the value row sits with no caption under it. The row lifts by the
+  // same amount a sensor tile's headline does once a caption appears, so the
+  // two tile types line up side by side; without the stored base there would
+  // be nothing to lift from (or fall back to when humidity goes away).
+  lv_coord_t value_row_base_y = 0;
   lv_obj_t* condition_label = nullptr;
   lv_obj_t* condition_sep_label = nullptr;
   lv_obj_t* location_label = nullptr;

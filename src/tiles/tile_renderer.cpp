@@ -2233,13 +2233,24 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
   // a provider that omits it does not leave a gap under the temperature.
   if (widgets.humidity_label) {
     float humidity = 0.0f;
-    if (extract_json_number_or_string_field(json, "humidity", humidity)) {
+    const bool has_humidity =
+        extract_json_number_or_string_field(json, "humidity", humidity);
+    if (has_humidity) {
       String text = String(static_cast<int>(humidity + 0.5f));
       text += "% RH";
       lv_label_set_text(widgets.humidity_label, text.c_str());
       lv_obj_clear_flag(widgets.humidity_label, LV_OBJ_FLAG_HIDDEN);
     } else {
       lv_obj_add_flag(widgets.humidity_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    // Lift the value by the same amount a sensor tile lifts its headline when
+    // a caption appears, so the two line up; drop back when humidity is absent.
+    lv_obj_t* value_row =
+        widgets.temp_label ? lv_obj_get_parent(widgets.temp_label) : nullptr;
+    if (value_row) {
+      lv_obj_align(value_row, LV_ALIGN_TOP_MID, 0,
+                   widgets.value_row_base_y -
+                       (has_humidity ? tile_layout::scale(14) : 0));
     }
   }
 
