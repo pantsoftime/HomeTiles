@@ -41,6 +41,7 @@ static bool removeKeyValueMapEntry(String& text, const String& key);
 static void indexPut(HaEntityKeyMap& map, const String& key, const String& value);
 static void indexErase(HaEntityKeyMap& map, const String& key);
 static void blobEscapeValue(String& value);
+static void normalizeMicroSign(String& text);
 static String blobUnescapeValue(const char* begin, int length);
 static String decodeJsonEscapes(const String& value);
 static void appendUtf8(String& out, uint32_t codepoint);
@@ -1038,6 +1039,7 @@ static void parseSensorMetaSection(const String& body, String& units, String& na
     }
     String unit;
     if (extractStringField(object, "unit", unit)) {
+      normalizeMicroSign(unit);
       if (units.length()) units += '\n';
       units += entity + "=" + unit;
     }
@@ -1364,6 +1366,15 @@ static void indexErase(HaEntityKeyMap& map, const String& key) {
 //
 // Escape on the way in, unescape on the way out, so the blob stays exactly one
 // physical line per record.
+// Home Assistant integrations disagree about which mu to use in a unit: some
+// emit U+00B5 MICRO SIGN, others U+03BC GREEK SMALL LETTER MU. They look the
+// same, but the bundled fonts cover the micro sign and not the Greek letter,
+// so the latter renders as a box ("ug/m3" units from the air-quality sensors
+// hit this). Both encode as two UTF-8 bytes, so this rewrites in place.
+static void normalizeMicroSign(String& text) {
+  text.replace("\xCE\xBC", "\xC2\xB5");
+}
+
 static void blobEscapeValue(String& value) {
   value.replace("\\", "\\\\");
   value.replace("\n", "\\n");
@@ -1486,8 +1497,12 @@ void HaBridgeConfig::registerSensorMeta(const String& entity_id, const String& n
   if (unit.length()) indexPut(units_index_, entity_id, unit);
 }
 
-void HaBridgeConfig::updateEntityMeta(const String& entity_id, const String& name, const String& unit, const String& icon) {
+void HaBridgeConfig::updateEntityMeta(const String& entity_id, const String& name, const String& raw_unit, const String& icon) {
   if (entity_id.length() == 0) return;
+  // Live meta updates arrive on a different path than the config snapshot, so
+  // the mu normalisation has to happen here too.
+  String unit = raw_unit;
+  normalizeMicroSign(unit);
   if (name.length()) {
     upsertKeyValueMap(data.sensor_names_map, entity_id, name);
     indexPut(names_index_, entity_id, name);
