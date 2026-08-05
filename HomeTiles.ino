@@ -38,6 +38,7 @@
 #include "src/ui/tab_tiles_unified.h"
 #include "src/ui/image_screensaver.h"
 #include "src/ui/screensaver_config.h"
+#include "src/io/hardware_io.h"
 #include "src/tiles/tile_config.h"
 #include "src/tiles/tile_renderer.h"  // Für process_sensor_update_queue()
 #include "src/tiles/mdi_icons.h"      // MDI Icon Mapping
@@ -656,6 +657,8 @@ void setup() {
   haBridgeConfig.load();
   tileConfig.load();
   screensaverConfig.load();
+  hardwareIo.load();
+  hardwareIo.begin();
   if (has_config) {
     displayManager.setRotation(configManager.getConfig().display_rotation_quarters);
   }
@@ -1064,7 +1067,12 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED ||
         (uint32_t)(now - tab5_brightness_cap_wait_since) > kTab5BrightnessRestoreTimeoutMs) {
       tab5_brightness_capped = false;
-      BoardHAL::setBrightness(configManager.getConfig().display_brightness);
+      if (is_image_screensaver_visible()) {
+        image_screensaver_brightness_changed();
+      } else {
+        powerManager.setDisplayBrightness(
+            configManager.getConfig().display_brightness);
+      }
       Serial.println("[Power] Brownout-Helligkeitsdrossel aufgehoben");
     } else if (BoardHAL::getBrightness() > kTab5SafeBrightness) {
       // Auch waehrend der Wartephase durchsetzen (Slider-Aenderung im
@@ -1073,6 +1081,13 @@ void loop() {
     }
   }
 #endif
+
+  // Ein sichtbarer/noch abbauender Kamerastream ist aktive Nutzung. So legen
+  // sich Screensaver und Display-Sleep nicht ueber die PPA-/JPEG-Pipeline;
+  // nach dem Schliessen beginnt das konfigurierte Idle-Intervall sauber neu.
+  if (camera_popup_is_busy()) {
+    displayManager.resetActivityTimer();
+  }
 
   service_image_screensaver_auto(displayManager.getLastActivityTime());
   if (first_run) Serial.println("[Loop] powerManager.update()...");

@@ -6,6 +6,7 @@
 #include "src/ui/screensaver_config.h"
 #include "src/ui/sensor_popup.h"
 #include "src/ui/camera_popup.h"
+#include "src/ui/image_screensaver.h"
 #include "src/video/camera_geometry.h"
 #include "src/ui/tab_settings.h"
 #include "src/types/energy/energy_data.h"
@@ -19,6 +20,7 @@
 #include "src/core/battery_state.h"
 #include "src/core/board_hal.h"
 #include "src/core/lvgl_tick_service.h"
+#include "src/io/hardware_io.h"
 #include "src/web/web_admin.h"
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
@@ -70,6 +72,7 @@ static constexpr uint32_t kDynamicSlotReloadAdminQuietMs = 5000;
 
 static volatile bool g_dynamic_slots_reload_requested = false;
 static uint32_t g_dynamic_slots_reload_due_ms = 0;
+static bool g_bridge_initial_sync_complete = false;
 
 struct PendingHistoryRequest {
   String entity_id;
@@ -105,6 +108,7 @@ static bool is_internal_tab5_entity(const char* entity_id) {
   normalized.toLowerCase();
 
   if (normalized.equalsIgnoreCase(kEntityDisplayBrightness)) return true;
+  if (normalized.equalsIgnoreCase(kEntityScreensaverBrightness)) return true;
   if (normalized.equalsIgnoreCase(kEntityDisplayRotate)) return true;
   if (normalized.equalsIgnoreCase(kEntityDisplaySleep)) return true;
   if (normalized.equalsIgnoreCase(kEntityExternalTemperature)) return true;
@@ -904,10 +908,15 @@ static bool parseSleepPayload(const char* payload, bool* enabled, uint16_t* seco
 static void handleDisplayBrightnessCommand(const char* payload, size_t) {
   if (!payload || !*payload) return;
   int value = atoi(payload);
-  if (value < 75) value = 75;
+  if (value < kDisplayBrightnessMin) value = kDisplayBrightnessMin;
   if (value > 255) value = 255;
 
-  BoardHAL::setBrightness(value);
+  // Eine HA-Aenderung der Normalhelligkeit darf einen sichtbaren
+  // Screensaver nicht aufhellen. Im Sleep wird nur der sichere Wake-Wert
+  // aktualisiert, das Backlight bleibt aus.
+  if (!is_image_screensaver_visible()) {
+    powerManager.setDisplayBrightness(static_cast<uint8_t>(value));
+  }
 
   const DeviceConfig& cfg = configManager.getConfig();
   configManager.saveDisplaySettings(
@@ -921,6 +930,21 @@ static void handleDisplayBrightnessCommand(const char* payload, size_t) {
       cfg.display_rotation_quarters,
       cfg.wake_mode_mains,
       cfg.wake_mode_battery);
+  mqttPublishDeviceSettings();
+}
+
+static void handleScreensaverBrightnessCommand(const char* payload, size_t) {
+  if (!payload || !*payload) return;
+  int percent = atoi(payload);
+  if (percent < kScreensaverBrightnessPctMin) {
+    percent = kScreensaverBrightnessPctMin;
+  }
+  if (percent > kScreensaverBrightnessPctMax) {
+    percent = kScreensaverBrightnessPctMax;
+  }
+
+  configManager.saveScreensaverBrightness(static_cast<uint8_t>(percent));
+  image_screensaver_brightness_changed();
   mqttPublishDeviceSettings();
 }
 
@@ -1010,6 +1034,16 @@ static void sync_local_device_entities(bool publish_mqtt) {
   haBridgeConfig.updateSensorValue(kEntityDisplayBrightness, bright_payload);
   haBridgeConfig.updateEntityMeta(kEntityDisplayBrightness, "Display Helligkeit", "%", "brightness-6");
 
+  char screensaver_bright_payload[96];
+  snprintf(screensaver_bright_payload, sizeof(screensaver_bright_payload),
+           "{\"state\":\"on\",\"brightness_pct\":%u}",
+           static_cast<unsigned>(cfg.screensaver_brightness_pct));
+  haBridgeConfig.updateSensorValue(kEntityScreensaverBrightness,
+                                   screensaver_bright_payload);
+  haBridgeConfig.updateEntityMeta(kEntityScreensaverBrightness,
+                                  "Screensaver Helligkeit", "%",
+                                  "brightness-4");
+
   const char* rotate_state = cfg.display_rotated_180 ? "ON" : "OFF";
   haBridgeConfig.updateSensorValue(kEntityDisplayRotate, rotate_state);
   haBridgeConfig.updateEntityMeta(kEntityDisplayRotate, "Display Rotation", "", "screen-rotation");
@@ -1019,6 +1053,8 @@ static void sync_local_device_entities(bool publish_mqtt) {
   haBridgeConfig.updateEntityMeta(kEntityDisplaySleep, "Display Sleep", "", "sleep");
 
   update_all_grids(kEntityDisplayBrightness, bright_payload);
+  update_all_grids(kEntityScreensaverBrightness,
+                   screensaver_bright_payload);
   update_all_grids(kEntityDisplayRotate, rotate_state);
   update_all_grids(kEntityDisplaySleep, sleep_state);
   sync_internal_battery_entity();
@@ -1042,7 +1078,12 @@ static bool resolve_toggle_action(const char* action, bool current, bool* desire
 }
 
 static bool handle_local_switch_command(const char* entity_id, const char* action) {
+  if (hardwareIo.handleLocalEntityCommand(entity_id, action)) return true;
   if (entityEquals(entity_id, kEntityDisplayBrightness)) {
+    sync_local_device_entities(false);
+    return true;
+  }
+  if (entityEquals(entity_id, kEntityScreensaverBrightness)) {
     sync_local_device_entities(false);
     return true;
   }
@@ -1063,17 +1104,30 @@ static bool handle_local_switch_command(const char* entity_id, const char* actio
 }
 
 static bool handle_local_light_command(const char* entity_id, const char* state, int brightness_pct) {
-  if (!entityEquals(entity_id, kEntityDisplayBrightness)) return false;
-  if (brightness_pct >= 0) {
-    uint8_t raw = brightnessRawFromPct(brightness_pct);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(raw));
-    handleDisplayBrightnessCommand(buf, 0);
-  } else {
-    (void)state;
-    sync_local_device_entities(false);
+  if (entityEquals(entity_id, kEntityDisplayBrightness)) {
+    if (brightness_pct >= 0) {
+      uint8_t raw = brightnessRawFromPct(brightness_pct);
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(raw));
+      handleDisplayBrightnessCommand(buf, 0);
+    } else {
+      (void)state;
+      sync_local_device_entities(false);
+    }
+    return true;
   }
-  return true;
+  if (entityEquals(entity_id, kEntityScreensaverBrightness)) {
+    if (brightness_pct >= 0) {
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%d", brightness_pct);
+      handleScreensaverBrightnessCommand(buf, 0);
+    } else {
+      (void)state;
+      sync_local_device_entities(false);
+    }
+    return true;
+  }
+  return false;
 }
 
 static void handleCameraStatus(const char* payload, size_t) {
@@ -1087,6 +1141,7 @@ static const TopicRoute kRoutes[] = {
   {TopicKey::SCENE_CMND, handleSceneCommand, false},
   {TopicKey::HA_WOHN_TEMP, handleHaWohnTemp, false},
   {TopicKey::DISPLAY_BRIGHTNESS_CMND, handleDisplayBrightnessCommand, false},
+  {TopicKey::SCREENSAVER_BRIGHTNESS_CMND, handleScreensaverBrightnessCommand, false},
   {TopicKey::DISPLAY_ROTATE_CMND, handleDisplayRotateCommand, false},
   {TopicKey::DISPLAY_SLEEP_CMND, handleDisplaySleepCommand, false},
   {TopicKey::SLEEP_MAINS_CMND, handleSleepMainsCommand, false},
@@ -1116,6 +1171,11 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
     String ent = entity;
     ent.trim();
     if (!ent.length()) return;
+    // Physische Panel-I/O-Entities verwenden dieselbe ID wie in HA, werden
+    // auf diesem Panel aber direkt aktualisiert und gesteuert. Eine parallele
+    // HA-Statestream-Subscription waere redundant und koennte alten State
+    // ueber den echten GPIO-State schreiben.
+    if (hardwareIo.isLocalEntityId(ent.c_str())) return;
 
     String topic = buildHaStatestreamTopic(ent, suffix);
     auto it = std::find_if(
@@ -1490,6 +1550,11 @@ void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
 static void processMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
   yield();  // Webserver atmen lassen!
 
+  // Lokale Relais haben bewusst einen kleinen, direkten Topic-Pfad. Das
+  // vermeidet JSON-Parsing und laesst normale Bridge-/Kamera-Nachrichten
+  // weiterhin durch den bestehenden Router laufen.
+  if (hardwareIo.handleMqttMessage(topic, payload, length)) return;
+
   const char* apply_topic = networkManager.getBridgeApplyTopic();
   if (apply_topic && strcmp(topic, apply_topic) == 0) {
     char* cfg_buf = mqttConfigBuffer();
@@ -1509,16 +1574,20 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
     Serial.printf("[Bridge] applyJson: %u ms\n", (unsigned)(millis() - t_parse0));
     if (applied) {
       Serial.println("[Bridge] Konfiguration von HA empfangen");
-      // Erster/erneuter erfolgreicher Bridge-Sync: die Boot-Sleep-Sperre aus
-      // setup() (bzw. jede andere) wieder freigeben -- ab hier sind die
-      // Sensordaten aktuell, ein Einschlafen davor waere das eigentliche
-      // Problem gewesen. Activity-Timer hier ebenfalls neu setzen: sonst
-      // waere er (gesetzt am Setup-Ende) bei einem langsamen Sync schon
-      // aelter als das konfigurierte Sleep-Timeout, und das Geraet wuerde
-      // sofort nach der Freigabe wieder einschlafen, statt dem Nutzer die
-      // frischen Daten tatsaechlich zu zeigen.
-      powerManager.allowSleep();
-      displayManager.resetActivityTimer();
+      // applyJson ersetzt die Bridge-Metadaten-/Werte-Maps. Panel-interne
+      // Local-I/O-Entities sofort wieder eintragen, damit sie auch ohne
+      // Bridge-Abhaengigkeit im Tile-Editor und Runtime-Cache erhalten bleiben.
+      hardwareIo.refreshLocalEntityCache();
+      // Nur der erste erfolgreiche Bridge-Sync darf die Boot-Sleep-Sperre
+      // freigeben und den Idle-Timer starten. Die Bridge sendet auch spaeter
+      // regelmaessige apply-Refreshes; jeder davon hatte zuvor den Timer
+      // zurueckgesetzt und dadurch 60-min-Screensaver dauerhaft verhindert.
+      if (!g_bridge_initial_sync_complete) {
+        g_bridge_initial_sync_complete = true;
+        powerManager.allowSleep();
+        displayManager.resetActivityTimer();
+        Serial.println("[Bridge] Initial-Sync: Idle-Timer einmalig gestartet");
+      }
       tiles_request_bridge_cache_refresh();
       if (reload) {
         yield();  // Nach JSON Parse
@@ -1640,6 +1709,7 @@ void mqttSubscribeTopics() {
   // Subscriptions. Die bereits aufgebauten Routen deshalb genau einmal alle
   // anmelden, aber nicht vorher sinnlos als Unsubscribe einreihen.
   mqttReloadDynamicSlots(true);
+  hardwareIo.subscribeMqttTopics();
 }
 
 // ========== Home Snapshot publizieren ==========
@@ -1673,6 +1743,9 @@ void mqttPublishDeviceSettings() {
   char buf[16];
   snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(cfg.display_brightness));
   publish_state(TopicKey::DISPLAY_BRIGHTNESS_STAT, buf);
+  snprintf(buf, sizeof(buf), "%u",
+           static_cast<unsigned>(cfg.screensaver_brightness_pct));
+  publish_state(TopicKey::SCREENSAVER_BRIGHTNESS_STAT, buf);
   publish_state(TopicKey::DISPLAY_ROTATE_STAT, cfg.display_rotated_180 ? "ON" : "OFF");
   publish_state(TopicKey::DISPLAY_SLEEP_STAT, powerManager.isInSleep() ? "ON" : "OFF");
 
@@ -1684,6 +1757,10 @@ void mqttPublishDeviceSettings() {
 
 void mqttServiceLocalSensors() {
   service_pending_history_fallback();
+  // Eine einzelne, faellige 1-Wire-Phase pro Aufruf; bei Relais ist dieser
+  // Pfad praktisch kostenlos. Die Zustandsmaschine wartet nie synchron auf
+  // die DS18x20-Konvertierung.
+  hardwareIo.service();
 
   static uint32_t last_run_ms = 0;
   const uint32_t now_ms = millis();
@@ -1692,7 +1769,16 @@ void mqttServiceLocalSensors() {
   }
   last_run_ms = now_ms;
   sync_internal_battery_entity();
-  sync_external_temp_entity(true);
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+  // Das alte GPIO-1/50-Autoprobing bleibt nur fuer bereits unterstuetzte
+  // Nicht-P4-Installationen erhalten. Auf P4 war OneWire hier ohnehin
+  // compile-time deaktiviert; ein permanentes "unavailable" wuerde neben den
+  // neuen, explizit zugeordneten Local-I/O-Entities nur eine tote Alt-Entity
+  // erzeugen.
+  if (!hardwareIo.hasTemperatureChannels()) {
+    sync_external_temp_entity(true);
+  }
+#endif
 }
 
 // ========== Scene Command publizieren ==========
@@ -2045,6 +2131,9 @@ void mqttPublishHistoryRequest(const char* entity_id,
                                uint16_t period_minutes,
                                uint16_t points) {
   if (!entity_id || !*entity_id) return;
+  // Der lokale Live-Wert ist ohne Bridge verfuegbar, eine Historie dagegen
+  // nicht. Deshalb niemals unnoetig einen HA-Request fuer Panel-I/O starten.
+  if (hardwareIo.isLocalEntityId(entity_id)) return;
 
   if (hours == 0) hours = 24;
   if (period_minutes == 0) period_minutes = 5;

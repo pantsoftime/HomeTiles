@@ -21,6 +21,7 @@ static void caption_append_unit(String& text, const String& unit);
 #include "src/core/config_manager.h"
 #include "src/core/dma2d_arbiter.h"
 #include "src/core/i18n.h"
+#include "src/io/hardware_io.h"
 #include "src/web/web_admin.h"
 #include "src/ui/screensaver_config.h"
 #include "src/ui/ui_surface_style.h"
@@ -2961,20 +2962,6 @@ static lv_image_dsc_t* make_media_cover_decoded_jpeg_hw_dsc(const uint8_t* data,
   // Engine haelt den Pool stabil referenziert und spart nebenbei den
   // Erzeugungs-Overhead pro Cover.
   static jpeg_decoder_handle_t s_media_jpeg_decoder = nullptr;
-  if (!s_media_jpeg_decoder) {
-    jpeg_decode_engine_cfg_t engine_cfg{};
-    engine_cfg.intr_priority = 0;
-    engine_cfg.timeout_ms = 100;
-    err = jpeg_new_decoder_engine(&engine_cfg, &s_media_jpeg_decoder);
-    if (err != ESP_OK || !s_media_jpeg_decoder) {
-      s_media_jpeg_decoder = nullptr;
-      free(decoded);
-      Serial.printf("[MediaCover] HW JPEG Engine nicht verfuegbar: %s\n",
-                    esp_err_to_name(err));
-      return nullptr;
-    }
-  }
-
   jpeg_decode_cfg_t decode_cfg{};
   decode_cfg.output_format = JPEG_DECODE_OUT_FORMAT_RGB565;
   // RGB order yields big-endian RGB565 bytes. That is exactly the byte layout
@@ -2983,12 +2970,26 @@ static lv_image_dsc_t* make_media_cover_decoded_jpeg_hw_dsc(const uint8_t* data,
   decode_cfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
   uint32_t decoded_bytes = 0;
   {
-    // Nie parallel zu einer laufenden PPA-Rotation dekodieren (geteilter
-    // 2D-DMA-Pool, siehe dma2d_arbiter.h). Nach Timeout trotzdem dekodieren:
-    // lieber ein theoretisches Restrisiko als eine haengende Cover-Pipeline.
+    // Engine-Lifecycle und Decode bleiben gemeinsam unter dem Arbiter. Ohne
+    // Lock darf der geteilte JPEG/PPA-DMA-Pool nie benutzt werden.
     Dma2dArbiterGuard dma2d_guard(2000);
     if (!dma2d_guard.locked()) {
-      Serial.println("[MediaCover] 2D-DMA-Arbiter Timeout, decode ungeschuetzt");
+      free(decoded);
+      Serial.println("[MediaCover] 2D-DMA-Arbiter Timeout, nutze SW-Fallback");
+      return nullptr;
+    }
+    if (!s_media_jpeg_decoder) {
+      jpeg_decode_engine_cfg_t engine_cfg{};
+      engine_cfg.intr_priority = 0;
+      engine_cfg.timeout_ms = 100;
+      err = jpeg_new_decoder_engine(&engine_cfg, &s_media_jpeg_decoder);
+      if (err != ESP_OK || !s_media_jpeg_decoder) {
+        s_media_jpeg_decoder = nullptr;
+        free(decoded);
+        Serial.printf("[MediaCover] HW JPEG Engine nicht verfuegbar: %s\n",
+                      esp_err_to_name(err));
+        return nullptr;
+      }
     }
     err = jpeg_decoder_process(s_media_jpeg_decoder,
                                &decode_cfg,
@@ -4504,6 +4505,7 @@ void process_tile_graph_queue() {
 void request_tile_graph_history(const char* entity_id) {
   if (!entity_id || !*entity_id) return;
   if (String(entity_id).startsWith("__")) return;  // Skip preload entities
+  if (hardwareIo.isLocalEntityId(entity_id)) return;
   mqttPublishHistoryRequest(entity_id);
   Serial.printf("[TileGraph] History requested for %s\n", entity_id);
 }

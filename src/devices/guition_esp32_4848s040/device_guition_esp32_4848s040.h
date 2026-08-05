@@ -3,6 +3,7 @@
 #include <FS.h>
 
 #include "src/devices/device_types.h"
+#include "src/devices/guition_esp32_4848s040/hardware_io_profile.h"
 
 namespace DeviceGuitionESP324848S040 {
 
@@ -18,10 +19,12 @@ inline constexpr Device::Profile kProfile{
     111,
     111,
     4,
+    1,
     Device::RotationStepMode::QuarterTurns,
     2,
     0,
     Device::Capabilities{false, false, false, false, false, false},
+    kHardwareIoProfile,
 };
 
 bool init();

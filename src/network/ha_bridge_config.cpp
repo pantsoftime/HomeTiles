@@ -8,6 +8,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "src/devices/device.h"
+#include "src/io/hardware_io.h"
 #include <vector>
 
 static const char* PREF_NAMESPACE = "tab5_config";
@@ -230,6 +231,7 @@ String HaBridgeConfig::buildJsonPayload(const char* device_id,
 
   json += ",\"scene_map\":";
   appendSceneMapJson(json, data.scene_alias_text);
+  hardwareIo.appendBridgeJson(json);
   json += "}";
   return json;
 }

@@ -1,11 +1,12 @@
 site_name: HomeTiles
-site_description: Open-source ESP32-P4 touch dashboard firmware for Home Assistant with a configurable tile UI and built-in web admin
+site_description: Open-source ESP32-P4 touch dashboard firmware for Home Assistant, plus an experimental ESP32-S3 image, with a configurable tile UI and built-in web admin
 site_url: https://galusperes.github.io/HomeTiles/
 repo_url: https://github.com/GalusPeres/HomeTiles
 repo_name: GalusPeres/HomeTiles
 
 theme:
   name: material
+  custom_dir: overrides
   font:
     text: Inter
     code: JetBrains Mono
@@ -33,12 +34,14 @@ nav:
       - Bridge Integration: bridge.md
   - Guide:
       - Web Admin Panel: web-admin.md
+      - Local Hardware I/O: hardware-io.md
       - Screensaver: screensaver.md
       - On-Device UI: device-ui.md
       - Tile Types: tiles.md
   - Help:
       - Firmware Updates: updating.md
       - FAQ & Troubleshooting: faq.md
+      - v0.6.4 Release Notes: releases/v0.6.4.md
       - v0.6.3 Release Notes: releases/v0.6.3.md
       - v0.6.2 Release Notes: releases/v0.6.2.md
       - v0.6.1 Release Notes: releases/v0.6.1.md
@@ -48,7 +51,7 @@ nav:
       - v0.5.0 Release Notes: releases/v0.5.0.md
 
 extra_css:
-  - stylesheets/extra.css
+  - stylesheets/extra.css?v=header-support-1
 
 markdown_extensions:
   - admonition

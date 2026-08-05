@@ -5,7 +5,10 @@ param(
 
     [string]$OutputDirectory,
 
-    [string[]]$ExtraDefine = @()
+    [string[]]$ExtraDefine = @(),
+
+    [ValidateSet('auto', 'repo-short-tail', 'repo-a8204')]
+    [string]$EspHostedRxVariant = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +28,12 @@ if (-not (Test-Path -LiteralPath $sketchProfiles)) {
 }
 if (Test-Path -LiteralPath $hiddenSketchProfiles) {
     throw "Temporary profile file already exists: $hiddenSketchProfiles"
+}
+
+$node = Get-Command node -ErrorAction Stop
+& $node.Source (Join-Path $PSScriptRoot 'generate-web-assets.mjs') --check
+if ($LASTEXITCODE -ne 0) {
+    throw 'Generated WebUI assets are stale. Run tools/generate-web-assets.mjs.'
 }
 
 $defines = @{
@@ -64,11 +73,18 @@ if (-not $OutputDirectory) {
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
+$resolvedEspHostedRxVariant = if ($EspHostedRxVariant -ne 'auto') {
+    $EspHostedRxVariant
+} else {
+    'repo-a8204'
+}
+
 # The Arduino profile command reinstalls the ESP32 platform immediately before
 # compiling and can silently overwrite the patched ESP-Hosted archive. Apply
 # and verify the fixes first, then compile by FQBN while sketch.yaml is hidden.
 if ($Profile -ne 'guition_esp32_4848s040') {
-    & (Join-Path $PSScriptRoot 'apply-esp-hosted-3.3.7-fixes-local.ps1')
+    & (Join-Path $PSScriptRoot 'apply-esp-hosted-3.3.7-fixes-local.ps1') `
+        -EspHostedRxVariant $resolvedEspHostedRxVariant
 }
 
 $commonFlags = "-DLV_CONF_INCLUDE_SIMPLE -I$repoRoot -I$libraries"
@@ -105,7 +121,11 @@ finally {
 
 $firmwareBin = Join-Path $OutputDirectory 'HomeTiles.ino.bin'
 if (-not (Test-Path -LiteralPath $firmwareBin)) {
-    throw "Firmware binary was not created: $firmwareBin"
+    $alternateBins = @(Get-ChildItem -LiteralPath $OutputDirectory -File -Filter '*.ino.bin')
+    if ($alternateBins.Count -ne 1) {
+        throw "Firmware binary was not created: $firmwareBin"
+    }
+    Copy-Item -LiteralPath $alternateBins[0].FullName -Destination $firmwareBin
 }
 $otaSlotBytes = 0x680000
 $firmwareBytes = (Get-Item -LiteralPath $firmwareBin).Length
@@ -143,6 +163,16 @@ if ($Profile -ne 'guition_esp32_4848s040') {
     if (-not $sdioRxRecoveryMarker) {
         throw "ESP-Hosted PKT_LEN/pending RX recovery marker missing from $firmwareBin"
     }
+    $sdioRxShortTailMarker = $firmwareStrings |
+        Select-String -SimpleMatch 'HomeTiles SDIO RX 512-byte padding disabled (CMD53 short tail, 4-byte aligned)'
+    if ($resolvedEspHostedRxVariant -eq 'repo-short-tail' -and
+        -not $sdioRxShortTailMarker) {
+        throw "ESP-Hosted short-tail CMD53 RX marker missing from $firmwareBin"
+    }
+    if ($resolvedEspHostedRxVariant -eq 'repo-a8204' -and
+        $sdioRxShortTailMarker) {
+        throw "Unexpected ESP-Hosted short-tail CMD53 RX marker found in a8204 baseline build: $firmwareBin"
+    }
     $obsoletePktLenDrop = $firmwareStrings |
         Select-String -SimpleMatch 'PKT_LEN reg all-ones (bus read error); dropping read'
     if ($obsoletePktLenDrop) {
@@ -153,3 +183,6 @@ if ($Profile -ne 'guition_esp32_4848s040') {
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $firmwareBin).Hash
 Write-Host "Safe firmware build completed: $firmwareBin"
 Write-Host "SHA256: $hash"
+if ($Profile -ne 'guition_esp32_4848s040') {
+    Write-Host "ESP-Hosted RX variant: $resolvedEspHostedRxVariant"
+}

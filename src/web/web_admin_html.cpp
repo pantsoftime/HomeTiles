@@ -675,7 +675,17 @@ static String buildFolderTabButtonHtml(const FolderEntry& entry) {
 
   String html;
   html += R"html(
-        <button class="tab-btn" onclick="switchTab('tab-tiles-)html";
+        <button class="tab-btn folder-tab-btn" data-folder-id=")html";
+  html += String(entry.id);
+  html += R"html(" data-folder-parent=")html";
+  html += String(entry.parent_id);
+  html += R"html(" data-folder-name=")html";
+  appendHtmlEscaped(html, name);
+  html += R"html(" data-folder-icon=")html";
+  appendHtmlEscaped(html, icon);
+  html += R"html(" data-tab-id=")html";
+  html += tab_id;
+  html += R"html(" onclick="switchTab('tab-tiles-)html";
   html += tab_id;
   html += R"html(')">)html";
   if (icon.length()) {
@@ -720,6 +730,7 @@ bool buildAdminFolderTabFragments(uint16_t folder_id, String& button_html, Strin
   for (const auto& opt : lightOptions) addSwitchOption(opt);
   for (const auto& opt : switchOptionsRaw) addSwitchOption(opt);
   addSwitchOption(kEntityDisplayBrightness);
+  addSwitchOption(kEntityScreensaverBrightness);
   addSwitchOption(kEntityDisplayRotate);
   addSwitchOption(kEntityDisplaySleep);
 
@@ -814,6 +825,7 @@ String WebAdminServer::getAdminPage() {
     addSwitchOption(opt);
   }
   addSwitchOption(kEntityDisplayBrightness);
+  addSwitchOption(kEntityScreensaverBrightness);
   addSwitchOption(kEntityDisplayRotate);
   addSwitchOption(kEntityDisplaySleep);
   auto formatSensorValue = [](const String& raw, uint8_t decimals) -> String {
@@ -855,7 +867,10 @@ String WebAdminServer::getAdminPage() {
   }
 
   String html;
-  html.reserve(12000);
+  // The shell still contains Home, settings and the screensaver editor. A
+  // realistic reserve avoids repeated reallocations while the other folders
+  // are loaded on demand by the browser.
+  html.reserve(192 * 1024);
   html += "<!DOCTYPE html>\n<html lang=\"";
   html += tr.html_lang;
   html += R"html(">
@@ -901,40 +916,19 @@ String WebAdminServer::getAdminPage() {
 )html";
 
   for (const auto& entry : folders) {
-    String tab_id = "folder" + String(entry.id);
-    String icon = String(entry.icon_name);
-    String name = String(entry.name);
-    icon.trim();
-    icon.toLowerCase();
-    if (icon.startsWith("mdi:")) icon = icon.substring(4);
-    else if (icon.startsWith("mdi-")) icon = icon.substring(4);
-    name.trim();
-    if (!name.length()) {
-      name = (entry.id == 0) ? String(tr.home) : String(tr.folder_prefix) + String(entry.id);
-    }
-
-    html += R"html(
-        <button class="tab-btn" onclick="switchTab('tab-tiles-)html";
-    html += tab_id;
-    html += R"html(')">)html";
-    if (icon.length()) {
-      html += R"html(
-          <i class="mdi mdi-)html";
-      html += icon;
-      html += R"html(" style="font-size:24px;"></i>)html";
-    }
-    html += R"html(
-          <span style="font-size:14px;font-weight:600;">)html";
-    appendHtmlEscaped(html, name);
-    html += R"html(</span>
-        </button>
-)html";
+    html += buildFolderTabButtonHtml(entry);
   }
 
   html += R"html(
         <button class="tab-btn" onclick="switchTab('tab-tiles-screensaver')">
           <i class="mdi mdi-monitor" style="font-size:24px;"></i>
           <span style="font-size:14px;font-weight:600;">Screensaver</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('tab-hardware')">
+          <i class="mdi mdi-electric-switch" style="font-size:24px;"></i>
+          <span style="font-size:14px;font-weight:600;">)html";
+  html += tr.admin_io;
+  html += R"html(</span>
         </button>
         <button class="tab-btn" onclick="switchTab('tab-network')">
           <i class="mdi mdi-cog" style="font-size:24px;"></i>
@@ -945,8 +939,10 @@ String WebAdminServer::getAdminPage() {
       </div>
 )html";
 
-  // Generate folder tile tabs
+  // Only Home is part of the initial page. Other folder editors are generated
+  // on first use via /api/folders/tab, avoiding synchronous all-folder reads.
   for (const auto& entry : folders) {
+    if (entry.id != 0) continue;
     TileGridConfig grid{};
     tileConfig.loadFolderGrid(entry.id, grid);
     appendTileTabHTML(html, entry.id, entry, grid, sensorOptions, energyOptions,
@@ -969,6 +965,34 @@ String WebAdminServer::getAdminPage() {
                     formatSensorValue, navigateOptionsHtml, true);
 
   html += R"html(
+      <!-- Local GPIO / relay / temperature assignments -->
+      <div id="tab-hardware" class="tab-content">
+        <div class="hardware-io-content">
+          <div class="settings-actions hardware-io-toolbar">
+            <button id="hardwareIoAddSwitch" class="btn btn-secondary hardware-io-add-button" type="button">+ )html";
+  html += tr.tile_type_switch;
+  html += R"html(</button>
+            <button id="hardwareIoAddTemperature" class="btn btn-secondary hardware-io-add-button" type="button">+ )html";
+  html += tr.admin_io_temperature;
+  html += R"html(</button>
+          </div>
+          <div id="hardwareIoList" class="hardware-io-list">
+            <div class="hardware-io-loading">)html";
+  html += tr.loading;
+  html += R"html(</div>
+          </div>
+          <div class="admin-footer-actions hardware-io-footer">
+            <div id="hardwareIoSaveState" class="hardware-io-save-state"></div>
+            <button id="hardwareIoSave" class="btn btn-go admin-footer-btn" type="button">)html";
+  html += tr.save;
+  html += R"html(</button>
+            <button id="hardwareIoRestart" class="btn btn-secondary admin-footer-btn" type="button">)html";
+  html += tr.restart_button;
+  html += R"html(</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Tab 3: Settings (Network/MQTT Configuration) -->
       <div id="tab-network" class="tab-content">
         <form id="admin_settings_form" action="/mqtt" method="POST" autocomplete="on">
