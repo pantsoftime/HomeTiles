@@ -91,3 +91,19 @@ sensor tile.
 Deliberately not changed: the icon-refresh pass in `tab_tiles_unified.cpp` still
 skips folder tiles, so a folder keeps the icon you chose instead of inheriting
 the Home Assistant entity icon.
+
+## Regenerating the WebUI assets
+
+`src/web/assets/admin.{js,css}` are sources; the firmware embeds the gzipped
+`src/web/generated/*.inc` blobs, and CI fails the build if they are stale
+(`node tools/generate-web-assets.mjs --check`).
+
+**Regenerate with Node 24**, the version CI uses. The generator pins the gzip
+level and zeroes the mtime and OS marker, but zlib's output still differs
+between Node releases, so regenerating with a newer Node rewrites *both* blobs
+and CI then rejects them -- including the CSS one, which this fork never edits:
+
+```
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/w -w /w node:24 \
+  node tools/generate-web-assets.mjs
+```
