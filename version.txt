@@ -4,4 +4,4 @@
 // Wichtig: Der Build startet NUR beim Tag-Push, und der Tag muss exakt FW_VERSION entsprechen.
 // Fork line: upstream base + an extra patch digit (see README-FORK.md).
 // Upstream is on v0.6.4, so 0.6.4x sorts above it for the device's parseVersion().
-#define FW_VERSION "v0.6.41"
+#define FW_VERSION "v0.6.42"
