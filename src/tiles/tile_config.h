@@ -508,6 +508,11 @@ struct FolderEntry {
 struct TileEntitySlot {
   TileType type = TILE_EMPTY;
   String sensor_entity;
+  // Optional caption entity (key_macro). Carried alongside the tile's own
+  // entity so the MQTT subscription walk can route it too -- without this a
+  // caption only ever showed whatever value the last full bridge config
+  // snapshot happened to carry, which could be hours stale.
+  String caption_entity;
 };
 
 // Read-only-Sicht auf einen Slot des PSRAM-Ordner-Entity-Caches (siehe
@@ -516,7 +521,8 @@ struct TileEntitySlot {
 // fuer denselben Ordner gueltig -- sofort verwenden, nicht aufheben.
 struct FolderEntitySlotView {
   TileType type = TILE_EMPTY;
-  const char* entity = "";  // nie nullptr
+  const char* entity = "";   // nie nullptr
+  const char* caption = "";  // nie nullptr
 };
 
 struct FolderEntityCacheEntry;

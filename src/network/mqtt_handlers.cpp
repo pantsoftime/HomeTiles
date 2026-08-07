@@ -1220,6 +1220,10 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
            slot.type == TILE_CLIMATE || slot.type == TILE_FOLDER) &&
           slot.entity[0]) {
         add_route(String(slot.entity), -1);
+        // A caption entity is a second, independent entity on the same tile.
+        // Without its own route it never receives state and the caption shows
+        // whatever the last full config snapshot carried.
+        if (slot.caption[0]) add_route(String(slot.caption), -1);
         if (slot.type == TILE_MEDIA) {
           has_media_tiles = true;
           // New bridges publish cover-free state changes here first. Keep the

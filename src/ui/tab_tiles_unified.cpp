@@ -1984,6 +1984,18 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
   const TileGridConfig& config = getGridConfig(grid_type);
   bool popup_queued = false;
 
+  // A caption entity belongs to a tile but is not the tile's own entity, so it
+  // matches nothing below. Re-apply that tile's state instead: the value path
+  // re-reads the caption, which is what makes it update live rather than only
+  // when a full bridge snapshot lands.
+  for (uint8_t i = 0; i < TILES_PER_GRID; i++) {
+    const Tile& tile = config.tiles[i];
+    if (tile.key_macro.length() &&
+        tile.key_macro.equalsIgnoreCase(entity_id)) {
+      apply_cached_state_for_index(grid_type, config, i);
+    }
+  }
+
   // Find tile with matching sensor_entity
   for (uint8_t i = 0; i < TILES_PER_GRID; i++) {
     const Tile& tile = config.tiles[i];

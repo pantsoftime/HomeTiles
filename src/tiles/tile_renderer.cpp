@@ -2109,7 +2109,10 @@ static void update_climate_tile_state(
     const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
     String text;
     if (tile && tile->key_macro.length()) {
-      String cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+      String cv;
+      if (!tiles_get_cached_entity_payload(tile->key_macro.c_str(), cv)) {
+        cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+      }
       cv.trim();
       if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
           !cv.equalsIgnoreCase("unavailable")) {
@@ -4733,7 +4736,11 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
     // bridge's sensor snapshot rather than a dedicated subscription -- the
     // snapshot already carries every configured sensor, and a humidity or
     // net-power caption does not need sub-second freshness.
-    String cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+    // Prefer the live cache; the bridge snapshot is only the cold-start seed.
+    String cv;
+    if (!tiles_get_cached_entity_payload(tile->key_macro.c_str(), cv)) {
+      cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+    }
     cv.trim();
     if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
         !cv.equalsIgnoreCase("unavailable")) {

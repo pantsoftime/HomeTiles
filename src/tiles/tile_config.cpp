@@ -1018,7 +1018,8 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
 // scene_alias/key_macro/image_path -- the String allocations that dominate a
 // full per-tile unpack (measured: ~44ms/grid across 35 tiles on this device's
 // fragmented internal heap).
-static void unpackTileEntityOnlyV7(const PackedTileV7& in, TileType& type, String& sensor_entity) {
+static void unpackTileEntityOnlyV7(const PackedTileV7& in, TileType& type, String& sensor_entity,
+                                   String& caption_entity) {
   TileType t = static_cast<TileType>(in.type);
   if (t == TILE_FOLDER) {
     if (in.sensor_decimals == LEGACY_NAV_KIND_SETTINGS) {
@@ -1029,6 +1030,7 @@ static void unpackTileEntityOnlyV7(const PackedTileV7& in, TileType& type, Strin
   }
   type = t;
   sensor_entity = String(in.sensor_entity);
+  caption_entity = String(in.key_macro);
 }
 
 static void unpackTileV6(const PackedTileV6& in, Tile& out) {
@@ -2208,6 +2210,7 @@ bool TileConfig::loadFolderGridEntitiesOnly(uint16_t folder_id, TileEntitySlot* 
     for (size_t i = 0; i < TILES_PER_GRID; ++i) {
       out[i].type = full.tiles[i].type;
       out[i].sensor_entity = full.tiles[i].sensor_entity;
+      out[i].caption_entity = full.tiles[i].key_macro;
     }
     return true;
   }
@@ -2220,7 +2223,8 @@ bool TileConfig::loadFolderGridEntitiesOnly(uint16_t folder_id, TileEntitySlot* 
     for (size_t i = 0; i < TILES_PER_QUARTER; ++i) {
       size_t grid_idx = quarterGridIndex(q, i);
       if (grid_idx >= TILES_PER_GRID) continue;
-      unpackTileEntityOnlyV7(packed_v7[q].tiles[i], out[grid_idx].type, out[grid_idx].sensor_entity);
+      unpackTileEntityOnlyV7(packed_v7[q].tiles[i], out[grid_idx].type,
+                             out[grid_idx].sensor_entity, out[grid_idx].caption_entity);
     }
   }
   uint32_t unpack_ms = millis() - t_unpack0;
@@ -2252,6 +2256,7 @@ struct FolderEntityCacheEntry {
   uint32_t built_gen;
   TileType types[TILES_PER_GRID];
   char* entities[TILES_PER_GRID];  // PSRAM-Kopien, nullptr = leer
+  char* captions[TILES_PER_GRID];  // dito, fuer die Caption-Entity
 };
 
 // 128 Eintraege x ~184B = ~24KB PSRAM. Mehr als 128 gleichzeitig lebende
@@ -2311,8 +2316,13 @@ FolderEntityCacheEntry* TileConfig::storeFolderEntityCache(uint16_t folder_id,
       heap_caps_free(e->entities[i]);
       e->entities[i] = nullptr;
     }
+    if (e->captions[i]) {
+      heap_caps_free(e->captions[i]);
+      e->captions[i] = nullptr;
+    }
     e->types[i] = slots[i].type;
     e->entities[i] = psramStrdupLocal(slots[i].sensor_entity);
+    e->captions[i] = psramStrdupLocal(slots[i].caption_entity);
   }
   e->built_gen = built_gen;
   return e;
@@ -2337,6 +2347,7 @@ bool TileConfig::getFolderEntitiesCached(uint16_t folder_id, FolderEntitySlotVie
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     out[i].type = e->types[i];
     out[i].entity = e->entities[i] ? e->entities[i] : "";
+    out[i].caption = e->captions[i] ? e->captions[i] : "";
   }
   return true;
 }
