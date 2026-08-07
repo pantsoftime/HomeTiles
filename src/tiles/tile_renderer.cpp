@@ -6,6 +6,7 @@
 #include "src/types/climate/visuals.h"
 #include "src/types/climate/renderer.h"
 #include "src/types/sensor/renderer.h"
+#include "src/ui/tab_tiles_unified.h"  // tiles_get_cached_entity_payload
 
 // Defined further down, next to the sensor tile's caption handling; the climate
 // tile's caption uses it too and is compiled first.
