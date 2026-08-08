@@ -2398,6 +2398,19 @@ void mqttServicePostConnect() {
   // repair an entry that still points at an older device ID. The publish uses
   // the large-buffer queue, which is held back until the startup storm ends.
   networkManager.publishBridgeConfig();
+  // ...and ask the bridge to send ITS config straight back.
+  //
+  // The bridge publishes that config retained and skips republishing while its
+  // signature is unchanged, so a panel that reconnects without receiving the
+  // retained copy is left with no unit/name metadata and no way to acquire it.
+  // In practice one panel came back from most restarts with a fraction of the
+  // maps (3 units of 66 on one occasion), which shows as captions and tiles
+  // rendering their value with no unit. The force flag is what makes the
+  // bridge resend despite the unchanged signature.
+  //
+  // This is the same request the web admin's "refresh bridge" button sends;
+  // it was simply never wired to a reconnect.
+  networkManager.publishBridgeRequest(true);
 }
 
 void mqttPublishCameraCommand(const char* entity_id, const char* command) {
