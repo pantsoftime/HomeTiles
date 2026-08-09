@@ -19,7 +19,13 @@ inline constexpr Device::Profile kProfile{
     166,
     166,
     4,
-    1,
+    // backlight_input_min. The panel's backlight driver produces no visible
+    // light below ~121, which is why the display-brightness sliders clamp to
+    // kSettingsBrightnessRawMin/kDisplayBrightnessMin = 121. Leaving this at 1
+    // gave the screensaver its own, much lower percent scale: 25 % resolved to
+    // raw 63 and the screensaver rendered correctly but completely unlit,
+    // looking exactly like the display had gone to sleep.
+    121,
     Device::RotationStepMode::QuarterTurns,
     0,
     2,
