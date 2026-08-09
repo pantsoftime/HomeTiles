@@ -869,6 +869,19 @@ static void packTile(const Tile& in, PackedTileV7& out) {
     decimals = 0xFF;
   }
   out.sensor_decimals = decimals;
+  // A folder tile showing a live value still needs its decimal count, but it
+  // cannot live in sensor_decimals: that byte doubles as the legacy
+  // Settings/Back discriminator, and its sentinels are 1, 2 and 3 -- exactly
+  // the counts such a tile would ask for, so storing "1 decimal" would make the
+  // tile reload as a Settings tile. reserved[1] is free (reserved[0] carries
+  // background_opacity) and is written biased by one, so a 0 left by older
+  // firmware keeps meaning "unset" rather than "zero decimals".
+  if (in.type == TILE_FOLDER) {
+    const uint8_t folder_decimals = clampDecimals(in.sensor_decimals);
+    out.reserved[1] = (folder_decimals == 0xFF)
+                          ? 0
+                          : static_cast<uint8_t>(folder_decimals + 1);
+  }
   out.key_code = in.key_code;
   out.key_modifier = in.key_modifier;
   out.bg_color = in.bg_color;
@@ -1023,7 +1036,15 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
   out.span_w = span_w;
   out.span_h = span_h;
   out.sensor_decimals = clampDecimals(in.sensor_decimals);
-  if (out.type == TILE_FOLDER || out.type == TILE_SETTINGS || out.type == TILE_BACK) {
+  if (out.type == TILE_FOLDER) {
+    // packTile stores a folder's decimals in reserved[1] biased by one, so a 0
+    // left by firmware that predates that still means "unset". out.type is
+    // already resolved above, so a packed folder that is really a Settings or
+    // Back tile takes the branch below and keeps no decimals at all.
+    out.sensor_decimals =
+        in.reserved[1] ? clampDecimals(static_cast<uint8_t>(in.reserved[1] - 1))
+                       : 0xFF;
+  } else if (out.type == TILE_SETTINGS || out.type == TILE_BACK) {
     out.sensor_decimals = 0xFF;
   }
   out.sensor_value_font = clampSensorValueFont(in.sensor_value_font);
