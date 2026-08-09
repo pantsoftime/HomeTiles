@@ -104,9 +104,15 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
 
       // Flexible Positionierung: Icon + Title = 2 Zeilen mittig, nur Icon = 1 Zeile mittig.
       // Mit zusaetzlichem Wert ruecken drei Zeilen uebereinander.
+      //
+      // Die drei Zeilen brauchen zusammen 50 + 31 + 27 px (Icon, Wert, Titel)
+      // in einer 166 px hohen Kachel. Vorher sassen Wert (+2) und Titel (+46)
+      // beide in der unteren Haelfte, sodass sie optisch aneinanderklebten,
+      // waehrend unter dem Icon Platz frei blieb. Alle drei ruecken deshalb
+      // nach oben und der Titel bekommt zusaetzlich Abstand.
       if (has_value) {
         lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
-                     tile_layout::scale_i16(-48));
+                     tile_layout::scale_i16(-52));
       } else if (has_title) {
         lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                      tile_layout::scale_i16(-20));
@@ -126,7 +132,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
       lv_label_set_text(v, "--");
       lv_obj_align(v, LV_ALIGN_CENTER, 0,
-                   tile_layout::scale(has_icon ? 2 : -12));
+                   tile_layout::scale(has_icon ? -10 : -12));
 
       // In dieselbe Widget-Tabelle eintragen, aus der auch Sensor-Kacheln
       // aktualisiert werden -- update_sensor_tile_value() arbeitet rein ueber
@@ -151,7 +157,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
 
       // Flexible Positionierung: mit Icon unten, ohne Icon mittig
       if (has_value) {
-        lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(46));
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(50));
       } else if (icon_lbl) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
       } else {
