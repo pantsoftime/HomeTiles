@@ -57,7 +57,7 @@ struct DeviceConfig {
   bool configured;  // Flag ob Konfiguration vorhanden ist
 
   // Display & Power Settings
-  uint8_t display_brightness;  // Geraetespezifischer Rohwert, derzeit 121-255
+  uint8_t display_brightness;  // Geraetespezifischer Rohwert: backlight_input_min..255
   // Einheitlicher sichtbarer Prozentwert. Die Umrechnung auf den jeweiligen
   // Treiberbereich erfolgt ueber Device::backlightRawFromPercent().
   uint8_t screensaver_brightness_pct;  // 1-100
@@ -131,6 +131,9 @@ public:
 private:
   DeviceConfig config;
   bool boot_static_enabled = false;
+  // Rotation can be applied to the live display before the settings save is
+  // issued. Keep that runtime mutation from being mistaken for an NVS no-op.
+  bool runtime_rotation_dirty = false;
 };
 
 // Globale Instanz

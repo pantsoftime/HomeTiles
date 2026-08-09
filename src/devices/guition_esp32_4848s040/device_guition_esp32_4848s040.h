@@ -19,7 +19,10 @@ inline constexpr Device::Profile kProfile{
     111,
     111,
     4,
-    1,
+    // Hardware-calibrated lower visible limit: with the former raw 3..255
+    // mapping the first reliably visible setting was 15 %, i.e. raw 39.
+    // Raw 0 remains reserved for deliberately switching the backlight off.
+    39,
     Device::RotationStepMode::QuarterTurns,
     2,
     0,
@@ -38,6 +41,9 @@ bool displayTryFullFramePreview(int32_t x, int32_t y, int32_t w, int32_t h,
                                 int32_t source_stride,
                                 const uint16_t* data, size_t data_size,
                                 bool byte_swap);
+// Prepare the inactive RGB framebuffer for one tear-free full-screen redraw.
+// Normal partial UI updates continue to use the active framebuffer directly.
+bool displayBeginAtomicFrame(const char* reason);
 void displayWaitDMA();
 void displayFillScreen(uint16_t color);
 void displaySetRotation(uint8_t rotation);
