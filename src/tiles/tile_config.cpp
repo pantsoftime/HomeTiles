@@ -857,6 +857,12 @@ static void packTile(const Tile& in, PackedTileV7& out) {
     if (graph_h > 200) graph_h = 200;
     out.scene_alias[9] = static_cast<char>(graph_h & 0xFF);
     out.scene_alias[10] = static_cast<char>((graph_h >> 8) & 0xFF);
+    // Optional navigate target. scene_alias is a firmware-managed binary blob
+    // for TILE_SENSOR (not user text), memset above, and bytes 11..31 were
+    // unused -- so this needs no storage format change.
+    out.scene_alias[11] = static_cast<char>(in.sensor_navigate_target & 0xFF);
+    out.scene_alias[12] =
+        static_cast<char>((in.sensor_navigate_target >> 8) & 0xFF);
   } else {
     copyString(in.scene_alias, out.scene_alias, sizeof(out.scene_alias));
   }
@@ -973,6 +979,8 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
     uint16_t graph_h = static_cast<uint8_t>(in.scene_alias[9]) |
                        (static_cast<uint8_t>(in.scene_alias[10]) << 8);
     if (graph_h >= 20 && graph_h <= 200) out.sensor_graph_height = graph_h;
+    out.sensor_navigate_target = static_cast<uint8_t>(in.scene_alias[11]) |
+                                 (static_cast<uint8_t>(in.scene_alias[12]) << 8);
   }
   if ((out.type == TILE_SENSOR || out.type == TILE_WEATHER || out.type == TILE_ENERGY ||
        out.type == TILE_SWITCH || out.type == TILE_CLIMATE) &&

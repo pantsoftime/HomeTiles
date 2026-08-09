@@ -5,6 +5,7 @@
 #include "src/tiles/mdi_icons.h"
 #include "src/network/ha_bridge_config.h"
 #include "src/ui/sensor_popup.h"
+#include "src/ui/ui_manager.h"  // uiManager.switchToFolder()
 #include "src/ui/tab_tiles_unified.h"
 #include <Arduino.h>
 
@@ -442,6 +443,30 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
         },
         popup_event,
         data);
+
+    // Optional navigation on the OTHER gesture: a tile can show its history on
+    // one press and open a related page on the other. Same shape the switch
+    // tile uses for popup-vs-toggle. The target is a plain folder id, so it is
+    // passed by value rather than through the popup's event data.
+    if (tile.sensor_navigate_target != 0) {
+      const lv_event_code_t nav_event =
+          (popup_event == LV_EVENT_SHORT_CLICKED) ? LV_EVENT_LONG_PRESSED
+                                                  : LV_EVENT_SHORT_CLICKED;
+      lv_obj_add_event_cb(
+          card,
+          [](lv_event_t* e) {
+            lv_event_code_t code = lv_event_get_code(e);
+            if (code != LV_EVENT_SHORT_CLICKED && code != LV_EVENT_LONG_PRESSED) return;
+            const uint16_t target = static_cast<uint16_t>(
+                reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+            if (!target || !tileConfig.folderExists(target)) return;
+            finish_press_before_popup(e);
+            uiManager.switchToFolder(target);
+          },
+          nav_event,
+          reinterpret_cast<void*>(
+              static_cast<uintptr_t>(tile.sensor_navigate_target)));
+    }
 
     lv_obj_add_event_cb(
         card,

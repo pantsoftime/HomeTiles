@@ -11,6 +11,14 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
                        ? server.arg("sensor_caption_entity")
                        : String();
 
+  // Optional folder to navigate to. Fires on whichever gesture is not opening
+  // the popup, so popup_open_mode decides which press does which.
+  int nav = server.hasArg("sensor_navigate_target")
+                ? server.arg("sensor_navigate_target").toInt()
+                : 0;
+  if (nav < 0) nav = 0;
+  tile.sensor_navigate_target = static_cast<uint16_t>(nav);
+
   uint8_t decimals = 0xFF;
   if (server.hasArg("sensor_decimals")) {
     String decStr = server.arg("sensor_decimals");

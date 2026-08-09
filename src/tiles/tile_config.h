@@ -117,6 +117,11 @@ struct Tile {
   int16_t sensor_gauge_y_offset;
   int16_t sensor_value_y_offset;
   uint16_t sensor_graph_height;
+  // Optional folder a sensor tile navigates to. It fires on whichever gesture
+  // is NOT opening the popup (see popup_open_mode), so one tile can show its
+  // history on one press and open a related page on the other -- the same
+  // two-gestures-two-actions shape the switch tile already uses.
+  uint16_t sensor_navigate_target;
   uint8_t popup_open_mode;
 
   String scene_alias;
