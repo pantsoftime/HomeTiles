@@ -21,17 +21,24 @@ Grab the file matching your device from the
 | M5Stack Tab5 | Supported | `hometiles_<version>_m5stacks_tab5_factory.bin` |
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-4B / 86 Panel | Supported | `hometiles_<version>_waveshare_4b_factory.bin` |
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-8 | Supported | `hometiles_<version>_waveshare_touch_lcd_8_factory.bin` |
-| Guition JC8012P4A1C_I_W_Y | Supported | `hometiles_<version>_guition_jc8012p4a1_factory.bin` |
-| Waveshare ESP32-P4-WIFI6-Touch-LCD-7 | Experimental | `hometiles_<version>_waveshare_touch_lcd_7_factory.bin` |
-| Waveshare ESP32-P4-WIFI6-Touch-LCD-10.1 | Experimental | `hometiles_<version>_waveshare_touch_lcd_10_1_factory.bin` |
-| Guition JC1060P470C_I_W_Y | Experimental, exact suffix required | `hometiles_<version>_guition_jc1060p470c_factory.bin` |
-| Guition ESP32-4848S040C_I | Experimental ESP32-S3 target | `hometiles_<version>_guition_esp32_4848s040_factory.bin` |
+| Guition JC8012P4A1C_I_W_Y V1 (no V2 sticker) | Supported | `hometiles_<version>_guition_jc8012p4a1_factory.bin` |
+| Guition JC8012P4A1 V2 (`SKU:10153002-V2`) | Hardware validation pending | `hometiles_<version>_guition_jc8012p4a1_v2_factory.bin` |
+| Waveshare ESP32-P4-WIFI6-Touch-LCD-7 | Hardware validation pending | `hometiles_<version>_waveshare_touch_lcd_7_factory.bin` |
+| Waveshare ESP32-P4-WIFI6-Touch-LCD-10.1 | Hardware validation pending | `hometiles_<version>_waveshare_touch_lcd_10_1_factory.bin` |
+| Guition JC1060P470C_I_W_Y | SD-card validation pending; exact suffix required | `hometiles_<version>_guition_jc1060p470c_factory.bin` |
+| Guition ESP32-4848S040C_I | Supported ESP32-S3 target | `hometiles_<version>_guition_esp32_4848s040_factory.bin` |
 
-!!! warning "Experimental images"
-    Experimental targets are published for community hardware testing and have
-    not yet completed the full physical-device checklist. Use only the image
-    matching the exact model and report results in
-    [issues #7–#9](https://github.com/GalusPeres/HomeTiles/issues).
+!!! warning "Exact hardware images"
+    Some targets have not yet completed the full physical-device checklist.
+    Use only the image matching the exact model and report results in
+    [open hardware issues](https://github.com/GalusPeres/HomeTiles/issues),
+    including [JC8012 V2 issue #18](https://github.com/GalusPeres/HomeTiles/issues/18).
+
+!!! danger "JC8012 V1 and V2 images are not interchangeable"
+    Check the rear material-number sticker before flashing. A unit marked `V2`
+    requires `guition_jc8012p4a1_v2`; the original image is only for the V1
+    panel. Using the wrong revision can leave the backlight on with a black or
+    grey-banded display.
 
 !!! note "`factory.bin` vs. plain `.bin`"
     The **factory** image is a complete flash image — bootloader, firmware, and empty
@@ -44,7 +51,7 @@ Grab the file matching your device from the
 Connect the device to your PC via USB, then in the **Flash Download Tool**:
 
 1. Select ChipType **ESP32-P4** for every P4 target. Select **ESP32-S3** only
-   for the experimental Guition ESP32-4848S040C_I. Use WorkMode **Develop**
+   for the Guition ESP32-4848S040C_I. Use WorkMode **Develop**
    and LoadMode **UART** → OK.
 2. In the first file row: select the `factory.bin`, set the address to `0x0`,
    and tick the row's checkbox.

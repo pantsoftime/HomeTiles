@@ -66,6 +66,17 @@ SwitchTileWidgets g_tab1_switches[TILES_PER_GRID];
 SwitchTileWidgets g_tab2_switches[TILES_PER_GRID];
 SwitchTileWidgets g_screensaver_switches[TILES_PER_GRID];
 
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+WeatherTileWidgets* g_tab0_weather = nullptr;
+WeatherTileWidgets* g_tab1_weather = nullptr;
+WeatherTileWidgets* g_tab2_weather = nullptr;
+
+MediaTileWidgets* g_tab0_media = nullptr;
+MediaTileWidgets* g_tab1_media = nullptr;
+MediaTileWidgets* g_tab2_media = nullptr;
+MediaTileWidgets* g_screensaver_media = nullptr;
+static bool g_cold_state_init_attempted = false;
+#else
 WeatherTileWidgets g_tab0_weather[TILES_PER_GRID];
 WeatherTileWidgets g_tab1_weather[TILES_PER_GRID];
 WeatherTileWidgets g_tab2_weather[TILES_PER_GRID];
@@ -74,11 +85,21 @@ MediaTileWidgets g_tab0_media[TILES_PER_GRID];
 MediaTileWidgets g_tab1_media[TILES_PER_GRID];
 MediaTileWidgets g_tab2_media[TILES_PER_GRID];
 MediaTileWidgets g_screensaver_media[TILES_PER_GRID];
+#endif
 
 SwitchState g_tab0_switch_states[TILES_PER_GRID];
 SwitchState g_tab1_switch_states[TILES_PER_GRID];
 SwitchState g_tab2_switch_states[TILES_PER_GRID];
 SwitchState g_screensaver_switch_states[TILES_PER_GRID];
+
+CoverTileWidgets g_tab0_covers[TILES_PER_GRID];
+CoverTileWidgets g_tab1_covers[TILES_PER_GRID];
+CoverTileWidgets g_tab2_covers[TILES_PER_GRID];
+CoverTileWidgets g_screensaver_covers[TILES_PER_GRID];
+CoverState g_tab0_cover_states[TILES_PER_GRID];
+CoverState g_tab1_cover_states[TILES_PER_GRID];
+CoverState g_tab2_cover_states[TILES_PER_GRID];
+CoverState g_screensaver_cover_states[TILES_PER_GRID];
 
 ClimateTileWidgets g_tab0_climate[TILES_PER_GRID];
 ClimateTileWidgets g_tab1_climate[TILES_PER_GRID];
@@ -118,6 +139,57 @@ static ClimateState* allocate_climate_states(const char* grid_name) {
   return states;
 }
 
+bool tile_renderer_init_cold_storage() {
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  if (g_tab0_weather && g_tab0_media) return true;
+  if (g_cold_state_init_attempted) return false;
+  g_cold_state_init_attempted = true;
+
+  constexpr size_t kWeatherCount = TILES_PER_GRID * 3U;
+  constexpr size_t kMediaCount = TILES_PER_GRID * 4U;
+  auto* weather = static_cast<WeatherTileWidgets*>(heap_caps_malloc(
+      sizeof(WeatherTileWidgets) * kWeatherCount,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!weather) {
+    Serial.printf(
+        "[Tiles/Mem] ERROR: Weather-State (%u Bytes) nicht in PSRAM allokiert\n",
+        static_cast<unsigned>(sizeof(WeatherTileWidgets) * kWeatherCount));
+    return false;
+  }
+  for (size_t i = 0; i < kWeatherCount; ++i) {
+    new (&weather[i]) WeatherTileWidgets();
+  }
+
+  auto* media = static_cast<MediaTileWidgets*>(heap_caps_malloc(
+      sizeof(MediaTileWidgets) * kMediaCount,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!media) {
+    Serial.printf(
+        "[Tiles/Mem] ERROR: Media-State (%u Bytes) nicht in PSRAM allokiert\n",
+        static_cast<unsigned>(sizeof(MediaTileWidgets) * kMediaCount));
+    for (size_t i = 0; i < kWeatherCount; ++i) weather[i].~WeatherTileWidgets();
+    heap_caps_free(weather);
+    return false;
+  }
+  for (size_t i = 0; i < kMediaCount; ++i) {
+    new (&media[i]) MediaTileWidgets();
+  }
+
+  g_tab0_weather = weather;
+  g_tab1_weather = weather + TILES_PER_GRID;
+  g_tab2_weather = weather + TILES_PER_GRID * 2U;
+  g_tab0_media = media;
+  g_tab1_media = media + TILES_PER_GRID;
+  g_tab2_media = media + TILES_PER_GRID * 2U;
+  g_screensaver_media = media + TILES_PER_GRID * 3U;
+  Serial.printf(
+      "[Tiles/Mem] Weather=%u Bytes Media=%u Bytes in PSRAM\n",
+      static_cast<unsigned>(sizeof(WeatherTileWidgets) * kWeatherCount),
+      static_cast<unsigned>(sizeof(MediaTileWidgets) * kMediaCount));
+#endif
+  return true;
+}
+
 SensorTileWidgets* tile_renderer_get_sensor_widgets(GridType grid_type) {
   if (grid_type == GridType::SCREENSAVER) return g_screensaver_sensors;
   if (grid_type == GridType::TAB1) return g_tab1_sensors;
@@ -133,12 +205,14 @@ SwitchTileWidgets* tile_renderer_get_switch_widgets(GridType grid_type) {
 }
 
 WeatherTileWidgets* tile_renderer_get_weather_widgets(GridType grid_type) {
+  if (!tile_renderer_init_cold_storage()) return nullptr;
   if (grid_type == GridType::TAB1) return g_tab1_weather;
   if (grid_type == GridType::TAB2) return g_tab2_weather;
   return g_tab0_weather;
 }
 
 MediaTileWidgets* tile_renderer_get_media_widgets(GridType grid_type) {
+  if (!tile_renderer_init_cold_storage()) return nullptr;
   if (grid_type == GridType::SCREENSAVER) return g_screensaver_media;
   if (grid_type == GridType::TAB1) return g_tab1_media;
   if (grid_type == GridType::TAB2) return g_tab2_media;
@@ -165,6 +239,20 @@ SwitchState* tile_renderer_get_switch_states(GridType grid_type) {
   if (grid_type == GridType::TAB1) return g_tab1_switch_states;
   if (grid_type == GridType::TAB2) return g_tab2_switch_states;
   return g_tab0_switch_states;
+}
+
+CoverTileWidgets* tile_renderer_get_cover_widgets(GridType grid_type) {
+  if (grid_type == GridType::SCREENSAVER) return g_screensaver_covers;
+  if (grid_type == GridType::TAB1) return g_tab1_covers;
+  if (grid_type == GridType::TAB2) return g_tab2_covers;
+  return g_tab0_covers;
+}
+
+CoverState* tile_renderer_get_cover_states(GridType grid_type) {
+  if (grid_type == GridType::SCREENSAVER) return g_screensaver_cover_states;
+  if (grid_type == GridType::TAB1) return g_tab1_cover_states;
+  if (grid_type == GridType::TAB2) return g_tab2_cover_states;
+  return g_tab0_cover_states;
 }
 
 ClimateTileWidgets* tile_renderer_get_climate_widgets(GridType grid_type) {
@@ -275,6 +363,21 @@ void reset_switch_widgets(GridType grid_type) {
   clear_switch_widgets(grid_type);
 }
 
+void reset_cover_widget(GridType grid_type, uint8_t grid_index) {
+  if (grid_index >= TILES_PER_GRID) return;
+  tile_renderer_get_cover_widgets(grid_type)[grid_index] = {};
+  tile_renderer_get_cover_states(grid_type)[grid_index] = {};
+}
+
+void reset_cover_widgets(GridType grid_type) {
+  CoverTileWidgets* widgets = tile_renderer_get_cover_widgets(grid_type);
+  CoverState* states = tile_renderer_get_cover_states(grid_type);
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    widgets[i] = {};
+    states[i] = {};
+  }
+}
+
 void reset_climate_widget(GridType grid_type, uint8_t grid_index) {
   if (grid_index >= TILES_PER_GRID) return;
   ClimateTileWidgets* widgets = tile_renderer_get_climate_widgets(grid_type);
@@ -347,26 +450,34 @@ void tile_renderer_snapshot_tab0(TileWidgetCache* out) {
   if (!out) return;
   ClimateState* climate_states =
       tile_renderer_get_climate_states(GridType::TAB0);
-  memcpy(out->sensors, g_tab0_sensors, sizeof(g_tab0_sensors));
-  memcpy(out->switches, g_tab0_switches, sizeof(g_tab0_switches));
-  memcpy(out->switch_states, g_tab0_switch_states, sizeof(g_tab0_switch_states));
-  memcpy(out->climate, g_tab0_climate, sizeof(g_tab0_climate));
+  memcpy(out->sensors, g_tab0_sensors, sizeof(out->sensors));
+  memcpy(out->switches, g_tab0_switches, sizeof(out->switches));
+  memcpy(out->switch_states, g_tab0_switch_states,
+         sizeof(out->switch_states));
+  memcpy(out->climate, g_tab0_climate, sizeof(out->climate));
   memcpy(out->climate_states, climate_states, sizeof(out->climate_states));
-  memcpy(out->weather, g_tab0_weather, sizeof(g_tab0_weather));
-  memcpy(out->media, g_tab0_media, sizeof(g_tab0_media));
+  memcpy(out->covers, g_tab0_covers, sizeof(out->covers));
+  memcpy(out->cover_states, g_tab0_cover_states,
+         sizeof(out->cover_states));
+  memcpy(out->weather, g_tab0_weather, sizeof(out->weather));
+  memcpy(out->media, g_tab0_media, sizeof(out->media));
 }
 
 void tile_renderer_restore_tab0(const TileWidgetCache* in) {
   if (!in) return;
   ClimateState* climate_states =
       tile_renderer_get_climate_states(GridType::TAB0);
-  memcpy(g_tab0_sensors, in->sensors, sizeof(g_tab0_sensors));
-  memcpy(g_tab0_switches, in->switches, sizeof(g_tab0_switches));
-  memcpy(g_tab0_switch_states, in->switch_states, sizeof(g_tab0_switch_states));
-  memcpy(g_tab0_climate, in->climate, sizeof(g_tab0_climate));
+  memcpy(g_tab0_sensors, in->sensors, sizeof(in->sensors));
+  memcpy(g_tab0_switches, in->switches, sizeof(in->switches));
+  memcpy(g_tab0_switch_states, in->switch_states,
+         sizeof(in->switch_states));
+  memcpy(g_tab0_climate, in->climate, sizeof(in->climate));
   memcpy(climate_states, in->climate_states, sizeof(in->climate_states));
-  memcpy(g_tab0_weather, in->weather, sizeof(g_tab0_weather));
-  memcpy(g_tab0_media, in->media, sizeof(g_tab0_media));
+  memcpy(g_tab0_covers, in->covers, sizeof(in->covers));
+  memcpy(g_tab0_cover_states, in->cover_states,
+         sizeof(in->cover_states));
+  memcpy(g_tab0_weather, in->weather, sizeof(in->weather));
+  memcpy(g_tab0_media, in->media, sizeof(in->media));
 }
 
 /* === Thread-Safe Update Queue (MQTT ��� Main Loop) === */

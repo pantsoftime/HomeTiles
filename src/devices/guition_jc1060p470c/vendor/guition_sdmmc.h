@@ -14,6 +14,7 @@
 #include <FS.h>
 #include <driver/sdmmc_host.h>
 #include <driver/sdmmc_types.h>
+#include <esp_err.h>
 #include <vfs_api.h>
 
 enum JC1060SdCardType : uint8_t {
@@ -33,11 +34,24 @@ class JC1060SDMMCFS : public FS {
              uint8_t max_open_files = 5);
   void end();
 
+  // FATFS can mount and enumerate a card even when data/metadata writes fail
+  // at the negotiated bus speed. Verify both operations before exposing the
+  // card as writable to HomeTiles.
+  bool testWritable();
+  bool writable() const;
+  int frequencyKHz() const;
+  const char* lastErrorPhase() const;
+  esp_err_t lastError() const;
+
   JC1060SdCardType cardType() const;
   uint64_t cardSize() const;
 
  private:
   sdmmc_card_t* card_;
+  bool writable_;
+  int frequency_khz_;
+  const char* last_error_phase_;
+  esp_err_t last_error_;
 };
 
 }  // namespace fs

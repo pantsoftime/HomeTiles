@@ -1,6 +1,7 @@
 # Guition JC1060P470C
 
-Experimental HomeTiles target for the 7-inch `JC1060P470C_I_W_Y`.
+HomeTiles target for the 7-inch `JC1060P470C_I_W_Y`. SD-card operation still
+requires confirmation on the exact hardware.
 
 This target currently claims the `_I_W_Y` variant only. Guition documents the
 `_I_W` and `_I_W_Y` suffixes as different hardware variants; its examples use
@@ -16,6 +17,8 @@ Hardware configuration:
 - Backlight PWM on GPIO23, active high
 - MIPI PHY LDO channel 3 at 2.5 V
 - TF/SD card on SDMMC slot 0 with LDO channel 4
+- Active-low TF/SD power switch on GPIO45; the driver performs the official
+  200 ms power reset before each mount attempt
 
 The HomeTiles UI uses the independently retained `DEVICE_LAYOUT_1024X600`
 layout profile. The panel itself is native landscape, so the default display

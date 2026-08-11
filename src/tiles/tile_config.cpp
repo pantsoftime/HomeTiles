@@ -754,7 +754,7 @@ static bool readImagePathSd(uint16_t folder_id, size_t index, String& out) {
 static bool entityTileStoresSensorEntity(TileType type) {
   return type == TILE_SENSOR || type == TILE_SWITCH || type == TILE_WEATHER ||
          type == TILE_ENERGY || type == TILE_MEDIA || type == TILE_CLIMATE ||
-         type == TILE_CAMERA;
+         type == TILE_CAMERA || type == TILE_COVER;
 }
 
 static bool writeLongEntityIdSd(uint16_t folder_id, size_t index, const String& entity) {
@@ -906,7 +906,8 @@ static void packTile(const Tile& in, PackedTileV7& out) {
                           in.type == TILE_WEATHER ||
                           in.type == TILE_ENERGY ||
                           in.type == TILE_SWITCH ||
-                          in.type == TILE_CLIMATE) &&
+                          in.type == TILE_CLIMATE ||
+                          in.type == TILE_COVER) &&
                          getTilePopupOpenMode(in) == TILE_POPUP_OPEN_SHORT_PRESS)
                             ? TILE_POPUP_OPEN_SHORT_PRESS
                             : TILE_POPUP_OPEN_LONG_PRESS;
@@ -1082,14 +1083,16 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
                                  (static_cast<uint8_t>(in.scene_alias[12]) << 8);
   }
   if ((out.type == TILE_SENSOR || out.type == TILE_WEATHER || out.type == TILE_ENERGY ||
-       out.type == TILE_SWITCH || out.type == TILE_CLIMATE) &&
+       out.type == TILE_SWITCH || out.type == TILE_CLIMATE ||
+       out.type == TILE_COVER) &&
       in.popup_open_mode == TILE_POPUP_OPEN_SHORT_PRESS) {
     out.popup_open_mode = TILE_POPUP_OPEN_SHORT_PRESS;
   }
   out.key_code = in.key_code;
   out.key_modifier = in.key_modifier;
   if (out.type == TILE_SENSOR || out.type == TILE_WEATHER ||
-      out.type == TILE_ENERGY || out.type == TILE_CLIMATE) {
+      out.type == TILE_ENERGY || out.type == TILE_CLIMATE ||
+      out.type == TILE_COVER) {
     out.key_code = 0;
     out.key_modifier = 0;
   } else if (out.type == TILE_SETTINGS || out.type == TILE_BACK) {
@@ -1201,7 +1204,8 @@ static void unpackTileV6(const PackedTileV6& in, Tile& out) {
   out.key_code = in.key_code;
   out.key_modifier = in.key_modifier;
   if (out.type == TILE_SENSOR || out.type == TILE_WEATHER ||
-      out.type == TILE_ENERGY || out.type == TILE_CLIMATE) {
+      out.type == TILE_ENERGY || out.type == TILE_CLIMATE ||
+      out.type == TILE_COVER) {
     if (in.key_code == TILE_POPUP_OPEN_SHORT_PRESS ||
         in.key_modifier == TILE_POPUP_OPEN_SHORT_PRESS) {
       out.popup_open_mode = TILE_POPUP_OPEN_SHORT_PRESS;

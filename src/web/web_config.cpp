@@ -21,6 +21,8 @@ const char* apSsidForDevice() {
   return "M5Stacks_Tab5_Config";
 #elif defined(DEVICE_GUITION_JC8012P4A1)
   return "Guition_JC8012P4A1_Config";
+#elif defined(DEVICE_GUITION_JC8012P4A1_V2)
+  return "Guition_JC8012P4A1_V2_Config";
 #elif defined(DEVICE_GUITION_JC1060P470C)
   return "Guition_JC1060P470C_Config";
 #elif defined(DEVICE_GUITION_ESP32_4848S040)
@@ -50,6 +52,19 @@ void applyWifiAutoReconnectPolicy() {
 #endif
 }
 
+bool setWifiModeWithSdRemount(wifi_mode_t mode) {
+#if defined(DEVICE_GUITION_JC1060P470C)
+  const bool sd_was_mounted = Device::suspendSDCardForNetworkTransition();
+  const bool mode_ok = WiFi.mode(mode);
+  if (sd_was_mounted && !Device::resumeSDCardAfterNetworkTransition()) {
+    Serial.println("[WebConfig] SD remount after ESP-Hosted mode change failed");
+  }
+  return mode_ok;
+#else
+  return WiFi.mode(mode);
+#endif
+}
+
 }  // namespace
 
 const char* webConfigApSsid() {
@@ -67,7 +82,7 @@ static void restoreStaModeAfterAp() {
   WiFi.persistent(false);
 #endif
   applyWifiAutoReconnectPolicy();
-  WiFi.mode(WIFI_STA);
+  setWifiModeWithSdRemount(WIFI_STA);
   applyWifiAutoReconnectPolicy();
   WiFi.persistent(false);
 }
@@ -93,7 +108,7 @@ bool WebConfigServer::start() {
   delay(100);
 
   // AP + STA wie im alten Tab5_LVGL-Pfad.
-  WiFi.mode(WIFI_AP_STA);
+  setWifiModeWithSdRemount(WIFI_AP_STA);
   WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
 
   // Starte AP mit expliziten Einstellungen

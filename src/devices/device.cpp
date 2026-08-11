@@ -92,7 +92,7 @@ void displayWake() {
 void displayWakeDark() {
 #if defined(DEVICE_WAVESHARE_TOUCH_LCD_X) || \
     defined(DEVICE_M5STACKS_TAB5) || \
-    defined(DEVICE_GUITION_JC8012P4A1) || \
+    defined(DEVICE_GUITION_JC8012P4A1_FAMILY) || \
     defined(DEVICE_GUITION_JC1060P470C) || \
     defined(DEVICE_GUITION_ESP32_4848S040)
   DeviceImpl::displayWakeDark();
@@ -144,6 +144,14 @@ void storageWriteEnd() {
 
 bool sdReady() {
   return DeviceImpl::sdReady();
+}
+
+bool sdWritable() {
+#if defined(DEVICE_GUITION_JC1060P470C)
+  return DeviceImpl::sdWritable();
+#else
+  return DeviceImpl::sdReady();
+#endif
 }
 
 fs::FS& sdFS() {
