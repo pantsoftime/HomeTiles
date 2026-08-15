@@ -265,8 +265,8 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
       lv_label_set_long_mode(humidity_label, LV_LABEL_LONG_CLIP);
       lv_obj_set_width(humidity_label, LV_PCT(100));
       lv_obj_set_style_text_align(humidity_label, LV_TEXT_ALIGN_CENTER, 0);
-      // Same anchor the sensor tile's caption uses, so Weather lines up with
-      // Outside/Basement rather than sitting lower.
+      // Same anchor the sensor tile's caption uses, so a Weather tile lines up
+      // with neighbouring sensor tiles rather than sitting lower.
       lv_obj_align(humidity_label, LV_ALIGN_CENTER, 0, tile_layout::scale(48));
       lv_label_set_text(humidity_label, "");
       enable_bubble(humidity_label);

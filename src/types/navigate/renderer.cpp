@@ -92,7 +92,8 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   bool has_title = tile.title.length() > 0;
   // Optionaler Live-Wert: Ordner-Kacheln legen ihr Navigationsziel in
   // key_code/key_modifier ab, sensor_entity ist daher frei und wird hier fuer
-  // eine mitlaufende Sensor-Anzeige genutzt (z.B. "Aircraft" + Anzahl).
+  // eine mitlaufende Sensor-Anzeige genutzt (z.B. ein Ordner, der zusaetzlich
+  // eine Anzahl oder einen Messwert aus seinem Inhalt zeigt).
   bool has_value = tile.sensor_entity.length() > 0 &&
                    grid_type != GridType::SCREENSAVER;
 
@@ -108,9 +109,9 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       // Icon und Wert bleiben dort, wo sie immer sassen. Wert und Titel klebten
       // optisch aneinander, aber der Platz dafuer liegt UNTER dem Titel (rund
       // 23 px ungenutzt am unteren Rand), nicht ueber dem Wert: den Wert nach
-      // oben zu ziehen hat die Kacheln mit kurzem Wert -- Home, Cameras,
-      // Aircraft -- sichtbar aus der Mitte gehoben, ohne dass sie das Problem
-      // ueberhaupt hatten. Nur der Titel wandert deshalb nach unten.
+      // oben zu ziehen hat Kacheln mit kurzem Wert sichtbar aus der Mitte
+      // gehoben, obwohl sie das Problem ueberhaupt nicht hatten. Nur der Titel
+      // wandert deshalb nach unten.
       if (has_value) {
         lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                      tile_layout::scale_i16(-48));
