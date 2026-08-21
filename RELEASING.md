@@ -14,25 +14,25 @@ You never upload binaries by hand — you only bump the version and push a tag.
 git add version.txt
 git commit -m "Release v0.6.5"
 git tag v0.6.5
-git push --follow-tags
+git push --atomic origin master refs/tags/v0.6.5
 ```
 
 That's it. The action then:
 
-1. Builds all nine release targets with the pinned toolchain (ESP32 core +
+1. Builds all twelve release targets with the pinned toolchain (ESP32 core +
    libraries, see workflow `env`). Device names in CI identify the exact
    hardware profile; concrete validation notes belong in the release notes.
 2. Verifies that the tag matches `FW_VERSION` in `version.txt` — a mismatch
    fails the build on purpose.
 3. Verifies the device descriptor embedded in each binary.
 4. Creates the GitHub release with auto-generated notes and uploads all
-   18 binaries (`<device>.bin` for OTA + `<device>_factory.bin` for first flash).
+   24 binaries (`<device>.bin` for OTA + `<device>_factory.bin` for first flash).
 
-After all 18 assets were uploaded successfully, the release job explicitly
+After all 24 assets were uploaded successfully, the release job explicitly
 dispatches the documentation workflow for the release tag. This explicit
 `workflow_dispatch` is required because GitHub suppresses ordinary follow-up
 workflow events created with `GITHUB_TOKEN`. The documentation workflow
-validates the installer device/asset contract, downloads the same 18 published
+validates the installer device/asset contract, downloads the same 24 published
 release assets, verifies their GitHub SHA-256 digests, and places them in the
 generated documentation site under `firmware/latest/`. Normal documentation
 changes pushed to `master` still deploy through the workflow's filtered `push`
@@ -55,6 +55,16 @@ The checked-in release notes are not copied into the GitHub release
 automatically. After the workflow succeeds, replace the generated GitHub text
 with the matching `docs/releases/vX.Y.Z.md` content and keep the asset list.
 
+Keep every release note in this order:
+
+1. One short sentence describing what the release changes. Do not start with
+   update instructions.
+2. `## Highlights` with concise user-visible changes.
+3. `## Update Notes` with the required Bridge version and image guidance.
+4. `## Hardware Confirmed`.
+5. `## Pending Hardware Validation`.
+6. Credits and the full changelog link.
+
 The release notes must keep **hardware-confirmed** devices and devices with
 **pending hardware validation** in separate sections. A successful CI compile
 does not by itself prove display, touch, storage, networking, or OTA behavior.
@@ -76,7 +86,7 @@ release is published (GitHub CDN propagation can add a few minutes).
   edit them *after* the workflow finishes (web UI or `gh release edit`).
 - **Keep target-specific networking paths separated.** All published P4
   release targets use the checked-in a8204 ESP-Hosted baseline; the ESP32-S3
-  target uses native WiFi. CI verifies the expected markers before packaging.
+  targets use native WiFi. CI verifies the expected markers before packaging.
 
 ## Preparing a candidate without releasing
 

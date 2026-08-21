@@ -1,4 +1,6 @@
 #include "src/ui/image_screensaver.h"
+#include "src/ui/pin_popup.h"
+#include "src/ui/ui_manager.h"
 
 #include <Arduino.h>
 #include <FS.h>
@@ -54,7 +56,7 @@ constexpr uint16_t kImageRadius =
 // lassen. Sonst kann ein gleichzeitig faelliger Decode/Composite-Durchlauf den
 // Loop blockieren, bevor LVGL die Switch-Aenderung auf das Panel geflusht hat.
 constexpr uint32_t kInteractionSettleBeforeSlideMs = 1500;
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
 constexpr uint32_t kFailedWallpaperRetryMs = 60000;
 uint32_t g_wallpaper_retry_after_ms[kMaxScreensaverWallpapers]{};
 #endif
@@ -258,7 +260,7 @@ bool is_jpeg(const uint8_t* data, size_t len) {
 // --- Datei von SD in einen PSRAM-Puffer lesen (chunked) ---
 uint8_t* read_wallpaper_file(const String& file_name, size_t& out_len) {
   out_len = 0;
-  if (!Device::sdReady()) {
+  if (!Device::sdReadyCached()) {
     Serial.println("[Screensaver] microSD nicht bereit");
     return nullptr;
   }
@@ -562,7 +564,7 @@ uint16_t blend_swapped_rgb565_with_black(uint16_t swapped, uint8_t coverage) {
   return static_cast<uint16_t>((blended >> 8) | (blended << 8));
 }
 
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
 struct S3DirectJpegCtx {
   const uint8_t* data = nullptr;
   size_t len = 0;
@@ -891,7 +893,7 @@ lv_image_dsc_t* decode_wallpaper_to_size(const String& file_name,
   const uint32_t decode_started_ms = millis();
   uint16_t w = 0;
   uint16_t h = 0;
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   lv_image_dsc_t* dsc = s3_decode_jpeg_direct_cover(
       file, len, target_w, target_h, focus_x, focus_y, zoom, w, h);
   const uint32_t decode_ms = millis() - decode_started_ms;
@@ -998,13 +1000,13 @@ bool is_wallpaper_file(const String& file_name) {
 // die Fallback-Suche ueberspringen (from_config waere trotzdem true) und
 // direkt scheitern, obwohl andere gueltige Bilder auf der Karte liegen.
 bool sd_wallpaper_file_exists(const String& file_name) {
-  if (!is_wallpaper_file(file_name) || !Device::sdReady()) return false;
+  if (!is_wallpaper_file(file_name) || !Device::sdReadyCached()) return false;
   return Device::sdFS().exists(String(kImageDir) + "/" + file_name) ||
          Device::sdFS().exists(String(kLegacyWallpaperDir) + "/" + file_name);
 }
 
 bool find_first_sd_wallpaper(ScreensaverWallpaperConfig& out) {
-  if (!Device::sdReady()) return false;
+  if (!Device::sdReadyCached()) return false;
   const char* directories[] = {kImageDir, kLegacyWallpaperDir};
   for (const char* directory : directories) {
     fs::File dir = Device::sdFS().open(directory, FILE_READ);
@@ -1146,7 +1148,7 @@ bool apply_wallpaper(ScreensaverState* st, int index, bool allow_fallback,
     return false;
   }
 
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   const uint32_t retry_now_ms = millis();
   if (!allow_disabled && index >= 0 &&
       static_cast<size_t>(index) < kMaxScreensaverWallpapers &&
@@ -1171,14 +1173,14 @@ bool apply_wallpaper(ScreensaverState* st, int index, bool allow_fallback,
   lv_image_dsc_t* dsc = get_or_decode_cached(
       wallpaper, Device::kScreenWidth, Device::kScreenHeight, st->image);
   if (!dsc) {
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
     if (index >= 0 && static_cast<size_t>(index) < kMaxScreensaverWallpapers) {
       g_wallpaper_retry_after_ms[index] = millis() + kFailedWallpaperRetryMs;
     }
 #endif
     return false;
   }
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   if (index >= 0 && static_cast<size_t>(index) < kMaxScreensaverWallpapers) {
     g_wallpaper_retry_after_ms[index] = 0;
   }
@@ -1211,14 +1213,14 @@ bool apply_wallpaper(ScreensaverState* st, int index, bool allow_fallback,
   if (!preview_ok) {
     // Falls der geraetespezifische Vollbildpfad nicht verfuegbar ist, zeichnet
     // LVGL das neue Bild weiterhin sicher wie bisher selbst.
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
     const bool atomic_redraw =
         DeviceImpl::displayBeginAtomicFrame("screensaver");
 #endif
     GuitionS3Diagnostics::beginSlideshowPresentation(
         wallpaper.file_name.c_str(), cache_hit, Device::kScreenWidth,
         Device::kScreenHeight, dsc->header.stride);
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
     // The inactive framebuffer deliberately isn't copied first: that large
     // PSRAM read/write burst can starve RGB EDMA. Invalidate the whole screen
     // so LVGL fully replaces it before the atomic swap instead.
@@ -1547,11 +1549,11 @@ void global_preload_timer_cb(lv_timer_t*) {
 }  // namespace
 
 void preload_image_screensaver() {
+  if (!screensaverConfig.get().use_wallpapers) return;
   ScreensaverWallpaperConfig wallpaper;
   const int index = first_enabled_wallpaper();
   if (index >= 0) wallpaper = screensaverConfig.get().wallpapers[index];
-  else if (!screensaverConfig.get().use_wallpapers ||
-           !find_first_sd_wallpaper(wallpaper)) return;
+  else if (!find_first_sd_wallpaper(wallpaper)) return;
   g_preload_wallpaper = wallpaper;
   if (g_preload_timer) lv_timer_delete(g_preload_timer);
   g_preload_timer = lv_timer_create(global_preload_timer_cb, 4000, nullptr);
@@ -1564,6 +1566,7 @@ void show_image_screensaver() {
   // dieses Abbaus waere unnoetig und macht Widget-/Cache-Lebenszeiten schwer
   // vorhersehbar.
   if (g_state || powerManager.isInSleep()) return;
+  uiManager.lockProtectedAccess();
   const uint32_t started_ms = millis();
   Serial.printf("[Screensaver] Aufbau startet | idle=%u ms | dim=%u%%\n",
                 static_cast<unsigned>(
@@ -1573,7 +1576,7 @@ void show_image_screensaver() {
   ScreensaverState* st = new ScreensaverState();
   if (!st) return;
 
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   // Everything created below becomes visible in one completed RGB frame.
   // Arming this before building the overlay also covers the no-wallpaper and
   // decode-failure paths, which otherwise expose LVGL's partial render bands.
@@ -1612,11 +1615,17 @@ void show_image_screensaver() {
   // mit "--" zusammengesetzt und erst spaeter korrigiert.
   refresh_slot_values(st);
   const int wallpaper = first_enabled_wallpaper();
-  apply_wallpaper(st, wallpaper, true);
+  const bool wallpaper_visible = apply_wallpaper(st, wallpaper, true);
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  // The wallpaper path already presents the complete overlay through the
+  // fast full-frame path. Do the same for the black fallback so a missing SD
+  // card never leaves the first clock/tile frame to a slower banded redraw.
+  if (!wallpaper_visible) present_composited_screensaver_frame(st);
+#endif
   st->next_slot_refresh_ms = millis() + 1000U;
   st->timer = lv_timer_create(global_screensaver_timer_cb, 1000, st);
   apply_configured_screensaver_brightness();
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   if (atomic_show) lv_obj_invalidate(lv_screen_active());
 #endif
   Serial.printf("[Screensaver] Sichtbar nach %u ms\n",
@@ -1626,7 +1635,7 @@ void show_image_screensaver() {
 void hide_image_screensaver() {
   ScreensaverState* st = g_state;
   if (!st) return;
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   DeviceImpl::displayBeginAtomicFrame("screensaver-exit");
 #endif
   g_state = nullptr;
@@ -1682,7 +1691,7 @@ void image_screensaver_config_changed(const String& preview_wallpaper) {
   // Aus dem HTTP-Handler nur Flags setzen. Der LVGL-Timer aktualisiert das
   // bestehende Overlay synchron im LVGL-Kontext; dadurch gibt es weder einen
   // Overlay-Wechsel noch den alten Async-Delete/UAF-Pfad.
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   memset(g_wallpaper_retry_after_ms, 0,
          sizeof(g_wallpaper_retry_after_ms));
 #endif

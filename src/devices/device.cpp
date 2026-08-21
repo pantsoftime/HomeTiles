@@ -2,6 +2,12 @@
 
 namespace Device {
 
+namespace {
+
+bool g_sd_ready_cached = false;
+
+}  // namespace
+
 const Profile& profile() {
   return kProfile;
 }
@@ -44,7 +50,7 @@ void displayEndFullFramePreview() {
 
 bool ppaCooldownActive() {
 #if defined(DEVICE_WAVESHARE_TOUCH_LCD_X) || \
-    defined(DEVICE_GUITION_JC1060P470C)
+    defined(DEVICE_GUITION_JC1060P470C_FAMILY)
   return DeviceImpl::ppaCooldownActive();
 #else
   return false;
@@ -93,8 +99,8 @@ void displayWakeDark() {
 #if defined(DEVICE_WAVESHARE_TOUCH_LCD_X) || \
     defined(DEVICE_M5STACKS_TAB5) || \
     defined(DEVICE_GUITION_JC8012P4A1_FAMILY) || \
-    defined(DEVICE_GUITION_JC1060P470C) || \
-    defined(DEVICE_GUITION_ESP32_4848S040)
+    defined(DEVICE_GUITION_JC1060P470C_FAMILY) || \
+    defined(DEVICE_ESP32_S3_RGB_480)
   DeviceImpl::displayWakeDark();
 #else
   DeviceImpl::displayWake();
@@ -119,7 +125,8 @@ void prepareForRestart() {
 }
 
 bool initSDCard() {
-  return DeviceImpl::initSDCard();
+  g_sd_ready_cached = DeviceImpl::initSDCard();
+  return g_sd_ready_cached;
 }
 
 bool storageReady() {
@@ -131,26 +138,33 @@ fs::FS& storageFS() {
 }
 
 void storageWriteBegin() {
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   DeviceImpl::storageWriteBegin();
 #endif
 }
 
 void storageWriteEnd() {
-#if defined(DEVICE_GUITION_ESP32_4848S040)
+#if defined(DEVICE_ESP32_S3_RGB_480)
   DeviceImpl::storageWriteEnd();
 #endif
 }
 
 bool sdReady() {
-  return DeviceImpl::sdReady();
+  g_sd_ready_cached = DeviceImpl::sdReady();
+  return g_sd_ready_cached;
+}
+
+bool sdReadyCached() {
+  return g_sd_ready_cached;
 }
 
 bool sdWritable() {
-#if defined(DEVICE_GUITION_JC1060P470C)
-  return DeviceImpl::sdWritable();
+#if defined(DEVICE_GUITION_JC1060P470C_FAMILY)
+  const bool writable = DeviceImpl::sdWritable();
+  if (writable) g_sd_ready_cached = true;
+  return writable;
 #else
-  return DeviceImpl::sdReady();
+  return sdReady();
 #endif
 }
 
@@ -159,11 +173,16 @@ fs::FS& sdFS() {
 }
 
 bool suspendSDCardForNetworkTransition() {
-  return DeviceImpl::suspendSDCardForNetworkTransition();
+  const bool suspended = DeviceImpl::suspendSDCardForNetworkTransition();
+  // The storage backend is unavailable throughout the transition even when
+  // there was no mounted card to suspend.
+  g_sd_ready_cached = false;
+  return suspended;
 }
 
 bool resumeSDCardAfterNetworkTransition() {
-  return DeviceImpl::resumeSDCardAfterNetworkTransition();
+  g_sd_ready_cached = DeviceImpl::resumeSDCardAfterNetworkTransition();
+  return g_sd_ready_cached;
 }
 
 bool initLittleFS() {
