@@ -3,5 +3,10 @@
 //   2. git commit  ->  git tag vX.Y.Z  ->  git push --follow-tags
 // Wichtig: Der Build startet NUR beim Tag-Push, und der Tag muss exakt FW_VERSION entsprechen.
 // Fork line: upstream base + an extra patch digit (see README-FORK.md).
-// Upstream is on v0.6.7, so 0.6.7x sorts above it for the device's parseVersion().
-#define FW_VERSION "v0.6.71"
+//
+// Merge upstream RELEASE TAGS, not upstream/master. v0.6.81 was built from
+// master nine commits past the v0.6.8 tag and shipped unreleased work
+// including "Stabilize S3 updates, popups, and MQTT parsing"; every panel then
+// lost its MQTT connection roughly every three seconds (State=-5) and never
+// got its entity list back. This line is v0.6.8 exactly.
+#define FW_VERSION "v0.6.82"
