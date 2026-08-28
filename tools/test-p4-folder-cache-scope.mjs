@@ -43,7 +43,6 @@ if (!/#if defined\(CONFIG_IDF_TARGET_ESP32P4\)[\s\S]*?kMaxResidentFolderUiCaches
 const p4Profiles = [
   'tab5',
   'waveshare_b4',
-  'waveshare_4_3',
   'waveshare_7',
   'waveshare_7b',
   'waveshare_8',
