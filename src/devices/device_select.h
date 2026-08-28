@@ -6,6 +6,7 @@
 //
 #if !defined(HOMETILES_CI_TARGET)
 #define DEVICE_WAVESHARE_4B
+// #define DEVICE_WAVESHARE_TOUCH_LCD_4_3
 // #define DEVICE_WAVESHARE_TOUCH_LCD_7
 // #define DEVICE_WAVESHARE_TOUCH_LCD_7B
 // #define DEVICE_WAVESHARE_TOUCH_LCD_8
@@ -32,6 +33,7 @@
 #endif
 
 #if (defined(DEVICE_WAVESHARE_4B) + \
+     defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) + \
      defined(DEVICE_WAVESHARE_TOUCH_LCD_7) + \
      defined(DEVICE_WAVESHARE_TOUCH_LCD_7B) + \
      defined(DEVICE_WAVESHARE_TOUCH_LCD_8) + \
@@ -49,6 +51,7 @@
 #endif
 
 #if !defined(DEVICE_WAVESHARE_4B) && \
+    !defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) && \
     !defined(DEVICE_WAVESHARE_TOUCH_LCD_7) && \
     !defined(DEVICE_WAVESHARE_TOUCH_LCD_7B) && \
     !defined(DEVICE_WAVESHARE_TOUCH_LCD_8) && \
@@ -67,6 +70,7 @@
 #endif
 
 #if !defined(DEVICE_WAVESHARE_4B) && \
+    !defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) && \
     !defined(DEVICE_WAVESHARE_TOUCH_LCD_7) && \
     !defined(DEVICE_WAVESHARE_TOUCH_LCD_7B) && \
     !defined(DEVICE_WAVESHARE_TOUCH_LCD_8) && \
@@ -91,11 +95,11 @@
 #define DEVICE_GUITION_JC8012P4A1_FAMILY
 #endif
 
-// The 7", 7B, 8" and 10.1" products share the same
-// ESP32-P4-WIFI6-Touch-LCD-X
-// base board, I2C/touch, backlight, SDMMC and ESP-Hosted wiring. Only the
-// panel controller/timing and logical layout differ.
-#if defined(DEVICE_WAVESHARE_TOUCH_LCD_7) || \
+// These Waveshare P4 products share the same I2C/touch, backlight, SDMMC and
+// ESP-Hosted pin contracts. Each exact panel keeps its own controller, timing,
+// layout and device driver.
+#if defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_7) || \
     defined(DEVICE_WAVESHARE_TOUCH_LCD_7B) || \
     defined(DEVICE_WAVESHARE_TOUCH_LCD_8) || \
     defined(DEVICE_WAVESHARE_TOUCH_LCD_10_1) || \
@@ -110,6 +114,21 @@
 #if defined(DEVICE_GUITION_JC1060P470C) || \
     defined(DEVICE_GUITION_JC1060P470C_V2)
 #define DEVICE_GUITION_JC1060P470C_FAMILY
+#endif
+
+// Native ESP-IDF MIPI-DSI profiles share the same two-framebuffer camera
+// presenter. M5GFX Tab5 and Arduino_GFX B4 intentionally keep their library
+// owned display backends.
+#if defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_7) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_7B) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_8) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_10_1) || \
+    defined(DEVICE_GUITION_JC8012P4A1) || \
+    defined(DEVICE_GUITION_JC8012P4A1_V2) || \
+    defined(DEVICE_GUITION_JC1060P470C) || \
+    defined(DEVICE_GUITION_JC1060P470C_V2)
+#define DEVICE_P4_IDF_DSI
 #endif
 
 // The two 480x480 ESP32-S3 RGB boards share only proven S3 framebuffer,
@@ -127,6 +146,7 @@
 #endif
 
 #if defined(DEVICE_LAYOUT_TEST_480X480) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) || \
     defined(DEVICE_GUITION_ESP32_4848S040) || \
     defined(DEVICE_WAVESHARE_S3_TOUCH_LCD_4B)
 #define DEVICE_LAYOUT_480X480

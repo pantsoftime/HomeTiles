@@ -127,36 +127,38 @@ class PsramStageBuffer {
   size_t capacity_ = 0;
 };
 
-// Der vorgebaute ESP32-P4-Arduino-Core ist mit
-// CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC gebaut. Dadurch landen selbst die grossen,
-// nur fuer einen HTTPS-Handshake benoetigten mbedTLS-Bloecke im knappen
-// internen RAM, obwohl reichlich PSRAM frei ist. Fuer den kurzen
-// Versions-Check darf mbedTLS deshalb PSRAM bevorzugen. Der Fallback auf den
-// normalen ESP-Allocator bleibt erhalten, falls eine Allokation aus PSRAM
-// wider Erwarten nicht moeglich ist.
+// P4 needs its scarce internal RAM kept free during HTTPS, so it retains the
+// established PSRAM-first policy. On S3 RGB boards, TLS and the continuously
+// scanned framebuffers would otherwise compete on the same PSRAM bus; prefer
+// internal RAM there and retain PSRAM only as an allocation fallback.
 void* checkTlsInternalCalloc(size_t count, size_t size) {
   return heap_caps_calloc(count, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
-void* checkTlsPsramCalloc(size_t count, size_t size) {
+void* checkTlsPreferredCalloc(size_t count, size_t size) {
+#if defined(DEVICE_ESP32_S3_RGB_480)
+  void* ptr = checkTlsInternalCalloc(count, size);
+  return ptr ? ptr : heap_caps_calloc(
+                         count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
   void* ptr = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   return ptr ? ptr : checkTlsInternalCalloc(count, size);
+#endif
 }
 
 void checkTlsHeapFree(void* ptr) {
   heap_caps_free(ptr);
 }
 
-class ScopedCheckTlsPsramAllocator {
+class ScopedCheckTlsAllocator {
  public:
-  ScopedCheckTlsPsramAllocator()
-      : active_(mbedtls_platform_set_calloc_free(checkTlsPsramCalloc,
+  ScopedCheckTlsAllocator()
+      : active_(mbedtls_platform_set_calloc_free(checkTlsPreferredCalloc,
                                                  checkTlsHeapFree) == 0) {}
 
-  ~ScopedCheckTlsPsramAllocator() {
+  ~ScopedCheckTlsAllocator() {
     if (active_) {
-      // Entspricht CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC des verwendeten
-      // Arduino-Cores.
+      // This matches CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC in the selected cores.
       mbedtls_platform_set_calloc_free(checkTlsInternalCalloc,
                                        checkTlsHeapFree);
     }
@@ -284,6 +286,30 @@ String legacyDeviceSlug() {
   String slug = Device::profile().key;
   slug.replace('_', '-');
   return slug;
+}
+
+bool releaseAssetDeviceKey(String& key_out, String& error_out) {
+  key_out = Device::profile().key;
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  const uint16_t chip_revision = ESP.getChipRevision();
+  const auto& silicon = firmware_meta::currentSiliconRevisionDescriptor();
+  if (chip_revision < silicon.minimum_revision ||
+      chip_revision > silicon.maximum_revision) {
+    error_out = String("unsupported ESP32-P4 revision ") + chip_revision;
+    return false;
+  }
+#if defined(DEVICE_WAVESHARE_TOUCH_LCD_7B)
+  if (strcmp(silicon.variant, "rev3_1") == 0) {
+    key_out = "waveshare_touch_lcd_7b_rev3_1";
+  } else if (strcmp(silicon.variant, "pre_v3") != 0) {
+    error_out = String("unknown firmware silicon variant ") + silicon.variant;
+    return false;
+  }
+#endif
+  Serial.printf("[Update] ESP32-P4 silicon revision=%u variant=%s asset=%s\n",
+                static_cast<unsigned>(chip_revision), silicon.variant, key_out.c_str());
+#endif
+  return true;
 }
 
 void logCheckNetworkState(const char* label, const String& url) {
@@ -659,14 +685,18 @@ CheckResult checkLatest() {
     return result;
   }
 
-  // Der Guard lebt laenger als NetworkClientSecure und HTTPClient. Deren
-  // Destruktoren geben daher alle PSRAM-basierten TLS-Bloecke frei, bevor der
-  // globale mbedTLS-Allocator wieder auf den Core-Standard zurueckgestellt
-  // wird. Beide Free-Funktionen verwenden den ESP-Heap und koennen sowohl
-  // interne als auch externe Bloecke freigeben.
-  ScopedCheckTlsPsramAllocator tls_allocator;
-  Serial.printf("[Update] Check: TLS-Allokationen %s\n",
-                tls_allocator.active() ? "PSRAM bevorzugt" : "Core-Standard");
+  // The guard outlives NetworkClientSecure and HTTPClient, so every temporary
+  // TLS block is released before the global allocator is restored.
+  ScopedCheckTlsAllocator tls_allocator;
+#if defined(DEVICE_ESP32_S3_RGB_480)
+  constexpr const char* kTlsPreference =
+      "internal RAM first, PSRAM fallback";
+#else
+  constexpr const char* kTlsPreference =
+      "PSRAM first, internal RAM fallback";
+#endif
+  Serial.printf("[Update] Check: TLS allocator %s\n",
+                tls_allocator.active() ? kTlsPreference : "core default");
 
   // GitHub- und CDN-Zertifikate rotieren regelmaessig; eine eingebrannte
   // CA-Liste waere beim ersten Wechsel tot. Fuer Firmware von der eigenen
@@ -772,8 +802,12 @@ bool install(const char* tag, ProgressFn progress, String& error_out) {
   // Evtl. haengengebliebenen Web-OTA-Rest aufraeumen
   if (Update.isRunning()) Update.abort();
 
+  String asset_device_key;
+  if (!releaseAssetDeviceKey(asset_device_key, error_out)) {
+    return false;
+  }
   String url = releaseDownloadUrl(
-      tag, String("hometiles_") + tag + "_" + Device::profile().key + ".bin");
+      tag, String("hometiles_") + tag + "_" + asset_device_key + ".bin");
   Serial.printf("[Update] Lade %s\n", url.c_str());
 #if HOMETILES_GUITION_S3_DIAGNOSTICS_ACTIVE
   Serial.printf(
@@ -818,20 +852,31 @@ bool install(const char* tag, ProgressFn progress, String& error_out) {
                       storeHeadBytes, &head_ctx, total_sz, error_out,
                       &resolved_asset_url)) {
     const String first_error = error_out;
-    const String legacy_url = releaseDownloadUrl(
-        tag,
-        String("esp32-p4-homeassistant-display-") + tag + "-" +
-            legacyDeviceSlug() + "-update.bin");
+    const bool allow_legacy_fallback =
+        asset_device_key == Device::profile().key;
+    const String legacy_url =
+        allow_legacy_fallback
+            ? releaseDownloadUrl(
+                  tag,
+                  String("esp32-p4-homeassistant-display-") + tag + "-" +
+                      legacyDeviceSlug() + "-update.bin")
+            : String();
     memset(image_head, 0, sizeof(image_head));
     head_ctx.len = 0;
     total_sz = 0;
     error_out = "";
     resolved_asset_url = "";
-    Serial.printf("[Update] Asset nicht gefunden/lesbar (%s), versuche %s\n",
-                  first_error.c_str(), legacy_url.c_str());
-    if (!fetchHttpRange(legacy_url, 0, sizeof(image_head) - 1, net_buf,
-                        kInstallReadChunk, storeHeadBytes, &head_ctx, total_sz,
-                        error_out, &resolved_asset_url)) {
+    if (!allow_legacy_fallback) {
+      error_out = first_error;
+      failed = true;
+    } else {
+      Serial.printf("[Update] Asset unavailable (%s), trying %s\n",
+                    first_error.c_str(), legacy_url.c_str());
+    }
+    if (!failed && !fetchHttpRange(legacy_url, 0, sizeof(image_head) - 1,
+                                   net_buf, kInstallReadChunk, storeHeadBytes,
+                                   &head_ctx, total_sz, error_out,
+                                   &resolved_asset_url)) {
 #if defined(DEVICE_ESP32_S3_RGB_480)
       g_install_retryable =
           isRetryableTransportError(first_error) ||
@@ -839,7 +884,7 @@ bool install(const char* tag, ProgressFn progress, String& error_out) {
 #endif
       error_out = first_error + "; fallback: " + error_out;
       failed = true;
-    } else {
+    } else if (!failed) {
       url = legacy_url;
     }
   }
@@ -861,6 +906,8 @@ bool install(const char* tag, ProgressFn progress, String& error_out) {
 
   if (!failed) {
     firmware_meta::DeviceDescriptor incoming_desc{};
+    firmware_meta::SiliconRevisionDescriptor incoming_silicon{};
+    bool accepted_legacy_silicon = false;
     if (!firmware_meta::parseDeviceDescriptorFromImage(
             image_head, head_ctx.len, incoming_desc)) {
       error_out = "firmware metadata missing or invalid";
@@ -876,6 +923,40 @@ bool install(const char* tag, ProgressFn progress, String& error_out) {
                   incoming_desc.project_key + ", expected " +
                   firmware_meta::currentProjectKey();
       failed = true;
+    } else if (!firmware_meta::imageMatchesCurrentSiliconVariant(
+                   image_head, head_ctx.len, &accepted_legacy_silicon)) {
+      if (firmware_meta::parseSiliconRevisionDescriptorFromImage(
+              image_head, head_ctx.len, incoming_silicon)) {
+        if (firmware_meta::matchesCurrentSiliconVariant(
+                incoming_silicon.variant)) {
+          if (!firmware_meta::matchesCurrentSiliconRevisionRange(
+                  incoming_silicon.minimum_revision,
+                  incoming_silicon.maximum_revision)) {
+            const auto& current_silicon =
+                firmware_meta::currentSiliconRevisionDescriptor();
+            error_out = String("firmware silicon range ") +
+                        incoming_silicon.minimum_revision + "-" +
+                        incoming_silicon.maximum_revision +
+                        " exceeds supported range " +
+                        current_silicon.minimum_revision + "-" +
+                        current_silicon.maximum_revision;
+          } else {
+            error_out = String("firmware silicon range ") +
+                        incoming_silicon.minimum_revision + "-" +
+                        incoming_silicon.maximum_revision +
+                        " does not support chip revision " +
+                        ESP.getChipRevision();
+          }
+        } else {
+          error_out = String("silicon variant mismatch: got ") +
+                      incoming_silicon.variant + ", expected " +
+                      firmware_meta::currentSiliconVariant();
+        }
+      } else {
+        error_out = String("legacy firmware is not safe for silicon variant ") +
+                    firmware_meta::currentSiliconVariant();
+      }
+      failed = true;
 #if HOMETILES_GUITION_S3_DIAGNOSTICS_ACTIVE
     } else {
       Serial.printf(
@@ -884,6 +965,11 @@ bool install(const char* tag, ProgressFn progress, String& error_out) {
           static_cast<unsigned>(total_sz), incoming_desc.device_key,
           incoming_desc.project_key);
 #endif
+    }
+    if (!failed && accepted_legacy_silicon) {
+      Serial.printf(
+          "[Update] Accepted legacy firmware metadata for silicon variant %s\n",
+          firmware_meta::currentSiliconVariant());
     }
   }
 
