@@ -5,6 +5,12 @@
 #include "src/tiles/mdi_icons.h"
 #include "src/types/climate/visuals.h"
 #include "src/types/climate/renderer.h"
+#include "src/types/sensor/renderer.h"
+#include "src/ui/tab_tiles_unified.h"  // tiles_get_cached_entity_payload
+
+// Defined further down, next to the sensor tile's caption handling; the climate
+// tile's caption uses it too and is compiled first.
+static void caption_append_unit(String& text, const String& unit);
 #include "src/ui/ui_manager.h"
 #include "src/ui/light_popup.h"
 #include "src/ui/sensor_popup.h"
@@ -2267,6 +2273,28 @@ static void update_climate_tile_state(
                    "C";
     lv_label_set_text(widget.value_label, value.c_str());
   }
+
+  // Caption entity, read from the bridge snapshot -- same source and cadence
+  // the sensor tile's caption uses.
+  if (widget.caption_label) {
+    const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
+    String text;
+    if (tile && tile->key_macro.length()) {
+      String cv;
+      if (!tiles_get_cached_entity_payload(tile->key_macro.c_str(), cv)) {
+        cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+      }
+      cv.trim();
+      if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
+          !cv.equalsIgnoreCase("unavailable")) {
+        text = cv;
+        caption_append_unit(text,
+                            haBridgeConfig.findSensorUnit(tile->key_macro));
+      }
+    }
+    lv_label_set_text(widget.caption_label, text.c_str());
+  }
+
   refresh_climate_tile_content(grid_type, grid_index, state);
   if (widget.icon_label) {
     if (widget.dynamic_icon) {
@@ -2397,6 +2425,32 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
     extract_json_string_field(json, "temperature_unit", unit);
   }
   decode_basic_json_escapes(unit);
+
+  // Humidity rides along as an attribute of the weather entity, so the caption
+  // costs nothing extra on the wire. Hidden rather than blanked when absent, so
+  // a provider that omits it does not leave a gap under the temperature.
+  if (widgets.humidity_label) {
+    float humidity = 0.0f;
+    const bool has_humidity =
+        extract_json_number_or_string_field(json, "humidity", humidity);
+    if (has_humidity) {
+      String text = String(static_cast<int>(humidity + 0.5f));
+      text += "% RH";
+      lv_label_set_text(widgets.humidity_label, text.c_str());
+      lv_obj_clear_flag(widgets.humidity_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(widgets.humidity_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    // Lift the value by the same amount a sensor tile lifts its headline when
+    // a caption appears, so the two line up; drop back when humidity is absent.
+    lv_obj_t* value_row =
+        widgets.temp_label ? lv_obj_get_parent(widgets.temp_label) : nullptr;
+    if (value_row) {
+      lv_obj_align(value_row, LV_ALIGN_TOP_MID, 0,
+                   widgets.value_row_base_y -
+                       (has_humidity ? tile_layout::scale(14) : 0));
+    }
+  }
 
   if (widgets.icon_label) {
     if (icon_name.length()) {
@@ -4782,6 +4836,15 @@ lv_obj_t* render_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint
   return render_empty_tile(parent, col, row);
 }
 
+// Join a caption value to its unit. A percent sign is set tight against the
+// number ("54.9% RH"), matching the weather tile's humidity line and normal
+// typographic practice; everything else keeps the separating space ("77.2 °F").
+static void caption_append_unit(String& text, const String& unit) {
+  if (!unit.length()) return;
+  if (unit[0] != '%') text += " ";
+  text += unit;
+}
+
 void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char* value, const char* unit) {
   if (grid_index >= TILES_PER_GRID) {
     return;
@@ -4831,5 +4894,63 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
     combined += " ";
     combined += unit;
   }
-  lv_label_set_text(value_label, combined.c_str());
+  const Tile* tile = tile_renderer_get_tile_config(grid_type, grid_index);
+  lv_obj_t* subtitle_label = target[grid_index].subtitle_label;
+
+  const bool has_newline = combined.indexOf('\n') >= 0;
+  bool caption = false;
+  String caption_text;
+
+  if (tile && subtitle_label && sensor_tile_has_caption_entity(*tile)) {
+    // Caption comes from its own entity, so the displayed value stays a plain
+    // number and its history graph keeps working. The value is read from the
+    // bridge's sensor snapshot rather than a dedicated subscription -- the
+    // snapshot already carries every configured sensor, and a humidity or
+    // net-power caption does not need sub-second freshness.
+    // Prefer the live cache; the bridge snapshot is only the cold-start seed.
+    String cv;
+    if (!tiles_get_cached_entity_payload(tile->key_macro.c_str(), cv)) {
+      cv = haBridgeConfig.findSensorInitialValue(tile->key_macro);
+    }
+    cv.trim();
+    if (cv.length() && !cv.equalsIgnoreCase("unknown") &&
+        !cv.equalsIgnoreCase("unavailable")) {
+      caption_text = cv;
+      caption_append_unit(caption_text,
+                          haBridgeConfig.findSensorUnit(tile->key_macro));
+      caption = true;
+    }
+    lv_label_set_text(value_label, combined.c_str());
+  } else if (tile && subtitle_label && has_newline &&
+             sensor_tile_caption_mode(*tile)) {
+    // Otherwise a two-line payload splits across the two labels:
+    // "82.2 °F\n55 %" becomes a headline with a small caption below it.
+    String head;
+    sensor_split_subtitle(combined, head, caption_text);
+    lv_label_set_text(value_label, head.c_str());
+    caption = true;
+  } else {
+    lv_label_set_text(value_label, combined.c_str());
+  }
+
+  if (subtitle_label) {
+    lv_label_set_text(subtitle_label, caption ? caption_text.c_str() : "");
+  }
+
+  // Re-decide the layout from the text we just set. Whether a value is a single
+  // number or a multi-line block is a property of the value, not of the tile,
+  // and the render-time guess is made from the entity cache -- which is still
+  // empty on a cold boot, so a table would otherwise stay stuck in the centred
+  // single-line layout until the tile happened to be rebuilt.
+  // Restricted to real sensor tiles on purpose: energy and folder tiles also
+  // register a value_label in this same array but position it with their own
+  // geometry, so re-aligning theirs here would move it to the wrong place.
+  if (tile && tile->type == TILE_SENSOR) {
+    sensor_apply_value_layout(value_label,
+                              *tile,
+                              has_newline,
+                              target[grid_index].gauge != nullptr,
+                              target[grid_index].chart != nullptr,
+                              caption);
+  }
 }

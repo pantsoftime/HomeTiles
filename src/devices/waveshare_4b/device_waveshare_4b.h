@@ -19,7 +19,15 @@ inline constexpr Device::Profile kProfile{
     166,
     166,
     4,
-    1,
+    // backlight_input_min. This panel's backlight driver produces no visible
+    // light below ~121. Upstream now routes the display slider, the screensaver
+    // and the MQTT command through Device::backlightRawFromPercent(), so this
+    // single value defines the bottom of every brightness percentage; 1 % maps
+    // to raw 121 and nothing can ask the panel for an unlit backlight.
+    // It was 1 before, which gave the screensaver its own much lower scale:
+    // 25 % resolved to raw 63, and the overlay rendered correctly but sat
+    // completely unlit, looking exactly like the display had gone to sleep.
+    121,
     Device::RotationStepMode::QuarterTurns,
     0,
     2,

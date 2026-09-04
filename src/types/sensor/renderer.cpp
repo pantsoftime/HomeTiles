@@ -5,7 +5,97 @@
 #include "src/tiles/mdi_icons.h"
 #include "src/network/ha_bridge_config.h"
 #include "src/ui/sensor_popup.h"
+#include "src/ui/ui_manager.h"  // uiManager.switchToFolder()
+#include "src/ui/tab_tiles_unified.h"
 #include <Arduino.h>
+
+// True when the entity's current value spans multiple lines. The cache is the
+// same source the value label is filled from, so alignment and content agree.
+// Only a hint at render time: on a cold boot the tile is built before any state
+// has arrived, so the cache is empty and this returns false for what will turn
+// out to be a table. update_sensor_tile_value() corrects it from the real text.
+static bool value_is_multiline(const Tile& tile) {
+  String payload;
+  if (!tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) return false;
+  return payload.indexOf('\n') >= 0;
+}
+
+void sensor_split_subtitle(const String& combined, String& head, String& tail) {
+  const int nl = combined.indexOf('\n');
+  if (nl < 0) {
+    head = combined;
+    tail = "";
+    return;
+  }
+  head = combined.substring(0, nl);
+  tail = combined.substring(nl + 1);
+  head.trim();
+  tail.trim();
+}
+
+void sensor_apply_value_layout(lv_obj_t* value_label,
+                               const Tile& tile,
+                               bool multiline,
+                               bool gauge_enabled,
+                               bool graph_enabled,
+                               bool has_caption) {
+  if (!value_label) return;
+
+  // In caption mode the two halves live in separate labels, so the value label
+  // itself is single-line and stays centred.
+  if (has_caption) multiline = false;
+
+  // A multi-line value is a block of rows (a small table), and centring each
+  // row independently makes it hard to scan. Left-align those; single-line
+  // values keep the original centred look.
+  lv_obj_set_style_text_align(
+      value_label, multiline ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
+
+  // Get value y offset from tile settings (with defaults and clamping)
+  int16_t value_y_offset = tile.sensor_value_y_offset;
+  if (value_y_offset < -100) value_y_offset = -100;
+  if (value_y_offset > 200) value_y_offset = 200;
+  value_y_offset = tile_layout::scale_i16(value_y_offset);
+
+  if (gauge_enabled) {
+    lv_obj_align(value_label, LV_ALIGN_BOTTOM_MID, 0,
+                 tile_layout::scale(12) + value_y_offset);
+  } else if (graph_enabled) {
+    // Value above graph: center vertically in upper area
+    lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(-20) + value_y_offset);
+  } else if (multiline) {
+    // Anchor a multi-line block to the top. Centring it vertically moves its
+    // first row every time the number of rows changes, so a growing/shrinking
+    // table appears to drift up and down - and a tall one collides with the
+    // title. Top alignment keeps the first row in a fixed place; the offset
+    // clears the title, and sensor_value_y_offset still tunes it.
+    // 16 = the old 6, plus the 10px of card padding that was given back above,
+    // so the block starts at the same place on screen as before; the extra
+    // width is taken on the right where the table has room for it.
+    lv_obj_align(value_label, LV_ALIGN_TOP_LEFT,
+                 tile_layout::scale_480(16),
+                 tile_layout::scale(36) + value_y_offset);
+  } else if (has_caption) {
+    // Lift the headline to make room for the small line underneath, the same
+    // stacking the clock tile uses for time over date. Only when a caption is
+    // actually being shown -- a single-line value keeps the normal position.
+    lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(14) + value_y_offset);
+  } else {
+    lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(28) + value_y_offset);
+  }
+}
+
+// Y position of the small second line, kept next to the headline offsets above
+// so the two stay in step if either is retuned.
+lv_coord_t sensor_subtitle_y(const Tile& tile) {
+  int16_t value_y_offset = tile.sensor_value_y_offset;
+  if (value_y_offset < -100) value_y_offset = -100;
+  if (value_y_offset > 200) value_y_offset = 200;
+  return tile_layout::scale(48) + tile_layout::scale_i16(value_y_offset);
+}
 
 static const lv_font_t* get_sensor_value_font(const Tile& tile) {
   switch (tile.sensor_value_font) {
@@ -17,6 +107,14 @@ static const lv_font_t* get_sensor_value_font(const Tile& tile) {
       return tile_layout::content_font_32();
     case 4:
       return tile_layout::content_font_40();
+    case 5:
+      return tile_layout::mono_font_20();
+    case 6:
+      return tile_layout::mono_font_24();
+    case 7:
+      return tile_layout::mono_bold_font_20();
+    case 8:
+      return tile_layout::mono_bold_font_24();
     default:
       return FONT_VALUE;
   }
@@ -79,7 +177,14 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
-  lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
+  // 20px each side left the value label about 110px on a 4-wide grid, which is
+  // under what a wide-glyph value like "48.0 kWh" needs at the default font --
+  // so whether a reading wrapped depended on which digits it happened to
+  // contain ("12.6 kWh" fits, "48.0 kWh" did not). Reclaiming 10px per side
+  // buys a full character without touching the font size. The multi-line
+  // branch in sensor_apply_value_layout() compensates so the table block's
+  // left edge does not move.
+  lv_obj_set_style_pad_hor(card, tile_layout::scale_480(10), 0);
   lv_obj_set_style_pad_ver(card, tile_layout::scale_480(24), 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
@@ -231,32 +336,39 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   set_label_style(v, lv_color_white(), get_sensor_value_font(tile));
   lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(v, LV_PCT(100));
-  lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_line_space(v, 8, 0);
+  // Best guess at render time; update_sensor_tile_value() re-applies this from
+  // the actual text on every update, which is what makes it correct after a
+  // cold boot (see sensor_apply_value_layout).
+  const bool multiline = tile.sensor_entity.length() && value_is_multiline(tile);
+  const bool caption = multiline && sensor_tile_caption_mode(tile);
+  sensor_apply_value_layout(v, tile, multiline, gauge_enabled, graph_enabled,
+                            caption);
   lv_label_set_text(v, "--");
 
-  // Get value y offset from tile settings (with defaults and clamping)
-  int16_t value_y_offset = tile.sensor_value_y_offset;
-  if (value_y_offset < -100) value_y_offset = -100;
-  if (value_y_offset > 200) value_y_offset = 200;
-  value_y_offset = tile_layout::scale_i16(value_y_offset);
-
-  if (gauge_enabled) {
-    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0,
-                 tile_layout::scale(12) + value_y_offset);
-  } else if (graph_enabled) {
-    // Value above graph: center vertically in upper area
-    lv_obj_align(v, LV_ALIGN_CENTER, 0,
-                 tile_layout::scale(-20) + value_y_offset);
-  } else {
-    lv_obj_align(v, LV_ALIGN_CENTER, 0,
-                 tile_layout::scale(28) + value_y_offset);
+  // Caption label for the small second line. Created up front (empty) whenever
+  // the tile could ever show one, because the decision depends on the value,
+  // which has usually not arrived yet when the tile is first built.
+  lv_obj_t* subtitle = nullptr;
+  if ((sensor_tile_caption_mode(tile) || sensor_tile_has_caption_entity(tile)) &&
+      !gauge_enabled && !graph_enabled) {
+    subtitle = lv_label_create(card);
+    if (subtitle) {
+      set_label_style(subtitle, lv_color_white(), tile_layout::content_font_20());
+      lv_obj_set_style_text_opa(subtitle, LV_OPA_80, 0);
+      lv_label_set_long_mode(subtitle, LV_LABEL_LONG_CLIP);
+      lv_obj_set_width(subtitle, LV_PCT(100));
+      lv_obj_set_style_text_align(subtitle, LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_align(subtitle, LV_ALIGN_CENTER, 0, sensor_subtitle_y(tile));
+      lv_label_set_text(subtitle, "");
+    }
   }
 
   // Speichern für spätere Updates
   SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
   if (target && index < TILES_PER_GRID) {
     target[index].value_label = v;
+    target[index].subtitle_label = subtitle;
     target[index].unit_label = nullptr;
     target[index].gauge = gauge;
     target[index].gauge_min = gauge_min;
@@ -331,6 +443,30 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
         },
         popup_event,
         data);
+
+    // Optional navigation on the OTHER gesture: a tile can show its history on
+    // one press and open a related page on the other. Same shape the switch
+    // tile uses for popup-vs-toggle. The target is a plain folder id, so it is
+    // passed by value rather than through the popup's event data.
+    if (tile.sensor_navigate_target != 0) {
+      const lv_event_code_t nav_event =
+          (popup_event == LV_EVENT_SHORT_CLICKED) ? LV_EVENT_LONG_PRESSED
+                                                  : LV_EVENT_SHORT_CLICKED;
+      lv_obj_add_event_cb(
+          card,
+          [](lv_event_t* e) {
+            lv_event_code_t code = lv_event_get_code(e);
+            if (code != LV_EVENT_SHORT_CLICKED && code != LV_EVENT_LONG_PRESSED) return;
+            const uint16_t target = static_cast<uint16_t>(
+                reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+            if (!target || !tileConfig.folderExists(target)) return;
+            finish_press_before_popup(e);
+            uiManager.switchToFolder(target);
+          },
+          nav_event,
+          reinterpret_cast<void*>(
+              static_cast<uintptr_t>(tile.sensor_navigate_target)));
+    }
 
     lv_obj_add_event_cb(
         card,

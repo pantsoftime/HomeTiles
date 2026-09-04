@@ -4,6 +4,21 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
   tile.sensor_entity = server.hasArg("sensor_entity") ? server.arg("sensor_entity") : "";
   tile.sensor_unit = server.hasArg("sensor_unit") ? server.arg("sensor_unit") : "";
 
+  // Optional entity for the small second line. key_macro belongs to TILE_TEXT
+  // and is untouched for sensor tiles, so it carries this without a storage
+  // format change (unlike key_code, which the grid loader zeroes).
+  tile.key_macro = server.hasArg("sensor_caption_entity")
+                       ? server.arg("sensor_caption_entity")
+                       : String();
+
+  // Optional folder to navigate to. Fires on whichever gesture is not opening
+  // the popup, so popup_open_mode decides which press does which.
+  int nav = server.hasArg("sensor_navigate_target")
+                ? server.arg("sensor_navigate_target").toInt()
+                : 0;
+  if (nav < 0) nav = 0;
+  tile.sensor_navigate_target = static_cast<uint16_t>(nav);
+
   uint8_t decimals = 0xFF;
   if (server.hasArg("sensor_decimals")) {
     String decStr = server.arg("sensor_decimals");
@@ -19,7 +34,8 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
   uint8_t value_font = 0;
   if (server.hasArg("sensor_value_font")) {
     int raw = server.arg("sensor_value_font").toInt();
-    value_font = (raw >= 1 && raw <= 4) ? static_cast<uint8_t>(raw) : 0;
+    // 1-4 proportional, 5-6 mono, 7-8 mono bold (JetBrains Mono 20/24).
+    value_font = (raw >= 1 && raw <= 8) ? static_cast<uint8_t>(raw) : 0;
   }
   tile.sensor_value_font = value_font;
   uint8_t popup_mode = TILE_POPUP_OPEN_SHORT_PRESS;
