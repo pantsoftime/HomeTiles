@@ -1328,9 +1328,13 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
       if ((slot.type == TILE_SENSOR || slot.type == TILE_ENERGY ||
            slot.type == TILE_SWITCH || slot.type == TILE_MEDIA ||
            slot.type == TILE_CLIMATE || slot.type == TILE_COVER ||
-           slot.type == TILE_BINARY_SENSOR) &&
+           slot.type == TILE_BINARY_SENSOR || slot.type == TILE_FOLDER) &&
           slot.entity[0]) {
         add_route(String(slot.entity), -1);
+        // A caption entity is a second, independent entity on the same tile.
+        // Without its own route it never receives state and the caption shows
+        // whatever the last full config snapshot carried.
+        if (slot.caption[0]) add_route(String(slot.caption), -1);
         if (slot.type == TILE_MEDIA) {
           has_media_tiles = true;
           // New bridges publish cover-free state changes here first. Keep the
@@ -2715,6 +2719,19 @@ void mqttServicePostConnect() {
   // repair an entry that still points at an older device ID. The publish uses
   // the large-buffer queue, which is held back until the startup storm ends.
   networkManager.publishBridgeConfig();
+  // ...and ask the bridge to send ITS config straight back.
+  //
+  // The bridge publishes that config retained and skips republishing while its
+  // signature is unchanged, so a panel that reconnects without receiving the
+  // retained copy is left with no unit/name metadata and no way to acquire it.
+  // In practice one panel came back from most restarts with a fraction of the
+  // maps (3 units of 66 on one occasion), which shows as captions and tiles
+  // rendering their value with no unit. The force flag is what makes the
+  // bridge resend despite the unchanged signature.
+  //
+  // This is the same request the web admin's "refresh bridge" button sends;
+  // it was simply never wired to a reconnect.
+  networkManager.publishBridgeRequest(true);
 }
 
 void mqttPublishCameraCommand(const char* entity_id, const char* command) {

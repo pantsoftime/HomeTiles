@@ -7622,7 +7622,19 @@ function normalizeIconName(value) {
   }
 
   function loadNavigateFields(tab, data) {
+    // Fork: optional live value on a folder tile. The navigation target lives
+    // in key_code/key_modifier, so sensor_entity and friends are free to reuse.
     const prefix = tab;
+    const entEl = document.getElementById(prefix + '_navigate_sensor_entity');
+    if (entEl) entEl.value = (data && data.sensor_entity) ? data.sensor_entity : '';
+    const decEl = document.getElementById(prefix + '_navigate_sensor_decimals');
+    if (decEl) {
+      const dec = (data && data.sensor_decimals !== undefined && data.sensor_decimals !== null)
+        ? Number(data.sensor_decimals) : -1;
+      decEl.value = (dec >= 0 && dec <= 6) ? dec : '';
+    }
+    const fontEl = document.getElementById(prefix + '_navigate_sensor_value_font');
+    if (fontEl) fontEl.value = String((data && data.sensor_value_font) || '0');
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
     const status = document.getElementById(prefix + '_folder_pin_status');
@@ -7650,10 +7662,27 @@ function normalizeIconName(value) {
     if (navEl) {
       formData.append('navigate_target', navEl.value || '0');
     }
+    // Fork: always send the live-value fields, so clearing the entity actually
+    // removes it (an empty string resets the stored field).
+    const entEl = document.getElementById(prefix + '_navigate_sensor_entity');
+    if (entEl) {
+      formData.append('sensor_entity', entEl.value || '');
+      const decEl = document.getElementById(prefix + '_navigate_sensor_decimals');
+      const decRaw = decEl ? String(decEl.value).trim() : '';
+      formData.append('sensor_decimals', decRaw.length ? decRaw : '-1');
+      const fontEl = document.getElementById(prefix + '_navigate_sensor_value_font');
+      formData.append('sensor_value_font', fontEl ? (fontEl.value || '0') : '0');
+    }
   }
 
   function resetNavigateFields(tab) {
     const prefix = tab;
+    const entEl = document.getElementById(prefix + '_navigate_sensor_entity');
+    if (entEl) entEl.value = '';
+    const decEl = document.getElementById(prefix + '_navigate_sensor_decimals');
+    if (decEl) decEl.value = '';
+    const fontEl = document.getElementById(prefix + '_navigate_sensor_value_font');
+    if (fontEl) fontEl.value = '0';
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
     const status = document.getElementById(prefix + '_folder_pin_status');
@@ -7699,7 +7728,6 @@ function normalizeIconName(value) {
   }
 
   async function applyFolderPin(tab) {
-    const prefix = tab;
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
     const button = document.getElementById(prefix + '_folder_pin_apply');

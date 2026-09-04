@@ -16,6 +16,10 @@ enum class GridType : uint8_t {
 
 struct SensorTileWidgets {
   lv_obj_t* value_label = nullptr;
+  // Optional small line under the value (humidity next to a temperature, say).
+  // Fed from the same entity: the payload's first line goes in value_label and
+  // the remainder here, so no second subscription is involved.
+  lv_obj_t* subtitle_label = nullptr;
   lv_obj_t* unit_label = nullptr;
   lv_obj_t* gauge = nullptr;
   int32_t gauge_min = 0;
@@ -255,6 +259,11 @@ inline String climateHorizontalSwingModesCsv(uint8_t mask) {
 struct ClimateTileWidgets {
   lv_obj_t* icon_label = nullptr;
   lv_obj_t* value_label = nullptr;
+  // Optional small line under the value, same idea as the sensor tile's: a
+  // thermostat shows its setpoint, the caption can show what is actually
+  // coming out of the vent. Only built for 1x1 tiles, where the value label is
+  // the whole content -- larger climate tiles fill that space with mini slots.
+  lv_obj_t* caption_label = nullptr;
   static constexpr uint8_t kMaxSlots = 6;
   lv_obj_t* slot_roots[kMaxSlots] = {};
   uint8_t slot_kinds[kMaxSlots] = {};
@@ -301,6 +310,16 @@ inline uint8_t weather_forecast_count(uint8_t span_w) {
 struct WeatherTileWidgets {
   lv_obj_t* icon_label = nullptr;
   lv_obj_t* temp_label = nullptr;
+  // Small caption under the temperature, matching the sensor tile's second
+  // line. Weather payloads already carry humidity as an attribute, so this
+  // needs no extra subscription. Only created when the tile has no forecast
+  // row to collide with.
+  lv_obj_t* humidity_label = nullptr;
+  // Where the value row sits with no caption under it. The row lifts by the
+  // same amount a sensor tile's headline does once a caption appears, so the
+  // two tile types line up side by side; without the stored base there would
+  // be nothing to lift from (or fall back to when humidity goes away).
+  lv_coord_t value_row_base_y = 0;
   lv_obj_t* condition_label = nullptr;
   lv_obj_t* condition_sep_label = nullptr;
   lv_obj_t* location_label = nullptr;

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <lvgl.h>
 #include <strings.h>
+#include <string.h>
 #include <ctype.h>
 #include "src/core/batched_nvs_write.h"
 #include "src/devices/device.h"
@@ -44,6 +45,9 @@ static void upsertKeyValueMapBatch(String& text, const std::vector<KeyValueUpdat
 static bool removeKeyValueMapEntry(String& text, const String& key);
 static void indexPut(HaEntityKeyMap& map, const String& key, const String& value);
 static void indexErase(HaEntityKeyMap& map, const String& key);
+static void blobEscapeValue(String& value);
+static void normalizeMicroSign(String& text);
+static String blobUnescapeValue(const char* begin, int length);
 static String decodeJsonEscapes(const String& value);
 static void appendUtf8(String& out, uint32_t codepoint);
 static bool isHexDigit(char c);
@@ -1153,6 +1157,7 @@ static void parseSensorMetaSection(const String& body, String& units,
     }
     String unit;
     if (extractStringField(object, "unit", unit)) {
+      normalizeMicroSign(unit);
       if (units.length()) units += '\n';
       units += entity + "=" + unit;
     }
@@ -1163,6 +1168,9 @@ static void parseSensorMetaSection(const String& body, String& units,
     }
     String value;
     if (extractStringField(object, "value", value)) {
+      // A multi-line state would otherwise end this record early and be
+      // re-parsed as further records.
+      blobEscapeValue(value);
       if (values.length()) values += '\n';
       values += entity + "=" + value;
     }
@@ -1560,10 +1568,56 @@ static void indexErase(HaEntityKeyMap& map, const String& key) {
   if (it != map.end()) map.erase(it);
 }
 
+// The "key=value\n" blob uses a newline as its record separator, so a value
+// that itself contains one silently ends the record early: the first line is
+// stored as the whole value and the remainder is re-read as a new record. A
+// multi-line sensor state (a table, or a temperature with a humidity caption)
+// therefore came back truncated, and the tile only ever looked right while a
+// live MQTT update happened to be the most recent write.
+//
+// Escape on the way in, unescape on the way out, so the blob stays exactly one
+// physical line per record.
+// Home Assistant integrations disagree about which mu to use in a unit: some
+// emit U+00B5 MICRO SIGN, others U+03BC GREEK SMALL LETTER MU. They look the
+// same, but the bundled fonts cover the micro sign and not the Greek letter,
+// so the latter renders as a box ("ug/m3" units from the air-quality sensors
+// hit this). Both encode as two UTF-8 bytes, so this rewrites in place.
+static void normalizeMicroSign(String& text) {
+  text.replace("\xCE\xBC", "\xC2\xB5");
+}
+
+static void blobEscapeValue(String& value) {
+  value.replace("\\", "\\\\");
+  value.replace("\n", "\\n");
+}
+
+static String blobUnescapeValue(const char* begin, int length) {
+  String out;
+  out.reserve(length);
+  for (int i = 0; i < length; ++i) {
+    if (begin[i] == '\\' && i + 1 < length) {
+      const char next = begin[i + 1];
+      if (next == 'n') {
+        out += '\n';
+        ++i;
+        continue;
+      }
+      if (next == '\\') {
+        out += '\\';
+        ++i;
+        continue;
+      }
+    }
+    out += begin[i];
+  }
+  return out;
+}
+
 // Parst einen "key=value\n"-Blob in eine Index-Map. Trim-Verhalten identisch
 // zu lookupKeyValue(); emplace() = erster Treffer gewinnt, wie beim
 // Blob-Scan (relevant nur bei pathologischen Key-Dubletten im Blob).
-static void rebuildIndexFromBlob(const String& text, HaEntityKeyMap& out) {
+static void rebuildIndexFromBlob(const String& text, HaEntityKeyMap& out,
+                                 bool unescape_values) {
   out.clear();
   const char* buf = text.c_str();
   const int len = static_cast<int>(text.length());
@@ -1590,8 +1644,18 @@ static void rebuildIndexFromBlob(const String& text, HaEntityKeyMap& out) {
       if (lhs_end > lhs_start) {
         // Direkt aus dem Blob-Puffer in PSRAM-Strings -- keine Arduino-String-
         // Zwischenkopien (deren Puffer im internen Heap laegen).
-        out.emplace(PsString(buf + lhs_start, static_cast<size_t>(lhs_end - lhs_start)),
-                    PsString(buf + rhs_start, static_cast<size_t>(rhs_end - rhs_start)));
+        const int rhs_len = rhs_end - rhs_start;
+        if (unescape_values &&
+            memchr(buf + rhs_start, '\\', static_cast<size_t>(rhs_len)) != nullptr) {
+          // Only an escaped value pays for the temporary; the common case still
+          // goes straight from the blob buffer into PSRAM.
+          const String decoded = blobUnescapeValue(buf + rhs_start, rhs_len);
+          out.emplace(PsString(buf + lhs_start, static_cast<size_t>(lhs_end - lhs_start)),
+                      PsString(decoded.c_str(), decoded.length()));
+        } else {
+          out.emplace(PsString(buf + lhs_start, static_cast<size_t>(lhs_end - lhs_start)),
+                      PsString(buf + rhs_start, static_cast<size_t>(rhs_len)));
+        }
       }
     }
     line_start = line_end + 1;
@@ -1612,11 +1676,13 @@ static size_t indexApproxBytes(const HaEntityKeyMap& m) {
 }
 
 void HaBridgeConfig::rebuildEntityIndexes() {
-  rebuildIndexFromBlob(data.sensor_units_map, units_index_);
-  rebuildIndexFromBlob(data.sensor_names_map, names_index_);
-  rebuildIndexFromBlob(data.sensor_values_map, values_index_);
-  rebuildIndexFromBlob(data.sensor_state_kinds_map, state_kinds_index_);
-  rebuildIndexFromBlob(data.entity_icons_map, icons_index_);
+  // Only the values blob carries escaped payloads; the rest are plain
+  // identifiers and skip the unescape scan entirely.
+  rebuildIndexFromBlob(data.sensor_units_map, units_index_, false);
+  rebuildIndexFromBlob(data.sensor_names_map, names_index_, false);
+  rebuildIndexFromBlob(data.sensor_values_map, values_index_, true);
+  rebuildIndexFromBlob(data.sensor_state_kinds_map, state_kinds_index_, false);
+  rebuildIndexFromBlob(data.entity_icons_map, icons_index_, false);
   // Belegt schwarz auf weiss, dass der Index im PSRAM liegt und wie gross er
   // wirklich ist -- "intern frei" darf durch einen Rebuild nicht mehr sinken.
   const size_t total_bytes = indexApproxBytes(units_index_) + indexApproxBytes(names_index_) +
@@ -1647,8 +1713,12 @@ void HaBridgeConfig::registerSensorMeta(const String& entity_id, const String& n
   if (unit.length()) indexPut(units_index_, entity_id, unit);
 }
 
-void HaBridgeConfig::updateEntityMeta(const String& entity_id, const String& name, const String& unit, const String& icon) {
+void HaBridgeConfig::updateEntityMeta(const String& entity_id, const String& name, const String& raw_unit, const String& icon) {
   if (entity_id.length() == 0) return;
+  // Live meta updates arrive on a different path than the config snapshot, so
+  // the mu normalisation has to happen here too.
+  String unit = raw_unit;
+  normalizeMicroSign(unit);
   if (name.length()) {
     upsertKeyValueMap(data.sensor_names_map, entity_id, name);
     indexPut(names_index_, entity_id, name);
@@ -1665,6 +1735,11 @@ void HaBridgeConfig::updateEntityMeta(const String& entity_id, const String& nam
 
 void HaBridgeConfig::updateSensorValue(const String& entity_id, const String& value) {
   if (entity_id.length() == 0) return;
+
+  // The blob is one record per line, so the stored form must be escaped; the
+  // index keeps the real (decoded) value.
+  String stored = value;
+  blobEscapeValue(stored);
 
   // Parse sensor_values_map and update/add the value
   String& valuesMap = data.sensor_values_map;
@@ -1686,7 +1761,7 @@ void HaBridgeConfig::updateSensorValue(const String& entity_id, const String& va
       if (entity.equalsIgnoreCase(entity_id)) {
         // Update existing entry
         if (newMap.length()) newMap += '\n';
-        newMap += entity_id + "=" + value;
+        newMap += entity_id + "=" + stored;
         found = true;
       } else {
         // Keep existing entry
@@ -1705,7 +1780,7 @@ void HaBridgeConfig::updateSensorValue(const String& entity_id, const String& va
   // Add new entry if not found
   if (!found) {
     if (newMap.length()) newMap += '\n';
-    newMap += entity_id + "=" + value;
+    newMap += entity_id + "=" + stored;
   }
 
   valuesMap = newMap;

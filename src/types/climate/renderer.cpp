@@ -619,9 +619,18 @@ void layout_climate_slots(
       tile_w - climate_layout::kOuterInset * 2;
   const lv_coord_t grid_top =
       climate_layout::kContentTopInPaddedCard;
+  // A caption is drawn under the mini grid, so take its height out of the
+  // grid's box rather than letting the two share the same space. The slot text
+  // is centred within this box, so shrinking it is what actually lifts the
+  // visible value -- the value_label is hidden whenever slots exist, which is
+  // every size including 1x1.
+  const lv_coord_t caption_reserve =
+      (tile.key_macro.length() > 0 && span_w == 1 && span_h == 1)
+          ? climate_layout::kCaptionReserve
+          : 0;
   const lv_coord_t grid_bottom =
       tile_h - climate_layout::kCardPaddingVertical -
-      climate_layout::kOuterInset;
+      climate_layout::kOuterInset - caption_reserve;
   const lv_coord_t grid_h =
       std::max<lv_coord_t>(1, grid_bottom - grid_top);
 
@@ -1408,8 +1417,29 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
     lv_label_set_text(
         value, "-- \xC2\xB0"
                "C");
-    lv_obj_align(value, LV_ALIGN_CENTER, 0, tile_layout::scale(28));
+    // A caption only fits on a 1x1 card; anything larger uses that space for
+    // its configured mini slots.
+    const bool wants_caption =
+        tile.key_macro.length() > 0 && tile.span_w == 1 && tile.span_h == 1;
+    lv_obj_align(value, LV_ALIGN_CENTER, 0,
+                 tile_layout::scale(wants_caption ? 14 : 28));
     widget.value_label = value;
+
+    if (wants_caption) {
+      lv_obj_t* caption = lv_label_create(card);
+      if (caption) {
+        set_label_style(caption, lv_color_white(),
+                        tile_layout::content_font_20());
+        lv_obj_set_style_text_opa(caption, LV_OPA_80, 0);
+        lv_label_set_long_mode(caption, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(caption, LV_PCT(100));
+        lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
+        // Same offsets the sensor tile uses, so the two line up side by side.
+        lv_obj_align(caption, LV_ALIGN_CENTER, 0, tile_layout::scale(48));
+        lv_label_set_text(caption, "");
+        widget.caption_label = caption;
+      }
+    }
 
     // Every climate size, including 1x1, renders its configured mini content
     // through the same slot path. A 1x1 slot remains visually identical to

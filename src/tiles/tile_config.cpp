@@ -320,7 +320,8 @@ static uint8_t clampDecimals(uint8_t val) {
 }
 
 static uint8_t clampSensorValueFont(uint8_t val) {
-  if (val > 4) return 0;
+  // 0-4 proportional, 5-6 monospace 20/24, 7-8 monospace bold 20/24.
+  if (val > 8) return 0;
   return val;
 }
 
@@ -902,6 +903,19 @@ static void packTile(const Tile& in, PackedTileV7& out) {
     decimals = 0xFF;
   }
   out.sensor_decimals = decimals;
+  // A folder tile showing a live value still needs its decimal count, but it
+  // cannot live in sensor_decimals: that byte doubles as the legacy
+  // Settings/Back discriminator, and its sentinels are 1, 2 and 3 -- exactly
+  // the counts such a tile would ask for, so storing "1 decimal" would make the
+  // tile reload as a Settings tile. reserved[1] is free (reserved[0] carries
+  // background_opacity) and is written biased by one, so a 0 left by older
+  // firmware keeps meaning "unset" rather than "zero decimals".
+  if (in.type == TILE_FOLDER) {
+    const uint8_t folder_decimals = clampDecimals(in.sensor_decimals);
+    out.reserved[1] = (folder_decimals == 0xFF)
+                          ? 0
+                          : static_cast<uint8_t>(folder_decimals + 1);
+  }
   out.key_code = in.key_code;
   out.key_modifier = in.key_modifier;
   out.bg_color = in.bg_color;
@@ -970,6 +984,12 @@ static void packTile(const Tile& in, PackedTileV7& out) {
     if (graph_h > 200) graph_h = 200;
     out.scene_alias[9] = static_cast<char>(graph_h & 0xFF);
     out.scene_alias[10] = static_cast<char>((graph_h >> 8) & 0xFF);
+    // Optional navigate target. scene_alias is a firmware-managed binary blob
+    // for TILE_SENSOR (not user text), memset above, and bytes 11..31 were
+    // unused -- so this needs no storage format change.
+    out.scene_alias[11] = static_cast<char>(in.sensor_navigate_target & 0xFF);
+    out.scene_alias[12] =
+        static_cast<char>((in.sensor_navigate_target >> 8) & 0xFF);
   } else {
     copyString(in.scene_alias, out.scene_alias, sizeof(out.scene_alias));
   }
@@ -1052,7 +1072,15 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
   out.span_w = span_w;
   out.span_h = span_h;
   out.sensor_decimals = clampDecimals(in.sensor_decimals);
-  if (out.type == TILE_FOLDER || out.type == TILE_SETTINGS || out.type == TILE_BACK) {
+  if (out.type == TILE_FOLDER) {
+    // packTile stores a folder's decimals in reserved[1] biased by one, so a 0
+    // left by firmware that predates that still means "unset". out.type is
+    // already resolved above, so a packed folder that is really a Settings or
+    // Back tile takes the branch below and keeps no decimals at all.
+    out.sensor_decimals =
+        in.reserved[1] ? clampDecimals(static_cast<uint8_t>(in.reserved[1] - 1))
+                       : 0xFF;
+  } else if (out.type == TILE_SETTINGS || out.type == TILE_BACK) {
     out.sensor_decimals = 0xFF;
   }
   out.sensor_value_font = clampSensorValueFont(in.sensor_value_font);
@@ -1086,6 +1114,8 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
     uint16_t graph_h = static_cast<uint8_t>(in.scene_alias[9]) |
                        (static_cast<uint8_t>(in.scene_alias[10]) << 8);
     if (graph_h >= 20 && graph_h <= 200) out.sensor_graph_height = graph_h;
+    out.sensor_navigate_target = static_cast<uint8_t>(in.scene_alias[11]) |
+                                 (static_cast<uint8_t>(in.scene_alias[12]) << 8);
   }
   if ((out.type == TILE_SENSOR || out.type == TILE_WEATHER || out.type == TILE_ENERGY ||
        out.type == TILE_SWITCH || out.type == TILE_CLIMATE ||
@@ -1133,7 +1163,8 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
 // scene_alias/key_macro/image_path -- the String allocations that dominate a
 // full per-tile unpack (measured: ~44ms/grid across 35 tiles on this device's
 // fragmented internal heap).
-static void unpackTileEntityOnlyV7(const PackedTileV7& in, TileType& type, String& sensor_entity) {
+static void unpackTileEntityOnlyV7(const PackedTileV7& in, TileType& type, String& sensor_entity,
+                                   String& caption_entity) {
   TileType t = static_cast<TileType>(in.type);
   if (t == TILE_FOLDER) {
     if (in.sensor_decimals == LEGACY_NAV_KIND_SETTINGS) {
@@ -1144,6 +1175,7 @@ static void unpackTileEntityOnlyV7(const PackedTileV7& in, TileType& type, Strin
   }
   type = t;
   sensor_entity = String(in.sensor_entity);
+  caption_entity = String(in.key_macro);
 }
 
 static void unpackTileV6(const PackedTileV6& in, Tile& out) {
@@ -2402,6 +2434,7 @@ bool TileConfig::loadFolderGridEntitiesOnly(uint16_t folder_id, TileEntitySlot* 
     for (size_t i = 0; i < TILES_PER_GRID; ++i) {
       out[i].type = full.tiles[i].type;
       out[i].sensor_entity = full.tiles[i].sensor_entity;
+      out[i].caption_entity = full.tiles[i].key_macro;
     }
     return true;
   }
@@ -2414,7 +2447,8 @@ bool TileConfig::loadFolderGridEntitiesOnly(uint16_t folder_id, TileEntitySlot* 
     for (size_t i = 0; i < TILES_PER_QUARTER; ++i) {
       size_t grid_idx = quarterGridIndex(q, i);
       if (grid_idx >= TILES_PER_GRID) continue;
-      unpackTileEntityOnlyV7(packed_v7[q].tiles[i], out[grid_idx].type, out[grid_idx].sensor_entity);
+      unpackTileEntityOnlyV7(packed_v7[q].tiles[i], out[grid_idx].type,
+                             out[grid_idx].sensor_entity, out[grid_idx].caption_entity);
     }
   }
   uint32_t unpack_ms = millis() - t_unpack0;
@@ -2446,6 +2480,7 @@ struct FolderEntityCacheEntry {
   uint32_t built_gen;
   TileType types[TILES_PER_GRID];
   char* entities[TILES_PER_GRID];  // PSRAM-Kopien, nullptr = leer
+  char* captions[TILES_PER_GRID];  // dito, fuer die Caption-Entity
 };
 
 // 128 Eintraege x ~184B = ~24KB PSRAM. Mehr als 128 gleichzeitig lebende
@@ -2505,8 +2540,13 @@ FolderEntityCacheEntry* TileConfig::storeFolderEntityCache(uint16_t folder_id,
       heap_caps_free(e->entities[i]);
       e->entities[i] = nullptr;
     }
+    if (e->captions[i]) {
+      heap_caps_free(e->captions[i]);
+      e->captions[i] = nullptr;
+    }
     e->types[i] = slots[i].type;
     e->entities[i] = psramStrdupLocal(slots[i].sensor_entity);
+    e->captions[i] = psramStrdupLocal(slots[i].caption_entity);
   }
   e->built_gen = built_gen;
   return e;
@@ -2531,6 +2571,7 @@ bool TileConfig::getFolderEntitiesCached(uint16_t folder_id, FolderEntitySlotVie
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     out[i].type = e->types[i];
     out[i].entity = e->entities[i] ? e->entities[i] : "";
+    out[i].caption = e->captions[i] ? e->captions[i] : "";
   }
   return true;
 }

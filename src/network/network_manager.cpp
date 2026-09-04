@@ -32,11 +32,24 @@ extern "C" void hometiles_sdio_get_rx_diag(
 HomeTilesNetworkManager networkManager;
 
 static constexpr uint16_t kMqttBufferOta = 1024;
-static constexpr uint16_t kMqttBufferNormal = 16 * 1024;
-// Sobald Media-Tiles konfiguriert sind, muss der "normale" Puffer die
-// Bridge-Media-States mit eingebettetem 240px-Cover fassen (~14 KB JPEG ->
-// ~19 KB Base64+JSON). Mit 16 KB verwirft PubSubClient diese Pakete komplett;
-// Cover kamen dann nur zufaellig waehrend eines 32-KB-Large-Fensters durch.
+// The retained bridge config is delivered the instant we subscribe, and it has
+// outgrown 16 KB on real installs: measured 19,299 bytes on one panel here and
+// 23,262 on another (93 sensors, 28 energy entries, 8 cameras). Since v0.6.9
+// PubSubClient no longer discards an oversized packet and carries on -- it
+// calls _client->stop() with MQTT_MALFORMED_PACKET. The retained message is
+// then redelivered on every reconnect, and because reconnecting also restarts
+// the storm window that defers the grow to kMqttBufferLarge, the buffer never
+// grows and the panel reconnect-loops roughly every three seconds without ever
+// receiving its entity list.
+//
+// Sizing the normal buffer for the config it is guaranteed to be sent on
+// connect removes the race entirely rather than relying on the deferred grow.
+static constexpr uint16_t kMqttBufferNormal = 32 * 1024;
+// With media tiles configured the buffer must also hold bridge media states
+// with an embedded 240px cover (~14 KB JPEG -> ~19 KB Base64+JSON). At 16 KB
+// PubSubClient dropped those packets outright and covers only arrived by luck
+// during a 32 KB large window. This tier is now below kMqttBufferNormal and so
+// never shrinks it -- see mqttNormalBufferSize().
 static constexpr uint16_t kMqttBufferMedia = 24 * 1024;
 static constexpr uint16_t kMqttBufferLarge = 32 * 1024;
 static constexpr uint32_t kMqttPostConnectQuietMs = 3000;
@@ -1462,7 +1475,11 @@ void HomeTilesNetworkManager::deferMqttReconnect(uint32_t hold_ms) {
 
 // ========== MQTT-Status ==========
 uint16_t HomeTilesNetworkManager::mqttNormalBufferSize() const {
-  return mqtt_media_buffer_needed ? kMqttBufferMedia : kMqttBufferNormal;
+  // Never below the baseline: the media tier used to be the larger of the two,
+  // but the baseline now has to cover the retained bridge config, so taking the
+  // media size unconditionally would shrink the buffer when a media tile exists.
+  const uint16_t media = mqtt_media_buffer_needed ? kMqttBufferMedia : 0;
+  return media > kMqttBufferNormal ? media : kMqttBufferNormal;
 }
 
 bool HomeTilesNetworkManager::setMqttBufferSize(uint16_t size, const char* reason) {
