@@ -36,8 +36,11 @@ const media = constantKiB('kMqttBufferMedia');
 const large = constantKiB('kMqttBufferLarge');
 
 // The largest bridge config seen in the field, plus MQTT fixed/variable header
-// and topic. 24 KiB would not clear it.
-const OBSERVED_MAX_CONFIG_BYTES = 23262;
+// and topic. Bridge v0.6.40 added per-sensor "state_kind" metadata to the
+// sensor_meta array, which grew this by about 2.3 KB across all three panels
+// (19,299 -> 21,606 and 23,262 -> 25,593). It is now past kMqttBufferMedia, so
+// the 24 KiB tier alone would no longer clear it.
+const OBSERVED_MAX_CONFIG_BYTES = 25593;
 assert.ok(
   normal * 1024 > OBSERVED_MAX_CONFIG_BYTES,
   `kMqttBufferNormal (${normal} KiB) must exceed the largest observed retained ` +
