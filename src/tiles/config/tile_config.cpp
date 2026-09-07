@@ -20,6 +20,32 @@ static constexpr uint16_t IMAGE_SLIDESHOW_MAX_SEC = 3600;
 static constexpr size_t OLD_TILES_PER_GRID = 12;  // For V1-V5 migration
 static constexpr uint8_t LEGACY_NAV_KIND_SETTINGS = 1;
 static constexpr uint8_t LEGACY_NAV_KIND_BACK = 2;
+
+// A folder tile in this fork can show a live sensor value, so it needs a
+// decimal count. That count has to share sensor_decimals with the legacy
+// Settings/Back discriminator above, so it is stored biased clear of both
+// sentinels: 0 means "unset" and counts 0..6 store as 3..9.
+//
+// It used to live in reserved[1]. v0.6.10 claimed reserved[1] and [2] for
+// view_id and silently overwrote it, after which folder tiles rendered
+// view_id's low byte as a decimal count. Keeping the count inside
+// sensor_decimals means a future upstream use of the reserved bytes cannot
+// collide with it again.
+static constexpr uint8_t kFolderDecimalsBias = 3;
+static_assert(kFolderDecimalsBias > LEGACY_NAV_KIND_SETTINGS &&
+                  kFolderDecimalsBias > LEGACY_NAV_KIND_BACK,
+              "folder decimals must encode clear of the legacy nav sentinels");
+static_assert(6 + kFolderDecimalsBias < 0xFF,
+              "biased folder decimals must stay inside the byte");
+
+// Inverse of the bias. Anything outside the encoded range -- 0 from an unset
+// tile, either sentinel, or 0xFF written by firmware predating the encoding --
+// means "no explicit decimal count".
+static uint8_t unbiasFolderDecimals(uint8_t stored) {
+  if (stored < kFolderDecimalsBias) return 0xFF;
+  const uint8_t value = static_cast<uint8_t>(stored - kFolderDecimalsBias);
+  return value > 6 ? 0xFF : value;
+}
 static constexpr uint8_t LEGACY_TAB_SETTINGS = 3;
 
 class ScopedStorageWriteDisplayGuard {
@@ -968,23 +994,16 @@ static void packTile(const Tile& in, PackedTileV7& out) {
   memset(&out, 0, sizeof(out));
   out.type = static_cast<uint8_t>(in.type);
   uint8_t decimals = clampDecimals(in.sensor_decimals);
-  if (in.type == TILE_FOLDER || in.type == TILE_SETTINGS || in.type == TILE_BACK) {
+  if (in.type == TILE_SETTINGS || in.type == TILE_BACK) {
     decimals = 0xFF;
+  } else if (in.type == TILE_FOLDER) {
+    // See kFolderDecimalsBias: encoded clear of the legacy nav sentinels so a
+    // real "1 decimal" folder cannot reload as a Settings tile.
+    decimals = (decimals == 0xFF)
+                   ? 0
+                   : static_cast<uint8_t>(decimals + kFolderDecimalsBias);
   }
   out.sensor_decimals = decimals;
-  // A folder tile showing a live value still needs its decimal count, but it
-  // cannot live in sensor_decimals: that byte doubles as the legacy
-  // Settings/Back discriminator, and its sentinels are 1, 2 and 3 -- exactly
-  // the counts such a tile would ask for, so storing "1 decimal" would make the
-  // tile reload as a Settings tile. reserved[1] is free (reserved[0] carries
-  // background_opacity) and is written biased by one, so a 0 left by older
-  // firmware keeps meaning "unset" rather than "zero decimals".
-  if (in.type == TILE_FOLDER) {
-    const uint8_t folder_decimals = clampDecimals(in.sensor_decimals);
-    out.reserved[1] = (folder_decimals == 0xFF)
-                          ? 0
-                          : static_cast<uint8_t>(folder_decimals + 1);
-  }
   out.key_code = in.key_code;
   out.key_modifier = in.key_modifier;
   out.bg_color = in.bg_color;
@@ -1140,13 +1159,9 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
   out.span_h = span_h;
   out.sensor_decimals = clampDecimals(in.sensor_decimals);
   if (out.type == TILE_FOLDER) {
-    // packTile stores a folder's decimals in reserved[1] biased by one, so a 0
-    // left by firmware that predates that still means "unset". out.type is
-    // already resolved above, so a packed folder that is really a Settings or
-    // Back tile takes the branch below and keeps no decimals at all.
-    out.sensor_decimals =
-        in.reserved[1] ? clampDecimals(static_cast<uint8_t>(in.reserved[1] - 1))
-                       : 0xFF;
+    // out.type is already resolved above, so a packed folder that is really a
+    // Settings or Back tile takes the branch below and keeps no decimals.
+    out.sensor_decimals = unbiasFolderDecimals(in.sensor_decimals);
   } else if (out.type == TILE_SETTINGS || out.type == TILE_BACK) {
     out.sensor_decimals = 0xFF;
   }

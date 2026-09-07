@@ -2,7 +2,7 @@
 //
 // History. The bridge publishes its config retained, so the broker delivers it
 // the instant a panel subscribes, and it has outgrown the 16 KB baseline --
-// measured at 19,299 / 21,606 / 25,593 bytes on the three panels here. In
+// measured at 24,383 / 24,388 / 28,168 bytes on the three panels here after Bridge v0.6.44. In
 // v0.6.9 an oversized PUBLISH called abortPacket(MQTT_MALFORMED_PACKET), which
 // stops the client; because reconnecting also restarts the storm window that
 // defers the buffer grow, the panel reconnect-looped about every three seconds
@@ -24,7 +24,7 @@ const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
 // Largest retained config observed in the field, after Bridge v0.6.40 added
 // per-sensor state_kind metadata (+2.3 KB across every panel).
-const OBSERVED_MAX_CONFIG_BYTES = 25593;
+const OBSERVED_MAX_CONFIG_BYTES = 28168;
 
 const safety = read('src/network/mqtt/mqtt_packet_safety.h');
 const pubsub = read('src/network/vendor/pubsubclient/PubSubClient.cpp');
