@@ -3,13 +3,13 @@
 #include <ArduinoJson.h>
 #include <cstring>
 
-#include "src/core/config_manager.h"
-#include "src/core/i18n.h"
-#include "src/network/ha_bridge_config.h"
-#include "src/tiles/mdi_icons.h"
-#include "src/tiles/tile_renderer_fonts.h"
-#include "src/tiles/tile_renderer_shared.h"
-#include "src/ui/cover_popup.h"
+#include "src/core/config/config_manager.h"
+#include "src/core/i18n/i18n.h"
+#include "src/network/bridge/ha_bridge_config.h"
+#include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/popups/cover/cover_popup.h"
 
 namespace {
 
@@ -372,7 +372,7 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
     lv_obj_set_width(widget.title_label, LV_PCT(70));
     lv_obj_set_style_text_align(widget.title_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_long_mode(widget.title_label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(widget.title_label, tile.title.c_str());
+    hometiles_title::tile(widget.title_label, tile.title.c_str(), true);
     lv_obj_align(widget.title_label, LV_ALIGN_TOP_RIGHT,
                  tile_layout::scale_480(4),
                  tile_layout::scale_480(4));

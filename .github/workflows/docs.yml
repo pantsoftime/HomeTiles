@@ -5,11 +5,16 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "overrides/**"
       - "mkdocs.yml"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/docs.yml"
       - "release-helper/prepare-web-installer.mjs"
-      - "tools/test-installer-otadata.mjs"
-      - "tools/test-web-installer.mjs"
+      - "tools/tests/build/test-installer-otadata.mjs"
+      - "tools/tests/build/test-web-installer.mjs"
+      - "tools/tests/web/test-docs-device-status.mjs"
+      - "tools/check-docs.py"
   workflow_dispatch:
 
 permissions:
@@ -27,17 +32,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Install pinned host tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
       - run: pip install mkdocs-material ghp-import
-      - run: node tools/test-installer-otadata.mjs
-      - run: node tools/test-web-installer.mjs
+      - run: node tools/tests/build/test-installer-otadata.mjs
+      - run: node tools/tests/build/test-web-installer.mjs
+      - run: node tools/tests/web/test-docs-device-status.mjs
       - run: mkdocs build --strict
       - name: Mirror latest release assets into the documentation origin
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node release-helper/prepare-web-installer.mjs --output site/firmware/latest
+      - name: Check documentation links and verified firmware assets
+        run: python tools/check-docs.py site
       - name: Publish an orphan gh-pages snapshot
         run: |
           git config user.name "GalusPeres"

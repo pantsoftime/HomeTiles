@@ -4,6 +4,10 @@
 // Important: Only a tag push starts the build, and the tag must match FW_VERSION exactly.
 //
 // Fork line: upstream release tag + an extra patch digit (see README-FORK.md).
-// Merge upstream RELEASE TAGS, not upstream/master: v0.6.81 was built nine
-// commits past the v0.6.8 tag and shipped unreleased work.
-#define FW_VERSION "v0.6.91"
+// Merge upstream RELEASE TAGS, not upstream/master.
+//
+// Upstream's patch is two digits from v0.6.10 on, so this reads oddly but still
+// orders correctly: github_update.cpp parses each component with atoi(), giving
+// {0,6,101} > {0,6,91}. Note our previous v0.6.91 therefore sorts ABOVE upstream
+// v0.6.10; only this fork's own releases are ever compared, so that is harmless.
+#define FW_VERSION "v0.6.101"

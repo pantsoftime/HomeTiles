@@ -1,8 +1,8 @@
 #include "src/types/navigate/renderer.h"
-#include "src/tiles/tile_renderer_shared.h"
-#include "src/tiles/tile_renderer_fonts.h"
-#include "src/tiles/mdi_icons.h"
-#include "src/tiles/tile_config.h"
+#include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/config/tile_config.h"
 #include "src/ui/ui_manager.h"
 #include <Arduino.h>
 
@@ -50,8 +50,8 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   lv_obj_set_style_radius(btn, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(btn, 0, 0);
 
-  // Alle Navigationstypen verwenden ohne explizite Farbwahl dieselbe neutrale
-  // Standardflaeche wie die restlichen HomeTiles.
+  // Without an explicit color, all navigation types use the same neutral
+  // background as the other HomeTiles tiles.
   const uint32_t default_color = 0x2A2A2A;
   uint32_t btn_color = tileBgColorOrDefault(tile, default_color);
   lv_obj_set_style_bg_color(btn, lv_color_hex(btn_color), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -61,7 +61,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_FOCUSED);
 
-  // Pressed-State: 10% heller
+  // Pressed state: 10% brighter.
   uint32_t pressed_color = brighten_rgb_color(btn_color, 0x10);
   lv_obj_set_style_bg_color(btn, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_color(btn, lv_color_hex(pressed_color), LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_PRESSED));
@@ -84,7 +84,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
 
   set_tile_grid_cell(btn, col, row, tile.span_w, tile.span_h);
 
-  // Icon Label (optional, falls icon_name vorhanden)
+  // Optional icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;
   String iconChar;
   if (tile.icon_name.length() > 0 && FONT_MDI_ICONS != nullptr) {
@@ -105,15 +105,14 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       set_label_style(icon_lbl, lv_color_white(), FONT_MDI_ICONS);
       lv_label_set_text(icon_lbl, iconChar.c_str());
 
-      // Flexible Positionierung: Icon + Title = 2 Zeilen mittig, nur Icon = 1 Zeile mittig.
-      // Mit zusaetzlichem Wert ruecken drei Zeilen uebereinander.
+      // Center icon and title on two lines, or the icon alone on one line.
+      // A third line appears when the tile also shows a value.
       //
-      // Icon und Wert bleiben dort, wo sie immer sassen. Wert und Titel klebten
-      // optisch aneinander, aber der Platz dafuer liegt UNTER dem Titel (rund
-      // 23 px ungenutzt am unteren Rand), nicht ueber dem Wert: den Wert nach
-      // oben zu ziehen hat Kacheln mit kurzem Wert sichtbar aus der Mitte
-      // gehoben, obwohl sie das Problem ueberhaupt nicht hatten. Nur der Titel
-      // wandert deshalb nach unten.
+      // Icon and value stay where they always sat. Value and title looked
+      // cramped, but the free space is BELOW the title (~23 px unused at the
+      // bottom), not above the value: lifting the value visibly pushed tiles
+      // with a short value off-centre even though they never had the problem.
+      // So only the title moves down.
       if (has_value) {
         lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                      tile_layout::scale_i16(-48));
@@ -121,12 +120,12 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
         lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                      tile_layout::scale_i16(-20));
       } else {
-        lv_obj_center(icon_lbl);  // Icon mittig (ohne Title)
+        lv_obj_center(icon_lbl);  // Center the icon when there is no title.
       }
     }
   }
 
-  // Value Label (optional, nur bei hinterlegter Entity)
+  // Optional value label, only when an entity is configured.
   if (has_value) {
     lv_obj_t* v = lv_label_create(btn);
     if (v) {
@@ -138,9 +137,9 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       lv_obj_align(v, LV_ALIGN_CENTER, 0,
                    tile_layout::scale(has_icon ? 2 : -12));
 
-      // In dieselbe Widget-Tabelle eintragen, aus der auch Sensor-Kacheln
-      // aktualisiert werden -- update_sensor_tile_value() arbeitet rein ueber
-      // den Grid-Index und ist damit typunabhaengig.
+      // Register in the same widget table the sensor tiles update through --
+      // update_sensor_tile_value() works purely off the grid index and is
+      // therefore type-independent.
       SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
       if (target && index < TILES_PER_GRID) {
         target[index].value_label = v;
@@ -152,25 +151,25 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
     }
   }
 
-  // Title Label (nur anzeigen wenn Titel vorhanden)
+  // Show the title label only when a title is set.
   if (has_title) {
     lv_obj_t* l = lv_label_create(btn);
     if (l) {
       set_label_style(l, lv_color_white(), tile_layout::header_title_font());
-      lv_label_set_text(l, tile.title.c_str());
+      hometiles_title::tile(l, tile.title.c_str(), false);
 
-      // Flexible Positionierung: mit Icon unten, ohne Icon mittig
+      // Position below the icon, or center when there is no icon.
       if (has_value) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(55));
       } else if (icon_lbl) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
       } else {
-        lv_obj_center(l);  // Title mittig (ohne Icon)
+        lv_obj_center(l);  // Center the title when there is no icon.
       }
     }
   }
 
-  // Event-Handler für Tab-Navigation
+  // Event handler for tab navigation.
   static constexpr uint8_t NAV_KIND_FOLDER = 0;
   static constexpr uint8_t NAV_KIND_SETTINGS = 1;
   static constexpr uint8_t NAV_KIND_BACK = 2;

@@ -1,13 +1,12 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('tab5', 'waveshare_b4', 'waveshare_4_3', 'waveshare_7', 'waveshare_7b', 'waveshare_7b_rev3_1', 'waveshare_8', 'waveshare_10_1', 'waveshare_s3_touch_lcd_4b', 'layout_test_1024x600', 'layout_test_480x480', 'guition_jc8012p4a1', 'guition_jc8012p4a1_v2', 'guition_jc1060p470c', 'guition_jc1060p470c_v2', 'guition_esp32_4848s040')]
     [string]$Profile,
 
     [string]$OutputDirectory,
 
     [string[]]$ExtraDefine = @(),
 
-    [ValidateSet('auto', 'repo-short-tail', 'repo-a8204')]
+    [ValidateSet('auto', 'repo-short-tail', 'repo-a8204', 'repo-guition-jc8012-rx-single-block')]
     [string]$EspHostedRxVariant = 'auto',
 
     [switch]$Clean
@@ -33,111 +32,27 @@ if (Test-Path -LiteralPath $hiddenSketchProfiles) {
 }
 
 $node = Get-Command node -ErrorAction Stop
+# Preserve the case-insensitive profile names accepted by PowerShell ValidateSet.
+$Profile = $Profile.ToLowerInvariant()
+$profileJson = & $node.Source (Join-Path $PSScriptRoot 'device-catalog.js') --profile $Profile
+if ($LASTEXITCODE -ne 0) {
+    throw "Unknown or invalid build profile: $Profile"
+}
+$buildProfile = $profileJson | ConvertFrom-Json
+& $node.Source (Join-Path $PSScriptRoot 'generate-device-profiles.mjs') --check
+if ($LASTEXITCODE -ne 0) {
+    throw 'Generated device profiles are stale. Run tools/generate-device-profiles.mjs.'
+}
 & $node.Source (Join-Path $PSScriptRoot 'generate-web-assets.mjs') --check
 if ($LASTEXITCODE -ne 0) {
-    throw 'Generated WebUI assets are stale. Run tools/generate-web-assets.mjs.'
+    throw 'WebUI asset verification failed. Install host dependencies with npm ci --ignore-scripts, then run node tools/generate-web-assets.mjs.'
 }
-& $node.Source (Join-Path $PSScriptRoot 'test-mqtt-packet-safety.mjs')
+& $node.Source (Join-Path $PSScriptRoot 'run-tests.mjs')
 if ($LASTEXITCODE -ne 0) {
-    throw 'MQTT packet safety regression test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-weather-popup-release.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Weather popup release interaction test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-s3-popup-refresh.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'ESP32-S3 popup refresh contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-duplicate-light-entity-updates.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Duplicate light entity update test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-s3-render-backpressure.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'ESP32-S3 render backpressure test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-s3-weather-batching.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'ESP32-S3 weather work budget test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-guition-s3-update-check-resync.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Guition S3 update-check display guard test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-admin-cover-editor.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Admin Cover editor contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-guition-jc8012-v2-profile.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Guition JC8012P4A1 V2 profile contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-jc1060-sd-power.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Guition JC1060P470C SD power contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-waveshare-7b-profile.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Waveshare Touch LCD 7B / 7B-C profile contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-guition-jc1060-v2-profile.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Guition JC1060P470C V2 profile contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-waveshare-s3-4b-profile.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Waveshare ESP32-S3 Touch LCD 4B profile contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-waveshare-4-3-profile.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Waveshare Touch LCD 4.3 profile contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-waveshare-10-brightness-floor.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Waveshare Touch LCD 10.1 brightness floor contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-new-device-profile-integration.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'New device profile integration contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-p4-camera-presenter.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'ESP32-P4 camera presenter contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-camera-bridge-timeout.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Camera Bridge timeout contract test failed.'
-}
-& $node.Source (Join-Path $PSScriptRoot 'test-import-latest-arduino-build.mjs')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Arduino build importer contract test failed.'
+    throw 'Host regression suite failed.'
 }
 
-$defines = @{
-    tab5 = 'DEVICE_M5STACKS_TAB5'
-    waveshare_b4 = 'DEVICE_WAVESHARE_4B'
-    waveshare_4_3 = 'DEVICE_WAVESHARE_TOUCH_LCD_4_3'
-    waveshare_7 = 'DEVICE_WAVESHARE_TOUCH_LCD_7'
-    waveshare_7b = 'DEVICE_WAVESHARE_TOUCH_LCD_7B'
-    waveshare_7b_rev3_1 = 'DEVICE_WAVESHARE_TOUCH_LCD_7B'
-    waveshare_8 = 'DEVICE_WAVESHARE_TOUCH_LCD_8'
-    waveshare_10_1 = 'DEVICE_WAVESHARE_TOUCH_LCD_10_1'
-    layout_test_1024x600 = 'DEVICE_LAYOUT_TEST_1024X600'
-    layout_test_480x480 = 'DEVICE_LAYOUT_TEST_480X480'
-    guition_jc8012p4a1 = 'DEVICE_GUITION_JC8012P4A1'
-    guition_jc8012p4a1_v2 = 'DEVICE_GUITION_JC8012P4A1_V2'
-    guition_jc1060p470c = 'DEVICE_GUITION_JC1060P470C'
-    guition_jc1060p470c_v2 = 'DEVICE_GUITION_JC1060P470C_V2'
-    guition_esp32_4848s040 = 'DEVICE_GUITION_ESP32_4848S040'
-    waveshare_s3_touch_lcd_4b = 'DEVICE_WAVESHARE_S3_TOUCH_LCD_4B'
-}
-
-$nativeS3Profiles = @(
-    'guition_esp32_4848s040',
-    'waveshare_s3_touch_lcd_4b'
-)
-$isNativeS3 = $Profile -in $nativeS3Profiles
+$isNativeS3 = $buildProfile.chipFamily -eq 'ESP32-S3'
 
 $profileLines = Get-Content -LiteralPath $sketchProfiles
 $insideProfile = $false
@@ -166,7 +81,12 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $resolvedEspHostedRxVariant = if ($EspHostedRxVariant -ne 'auto') {
     $EspHostedRxVariant
 } else {
-    'repo-a8204'
+    $buildProfile.rxVariant
+}
+
+if ($resolvedEspHostedRxVariant -eq 'repo-guition-jc8012-rx-single-block' -and
+    $Profile -ne 'guition_jc8012p4a1') {
+    throw 'The JC8012 single-block RX variant is limited to the exact Guition V1 profile.'
 }
 
 # The Arduino profile command reinstalls the ESP32 platform immediately before
@@ -185,8 +105,9 @@ foreach ($define in $ExtraDefine) {
     }
     $extraDefineFlags += "-D$define"
 }
-$cppFlags = "-DHOMETILES_CI_TARGET -D$($defines[$Profile]) $($extraDefineFlags -join ' ') $commonFlags"
+$cppFlags = "-DHOMETILES_CI_TARGET -D$($buildProfile.define) $($extraDefineFlags -join ' ') $commonFlags"
 $cFlags = $cppFlags
+$elfFlags = $buildProfile.elfFlags
 
 Move-Item -LiteralPath $sketchProfiles -Destination $hiddenSketchProfiles
 try {
@@ -201,6 +122,7 @@ try {
         --libraries $repoLibraries `
         --build-property "compiler.c.extra_flags=$cFlags" `
         --build-property "compiler.cpp.extra_flags=$cppFlags" `
+        --build-property "compiler.c.elf.extra_flags=$elfFlags" `
         $repoRoot
     if ($LASTEXITCODE -ne 0) {
         throw "Arduino build failed for profile '$Profile'."
@@ -262,19 +184,39 @@ if (-not $isNativeS3) {
         -not $sdioRxShortTailMarker) {
         throw "ESP-Hosted short-tail CMD53 RX marker missing from $firmwareBin"
     }
-    if ($resolvedEspHostedRxVariant -eq 'repo-a8204' -and
+    if ($resolvedEspHostedRxVariant -ne 'repo-short-tail' -and
         $sdioRxShortTailMarker) {
-        throw "Unexpected ESP-Hosted short-tail CMD53 RX marker found in a8204 baseline build: $firmwareBin"
+        throw "Unexpected ESP-Hosted short-tail CMD53 RX marker found in baseline build: $firmwareBin"
+    }
+    $sdioRxSingleBlockMarker = $firmwareStrings |
+        Select-String -SimpleMatch 'HomeTiles Issue30 RX single-block workaround active: max_blocks_per_CMD53=1'
+    if ($resolvedEspHostedRxVariant -eq 'repo-guition-jc8012-rx-single-block' -and
+        -not $sdioRxSingleBlockMarker) {
+        throw "ESP-Hosted JC8012 single-block RX marker missing from $firmwareBin"
+    }
+    if ($resolvedEspHostedRxVariant -ne 'repo-guition-jc8012-rx-single-block' -and
+        $sdioRxSingleBlockMarker) {
+        throw "Unexpected JC8012 single-block RX marker found in $firmwareBin"
     }
     $obsoletePktLenDrop = $firmwareStrings |
         Select-String -SimpleMatch 'PKT_LEN reg all-ones (bus read error); dropping read'
     if ($obsoletePktLenDrop) {
         throw "Obsolete masked PKT_LEN drop path found in $firmwareBin"
     }
+
+    $firmwareMap = Join-Path $OutputDirectory 'HomeTiles.ino.map'
+    $hasJc8012SdioWrapper = (Test-Path -LiteralPath $firmwareMap) -and
+        ((Get-Content -LiteralPath $firmwareMap -Raw).Contains('__wrap_esp_hosted_get_default_sdio_config'))
+    if ($Profile -eq 'guition_jc8012p4a1' -and -not $hasJc8012SdioWrapper) {
+        throw "JC8012 V1 SDIO configuration wrapper missing from $firmwareMap"
+    }
+    if ($Profile -ne 'guition_jc8012p4a1' -and $hasJc8012SdioWrapper) {
+        throw "Unexpected JC8012 V1 SDIO configuration wrapper found in $firmwareMap"
+    }
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $firmwareBin).Hash
-Write-Host "Safe firmware build completed: $firmwareBin"
+Write-Host "Firmware compilation completed: $firmwareBin"
 Write-Host "SHA256: $hash"
 if (-not $isNativeS3) {
     Write-Host "ESP-Hosted RX variant: $resolvedEspHostedRxVariant"

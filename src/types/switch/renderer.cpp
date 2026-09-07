@@ -1,11 +1,11 @@
 #include "src/types/switch/renderer.h"
-#include "src/tiles/tile_renderer_shared.h"
-#include "src/tiles/tile_renderer_fonts.h"
-#include "src/tiles/mdi_icons.h"
-#include "src/network/mqtt_handlers.h"
-#include "src/network/ha_bridge_config.h"
-#include "src/ui/light_popup.h"
-#include "src/tiles/tile_config.h"
+#include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/icons/mdi_icons.h"
+#include "src/network/mqtt/mqtt_handlers.h"
+#include "src/network/bridge/ha_bridge_config.h"
+#include "src/ui/popups/light/light_popup.h"
+#include "src/tiles/config/tile_config.h"
 #include <Arduino.h>
 
 struct SwitchEventData {
@@ -31,14 +31,10 @@ static bool is_switch_widget_tile(const Tile& tile);
 static void toggle_switch_tile(const SwitchEventData* data) {
   if (!data || !data->entity_id.length()) return;
 
-  if (is_light_entity_id(data->entity_id)) {
-    const SwitchState current =
-        get_switch_state(data->grid_type, data->index);
-    if (!current.available) return;
-  }
+  const SwitchState current = get_switch_state(data->grid_type, data->index);
+  if (!current.available) return;
 
   if (data->use_switch_widget) {
-    const SwitchState current = get_switch_state(data->grid_type, data->index);
     if (current.has_state) {
       const bool next_on = !current.is_on;
       update_switch_tile_state(data->grid_type, data->index, next_on ? "on" : "off");
@@ -74,7 +70,7 @@ static LightPopupInit build_light_popup_init(const SwitchEventData* data) {
   }
 
   const SwitchState state = get_switch_state(data->grid_type, data->index);
-  init.available = !init.is_light || state.available;
+  init.available = state.available;
   init.has_state = state.has_state;
   init.has_color = state.has_color;
   init.has_brightness = state.has_brightness;
@@ -125,14 +121,14 @@ lv_obj_t* render_switch_tile(lv_obj_t* parent, int col, int row, const Tile& til
   lv_obj_set_style_radius(container, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(container, 0, 0);
 
-  // Farbe verwenden (Standard: 0x353535 wenn color = 0)
+  // Use the configured color; default to 0x353535 when color is 0.
   uint32_t tile_color = tileBgColorOrDefault(tile, 0x2A2A2A);
   lv_obj_set_style_bg_color(container, lv_color_hex(tile_color), LV_PART_MAIN | LV_STATE_DEFAULT);
 lv_obj_set_style_bg_grad_color(container, lv_color_hex(tile_color), LV_PART_MAIN | LV_STATE_DEFAULT);
 lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
 
   if (!use_switch_widget) {
-    // Pressed-State: 10% heller
+    // Pressed state: 10% brighter.
     uint32_t pressed_color = brighten_rgb_color(tile_color, 0x10);
     lv_obj_set_style_bg_color(container, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
 lv_obj_set_style_bg_grad_color(container, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
@@ -151,7 +147,7 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
 
   set_tile_grid_cell(container, col, row, tile.span_w, tile.span_h);
 
-  // Icon Label (optional, falls icon_name vorhanden)
+  // Optional icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;
   lv_obj_t* title_lbl = nullptr;
   String icon_name = tile.icon_name;
@@ -178,7 +174,7 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
                      tile_layout::scale_480(4),
                      tile_layout::scale_480(-8));
       } else {
-        // Flexible Positionierung: Icon + Title = 2 Zeilen mittig, nur Icon = 1 Zeile mittig
+        // Center icon and title on two lines, or the icon alone on one line.
         if (has_title) {
           lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                        tile_layout::scale_480(-20));
@@ -189,19 +185,20 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
     }
   }
 
-  // Title Label (nur anzeigen wenn Titel vorhanden)
+  // Show the title label only when a title is set.
   if (has_title) {
     title_lbl = lv_label_create(container);
     if (title_lbl) {
       set_label_style(title_lbl, lv_color_white(),
                       tile_layout::header_title_font());
-      lv_label_set_text(title_lbl, tile.title.c_str());
+      if (use_switch_widget && has_icon) lv_obj_set_width(title_lbl, LV_PCT(70));
+      hometiles_title::tile(title_lbl, tile.title.c_str(), use_switch_widget);
 
       if (use_switch_widget) {
         lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT, 0,
                      tile_layout::scale_480(4));
       } else {
-        // Flexible Positionierung: mit Icon unten, ohne Icon mittig
+        // Position below the icon, or center when there is no icon.
         if (icon_lbl) {
           lv_obj_align(title_lbl, LV_ALIGN_CENTER, 0,
                        tile_layout::scale_480(35));

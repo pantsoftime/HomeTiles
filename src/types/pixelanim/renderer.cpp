@@ -6,9 +6,9 @@
 #include <math.h>
 #include <new>
 
-#include "src/core/psram_budget.h"
-#include "src/tiles/tile_renderer_shared.h"
-#include "src/tiles/tile_renderer_fonts.h"
+#include "src/core/memory/psram_budget.h"
+#include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/devices/device.h"
 #if defined(DEVICE_WAVESHARE_TOUCH_LCD_X)
 #include "src/devices/active_device.h"
@@ -446,7 +446,8 @@ lv_obj_t* render_pixelanim_tile(lv_obj_t* parent, int col, int row, const Tile& 
     if (title_lbl) {
       set_label_style(title_lbl, lv_color_white(),
                       tile_layout::header_title_font());
-      lv_label_set_text(title_lbl, tile.title.c_str());
+      lv_obj_set_style_pad_right(title_lbl, tile_layout::scale(28), 0);
+      hometiles_title::tile(title_lbl, tile.title.c_str(), true);
       lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT,
                    tile_layout::scale(14), tile_layout::scale(12));
     }

@@ -1,19 +1,13 @@
 # HomeTiles shared project context
 
-Last reviewed: 2026-09-03
-
-This is the concise cross-agent project state for Codex, Claude, and other
-tools. `AGENTS.md` is the only rulebook. Replace stale facts here instead of
-adding model-specific handoffs or a chronological diary.
+Last reviewed: 2026-09-07
 
 ## Sources of truth
 
 - Firmware version: `version.txt`
-- Current code state: `git status`, recent commits, and the checked-out branch
-- Device support and validation: the tables in `README.md` and
-  `docs/flashing.md`
-- ESP32-P4/ESP-Hosted patch details:
-  `tools/esp-hosted-3.3.7-rx-fix/README.md`
+- Current code: `git status`, recent commits, checked-out branch
+- Device support and validation: `docs/index.md` (device status notes)
+- ESP32-P4/ESP-Hosted patches: `tools/esp-hosted-3.3.7-rx-fix/README.md`
 - Release procedure: `RELEASING.md`
 - Live bug status: the current GitHub issue and its newest comments; recheck
   online before changing an issue status
@@ -22,18 +16,10 @@ adding model-specific handoffs or a chronological diary.
 
 ## Current firmware baseline
 
-- Firmware release `v0.6.9` adds Binary Sensor and categorical Sensor history,
-  Waveshare 4.3-inch support, the Waveshare 8 thin-PPA-strip guard, B4 visible
-  brightness calibration, and the stabilization work committed after `v0.6.8`.
-- The commits after `33b4e06` integrate PR #33 cleanup and accessibility work
-  plus the isolated JC8012 V1 startup change. They did not create a new tag or
-  release.
-- Recent stabilization work includes S3 update/display guards, MQTT packet
-  validation, duplicate Light update coalescing, bounded S3 update work, and
-  incremental Weather parsing (`e3de63c`, `631de57`, `8d5771c`, `33b4e06`).
-- The `v0.6.9` source passes all 53 tests. Binary/Text-State Sensor UI paths
-  were exercised on Waveshare 4B, Waveshare 8-inch, and Guition ESP32-S3;
-  GitHub Actions remains responsible for the complete release build matrix.
+- Release `v0.6.10`: editable values/history, HA View control, compatible Switch/Scene domains, centered two-line titles, Web preview/fonts, MQTT/icon fixes and capability-based sensor cleanup.
+- v0.6.10 includes the tested JC8012 V1 SDIO RX fix and Waveshare S3 LCD-4 Rev 4.0 (PR #35). Release workflow builds 15 profiles / 30 images and deploys the installer.
+- Stabilization: S3 display/update guards, MQTT validation, Light coalescing and incremental Weather (`e3de63c`–`33b4e06`).
+- Maintainer approved the current 8-inch/S3 test builds for release on 2026-09-07. Other device/runtime limits remain below.
 - The experimental Guition S3 XIP/`-O2` performance path was reverted in
   `5279456`. Do not reintroduce it as an assumed optimization. It increased
   risk and did not solve the measured interaction problem.
@@ -42,13 +28,12 @@ adding model-specific handoffs or a chronological diary.
 
 - The maintainer can directly test M5Stack Tab5, Waveshare 4B, Waveshare
   8-inch, and Guition ESP32-4848S040 S3 hardware.
+- v0.6.9 Binary/Text-State Sensor UI passed hardware tests on 4B, 8-inch and S3.
 - Other exact revisions depend on community testers. A successful compile does
   not promote an untested revision to supported status.
-- Similar P4 products share application code and sometimes base-board logic,
-  but panel controller, initialization table, timing, touch controller, board
-  revision, and firmware image remain exact-profile concerns.
-- The current supported/pending matrix already lives in `README.md`; do not
-  maintain a duplicate device plan.
+- P4 application code is shared; panel/touch controllers, initialization, timing, board revision and firmware images remain exact-profile concerns.
+- LCD-4 Rev 4.0 has contributor-tested display/touch/Wi-Fi/MQTT/Web OTA;
+  older revisions and SD access are unsupported. See `docs/index.md` for validation.
 
 ## Active problem: GitHub issue #30
 
@@ -90,8 +75,9 @@ Issue: https://github.com/GalusPeres/HomeTiles/issues/30
   5.1-kohm pull-ups on CMD, CLK, and D0-D3 without series termination;
   Waveshare 8-inch uses 51-kohm pull-ups, while Tab5 combines 5.1-kohm
   pull-ups with 22-ohm series resistors and a separately switched WLAN rail.
-  This makes Guition-specific SDIO signal or power margin plausible, but it is
-  not proven until the lower-clock test changes the failure.
+  This makes Guition-specific SDIO signal or power margin plausible. The b6
+  result proves that limiting the RX CMD53 transaction length is an effective
+  mitigation, but it does not by itself prove the underlying electrical cause.
 - Guition's original `JC8012P4A1_C6.bin` and the current HomeTiles host both
   use ESP-Hosted streaming mode. The newer official
   `JC-C6-slave_v2.3.2.bin` uses packet mode and is not a drop-in C6 update for
@@ -102,18 +88,17 @@ Issue: https://github.com/GalusPeres/HomeTiles/issues/30
   report concerns a different `0x102` TX/alignment failure on another board;
   the normal 2.9.3-to-2.11.6 CMD53 RX path does not explain this Guition's
   `0x109` CRC failure, and rollback would discard relevant safety fixes.
-- `v0.6.8b6` is an uncommitted Guition-only diagnostic build pending reporter
-  validation. It retains b5's 1-bit/40-MHz configuration and the b4/b5 logs,
-  and activates Espressif's dormant workaround that splits large P4 RX reads
-  into individual 512-byte CMD53 reads. It changes neither C6 firmware nor
-  camera behavior and must not be published without explicit authorization.
+- `v0.6.8b6` passed the reporter's hardware test: both cameras ran at 15-20 FPS,
+  Web Admin OTA succeeded, and the previous `0x109`/`0x107` failure did not
+  recur. The regular-source integration retains the proven 1-bit/40-MHz V1
+  configuration and splits large P4 RX reads into individual 512-byte CMD53
+  reads. Reporter confirmed integrated v0.6.9b1 Camera/Web OTA; v0.6.10 ships it.
 - Lowering camera FPS, resolution, or quality may be used only as a clearly
   identified diagnostic A/B test. It is not an acceptable final fix and must
   not silently reduce normal camera performance.
-- Continue from the current code and official exact-board/Espressif evidence.
-  Prefer the narrowest proven fix, keep unrelated P4 and S3 profiles unchanged,
-  add a focused regression check, and provide only one Guition OTA test BIN
-  when requested. Do not publish it without explicit authorization.
+- Keep the release integration limited to the exact V1 profile and verify the
+  single-block marker plus 1-bit configuration in its final build. Other P4
+  profiles must retain their baseline ESP-Hosted object; S3 remains unaffected.
 
 ## ESP32-P4 network history that remains relevant
 
@@ -123,36 +108,50 @@ Issue: https://github.com/GalusPeres/HomeTiles/issues/30
   `tools/esp-hosted-3.3.7-rx-fix/README.md`; do not duplicate them here.
 - The `repo-a8204` variant is the release-safe baseline. The short-tail receive
   variant was an experimental field path and is not proof of a universal fix.
-- Historical P4 OTA experiments showed that generic transfer throttling,
+- P4 OTA experiments showed that generic transfer throttling,
   PSRAM-only staging, direct TLS-to-flash streaming, in-place ESP-Hosted
   restart, and extra permanent SDIO buffers did not cure the underlying
   failure. Do not repeat them without new evidence and an isolated test.
-- Existing safeguards against a permanent network wedge are recovery, not
+- Network wedge safeguards are recovery, not
   proof that the transport defect is solved.
 
 ## Binary and textual Sensor history in v0.6.9
 
-- Firmware adds stable tile type 20, reusing `sensor_entity`
-  without changing `PackedTileV7`.
-- Device UI/Web Admin use central DE/EN/FR strings, state-aware HA icons,
-  autosave/previews, and a responsive 24-hour/7-day Sensor popup; textual
-  `sensor.*` states reuse its timeline/Activity while numbers keep the graph.
-- Missing, `unknown`, and `unavailable` remain distinct; state payloads and UI
-  queues are bounded. Notifications and sounds remain deferred.
-- Bridge v0.6.40 (`581150b`) is released with complete bounded Recorder paging,
-  categorical Sensor history, and explicit legacy-firmware compatibility.
+- Stable tile type 20 reuses `sensor_entity` without changing `PackedTileV7`; central DE/EN/FR strings, state-aware HA icons, autosave/previews and responsive 24-hour/7-day history are released.
+- Textual states use timeline/Activity; numeric sensors retain graphs. Missing, unknown and unavailable remain distinct.
+- Bridge v0.6.40 (`581150b`) released bounded Recorder paging, categorical history and legacy-firmware compatibility.
 
-## Product direction still requested
+## Editable value tiles in v0.6.10
 
-- Stability and exact-device validation come before broad new features.
-- Later work includes notifications/sounds, event-driven folder colors, Number,
-  Date/Time, Select, Button, and related entities; track priority in live issues.
+- IDs 21 Number, 22 Select, 23 Date/Time reuse Sensor rendering/persistence/popups; value font uses Sensor's five choices. Preview refresh preserves normalized `editableValues`; `PackedTileV7` is unchanged.
+- Number/input_number uses the centered Media slider/value, Climate +/- pill or bounded roller, with graph/Activity. Select/input_select uses Settings dropdowns, timeline and Activity.
+- Time/date/datetime/input_datetime: large single-row hh/mm/ss rollers in a pill matching popup color, no arrows, native 23/00 and 59/00 wrap; date spinboxes without keyboard. HA timezone/DST validation applies.
+- Additive `/control` preserves legacy clients; service allow-lists, sessions, revisions and deadlines reject stale commands.
+- Bridge v0.6.44 (`148dec4`) is on HACS; fixes stale icon cache, preserves overrides. 119 Bridge tests pass. The v0.6.10 release includes checkpoint `84511da` and subsequent title/color fixes.
+- Control bands clear wrapped titles and the full close touch area. Number/Select share a height; Time is taller. Select keeps compact history and earlier Activity. Status shares the heading row. Range changes keep old data until reply; offline closes dropdowns.
+- Drafts coalesce steps/rollers for 600 ms, publish sliders on release and survive service ACKs until confirmation/rejection or 30-second timeout.
+- Editable popup surfaces derive from tile color; white text/fonts stay unchanged. Dropdown selection is white with surface-colored text; Guition S3 arrow uses 20px. Tests cover 4096 colors and seven layouts. Builds: `build/editable-colors-view/`.
+- Wi-Fi audit: S3 idle (>3 s) requests MIN_MODEM/11 dBm; sleep/wake NONE/19.5. P4 blocks idle saving; boot/reconnect and failed-call caching have gaps on both. Unfixed; probes: `build/wifi-power-audit/VERIFICATION.md`.
+- Titles: two centered lines with ellipsis, 255 UTF-8 bytes in `/_tile_titles`; Settings uses `set_title`, record v4 unchanged. View labels flatten CR/LF to fix Bridge `writable:false` from multiline S3 titles. Current builds approved by maintainer.
+- S3 froze adding Number to active screensaver: Web answered, save persisted, user rebooted; crash log has an older ELF. Cause unproven; retained as a release validation limitation.
+## Current maintenance refactoring
 
-## Maintenance rule for this file
+- Architecture/workflows: `ARCHITECTURE.md`, `CONTRIBUTING.md`; host dependencies need `npm ci --ignore-scripts`.
+- Docs source: `docs/`, `mkdocs.yml`, `overrides/`; root hosting deploys `HomeTiles/gh-pages`.
+- https://galusperes.github.io/ desktop/mobile pages and all 14 published flasher profiles checked 2026-09-06.
+- Previous maintenance BINs and hashes: `build/maintenance-20260905/VERIFICATION.md`.
 
-- Update the review date and affected facts after a meaningful change.
-- Remove resolved tasks and obsolete experiments; keep only conclusions that
-  prevent repeated work.
-- Link to canonical technical documents instead of copying them.
-- Never paste raw serial logs, complete issue threads, temporary BIN lists, or
-  chat summaries here.
+## Current view control, telemetry and compatible controls
+
+- v0.6.10 includes Home/folder/popup navigation from `4c9ea4e`, using existing UI, PIN and camera teardown paths.
+- Visible folders are reused for their popup/descendants; new/locked paths still require access checks (S3 Home detour fix).
+- Stable tile IDs use reserved PackedTileV7 bytes and durable counters; MQTT sessions/sequences/deadlines reject replay.
+- Bridge v0.6.44 (`148dec4`) retains View/telemetry migration and compatible controls. The firmware documentation now covers these features.
+- Switch adds input_boolean/automation/fan/humidifier/remote/siren; Scene adds button/input_button. Aliases stay stable.
+- Commands validate selected targets, availability and on/off features; retained commands are ignored.
+- Firmware battery is a stub on all profiles. Unsupported battery/probes are no longer auto-registered; explicit local I/O remains.
+- Bridge migration checks registry ownership/capabilities, cleans shared selections and preserves user entities.
+- Current firmware verification: 85 host tests; sequential incremental S3/8-inch builds pass. BINs/hashes: `build/editable-colors-view/VERIFICATION.md`.
+- Maintainer reports View and editable controls working on Waveshare 8-inch/S3; broader HA/device validation remains pending.
+- HA migration/re-pairing, old firmware compatibility, PIN, stream cleanup and sleep/reconnect remain pending.
+- Issue #37: valid 20,033-byte packet disconnects v0.6.9 at 16 KiB; local reception grows to 65,535 bytes with bounded queues/draining/ACKs/logs. Reporter confirmation pending. Maintainer log: no unplanned MQTT loss (~7.5 h earlier BIN, ~25 min latest; two OTA restarts).

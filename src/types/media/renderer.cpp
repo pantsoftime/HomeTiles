@@ -2,21 +2,21 @@
 
 #include <Arduino.h>
 
-#include "src/core/config_manager.h"
-#include "src/core/i18n.h"
-#include "src/network/ha_bridge_config.h"
-#include "src/network/mqtt_handlers.h"
+#include "src/core/config/config_manager.h"
+#include "src/core/i18n/i18n.h"
+#include "src/network/bridge/ha_bridge_config.h"
+#include "src/network/mqtt/mqtt_handlers.h"
 #include "src/devices/device_select.h"
-#include "src/tiles/mdi_icons.h"
-#include "src/tiles/tile_renderer_fonts.h"
-#include "src/tiles/tile_renderer_shared.h"
-#include "src/ui/media_popup.h"
+#include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/popups/media/media_popup.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-// lvgl.h exportiert lv_image_cache_drop() in 9.5 nicht mehr, die Deklaration
-// liegt nur noch im Instanz-Header.
+// LVGL 9.5 no longer exports lv_image_cache_drop() through lvgl.h;
+// its declaration is only in the instance header.
 #include <misc/cache/instance/lv_image_cache.h>
 
 namespace {
@@ -61,8 +61,8 @@ struct MediaPopupEventData {
 static void free_cover_dsc(MediaCoverRef* ref) {
   if (!ref) return;
   if (ref->dsc) {
-    // Cache-Eintrag (Key = dsc-Adresse) mit entsorgen, sonst zeigt ein
-    // spaeterer dsc an derselben malloc-Adresse das alte Bild (Artefakte).
+    // Also drop the cache entry keyed by the descriptor address. Otherwise,
+    // a later descriptor at the same malloc address can show the old image.
     lv_image_cache_drop(ref->dsc);
     if (ref->dsc->data) {
       free(const_cast<uint8_t*>(ref->dsc->data));
@@ -88,9 +88,9 @@ static void free_cover_dsc(MediaCoverRef* ref) {
 static void cover_ref_delete_cb(lv_event_t* e) {
   if (lv_event_get_code(e) != LV_EVENT_DELETE) return;
   MediaCoverRef* ref = static_cast<MediaCoverRef*>(lv_event_get_user_data(e));
-  // Erst alle Widget-Array-Eintraege auf diesen Ref vergessen, dann freigeben
-  // — sonst liest der Cover-Retry spaeter freigegebenen Speicher (Crash beim
-  // Loeschen eines Media-Tiles im Web-Admin, v0.4.16).
+  // Clear every widget-array entry referring to this object before freeing
+  // it. Otherwise, a cover retry can read freed memory, as seen when deleting
+  // a media tile through Web Admin in v0.4.16.
   tile_renderer_forget_media_widgets(ref);
   free_cover_dsc(ref);
   delete ref;
@@ -408,7 +408,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(title_label, LV_PCT(70));
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_text(title_label, title_text.c_str());
+    hometiles_title::tile(title_label, title_text.c_str(), true);
     lv_obj_align(title_label, LV_ALIGN_TOP_RIGHT,
                  tile_layout::scale_480(4),
                  tile_layout::scale_480(4));

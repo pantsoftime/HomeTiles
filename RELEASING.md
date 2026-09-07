@@ -6,6 +6,23 @@ You never upload binaries by hand — you only bump the version and push a tag.
 
 ## Steps
 
+Before tagging, install the locked host dependencies and validate generated
+assets and tests from the repository root:
+
+```text
+npm ci --ignore-scripts
+node tools/generate-device-profiles.mjs --check
+node tools/generate-web-assets.mjs --check
+node tools/run-tests.mjs
+```
+
+Web asset delivery uses pinned Terser 5.51.2 with `compress: false` and
+`mangle: false`, an independent Acorn syntax-tree check, and deterministic gzip.
+The readable source and assembly remain available; npm packages are build tools
+and are not installed on the device or loaded by its browser UI. Commit any
+required regenerated assets before preparing the release. Final firmware size
+and hardware checks remain separate release requirements.
+
 ```bash
 # 1. Bump the version (only when the current state is actually ready to ship!)
 #    Edit version.txt:  #define FW_VERSION "vX.Y.Z"
@@ -19,7 +36,7 @@ git push --atomic origin main refs/tags/vX.Y.Z
 
 That's it. The action then:
 
-1. Builds 14 explicit installer/release profiles for thirteen physical device
+1. Builds 15 explicit installer/release profiles for fourteen physical device
    profiles with the pinned toolchain (ESP32 core + libraries, see workflow
    `env`). Waveshare 7B/7B-C has a build for pre-v3 revisions 1–199 and a
    separate, experimental exact-v3.1 build. The latter uses profile
@@ -34,13 +51,13 @@ That's it. The action then:
    in each binary. The v3.1 HomeTiles contract must be 301–301 even though the
    Arduino `v3.00 or newer` ESP image header can remain 301–399.
 4. Creates the GitHub release with auto-generated notes and uploads all
-   28 binaries (`<device>.bin` for OTA + `<device>_factory.bin` for first flash).
+   30 binaries (`<device>.bin` for OTA + `<device>_factory.bin` for first flash).
 
-After all 28 assets were uploaded successfully, the release job explicitly
+After all 30 assets were uploaded successfully, the release job explicitly
 dispatches the documentation workflow for the release tag. This explicit
 `workflow_dispatch` is required because GitHub suppresses ordinary follow-up
 workflow events created with `GITHUB_TOKEN`. The documentation workflow
-validates the installer device/asset contract, downloads the same 28 published
+validates the installer device/asset contract, downloads the same 30 published
 release assets, verifies their GitHub SHA-256 digests, and places them in the
 generated documentation site under `firmware/latest/`. Normal documentation
 changes pushed to `main` still deploy through the workflow's filtered `push`
@@ -50,13 +67,19 @@ header required by browser flashing. The `gh-pages` deployment is an orphan
 snapshot so successive full-size factory images do not accumulate in the
 branch history.
 
+The canonical documentation URL is https://galusperes.github.io/. Its hosting
+repository deploys the same verified `HomeTiles/gh-pages` snapshot and checks
+for changes twice per hour. Run **Publish HomeTiles documentation** in
+`GalusPeres/galusperes.github.io` for immediate publication after a release,
+then check the live installer version and asset downloads.
+
 Keep the two browser operations distinct. **Factory** must erase the full chip
 and write the merged image at `0x0`. **Update** must never use that merged image
 or an install flow that can opt into a full erase; it verifies `partitions.csv`
 and the current redundant OTA selection, writes the regular app image once to
 the inactive slot, verifies it, and only then commits a new redundant OTA
 selection entry. NVS and LittleFS remain untouched.
-`tools/test-installer-otadata.mjs` and `tools/test-web-installer.mjs` guard this
+`tools/tests/build/test-installer-otadata.mjs` and `tools/tests/build/test-web-installer.mjs` guard this
 contract.
 
 The checked-in release notes are not copied into the GitHub release
@@ -92,9 +115,10 @@ release is published (GitHub CDN propagation can add a few minutes).
 - **Don't pre-create a draft release for the tag.** The workflow can't see
   drafts and would create a second release. If you want custom release notes,
   edit them *after* the workflow finishes (web UI or `gh release edit`).
-- **Keep target-specific networking paths separated.** All published P4
-  release targets use the checked-in a8204 ESP-Hosted baseline; the ESP32-S3
-  targets use native WiFi. CI verifies the expected markers before packaging.
+- **Keep target-specific networking paths separated.** Guition JC8012P4A1 V1
+  uses its field-validated single-block RX variant; every other published P4
+  target uses the checked-in a8204 ESP-Hosted baseline, and ESP32-S3 targets
+  use native WiFi. CI verifies the expected markers before packaging.
 
 ## Preparing a candidate without releasing
 

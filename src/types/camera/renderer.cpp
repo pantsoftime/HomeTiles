@@ -1,12 +1,12 @@
 #include "src/types/camera/renderer.h"
 
-#include "src/core/config_manager.h"
-#include "src/core/i18n.h"
-#include "src/network/ha_bridge_config.h"
-#include "src/tiles/mdi_icons.h"
-#include "src/tiles/tile_renderer_fonts.h"
-#include "src/tiles/tile_renderer_shared.h"
-#include "src/ui/camera_popup.h"
+#include "src/core/config/config_manager.h"
+#include "src/core/i18n/i18n.h"
+#include "src/network/bridge/ha_bridge_config.h"
+#include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/popups/camera/camera_popup.h"
 
 namespace {
 
@@ -109,7 +109,7 @@ lv_obj_t* render_camera_tile(lv_obj_t* parent,
   lv_obj_t* title_label = lv_label_create(card);
   set_label_style(title_label, lv_color_white(),
                   tile_layout::header_title_font());
-  lv_label_set_text(title_label, title.c_str());
+  hometiles_title::tile(title_label, title.c_str(), false);
   if (icon) {
     lv_obj_align(title_label, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
   } else {

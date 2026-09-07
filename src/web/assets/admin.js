@@ -412,7 +412,7 @@ function t(key) {
     if (snapshot.title) {
       const title = document.createElement('div');
       title.className = 'tile-title';
-      title.textContent = snapshot.title;
+      title.innerHTML = tileTitleHtml(snapshot.title);
       tile.appendChild(title);
     }
     if (currentTileIndex === HIDDEN_SETTINGS_TILE_INDEX &&
@@ -1574,7 +1574,8 @@ function t(key) {
     if (!payload || typeof payload !== 'object') {
       return { values: {}, units: {}, icons: {}, names: {}, loaded: false };
     }
-    const hasMeta = Object.prototype.hasOwnProperty.call(payload, 'values') ||
+    const hasMeta = Object.prototype.hasOwnProperty.call(payload, 'editable_values') ||
+                    Object.prototype.hasOwnProperty.call(payload, 'values') ||
                     Object.prototype.hasOwnProperty.call(payload, 'units') ||
                     Object.prototype.hasOwnProperty.call(payload, 'icons') ||
                     Object.prototype.hasOwnProperty.call(payload, 'names') ||
@@ -1593,6 +1594,7 @@ function t(key) {
         payload.energy_values || {},
         payload.climate_values || {}
       ),
+      editableValues: payload.editable_values || payload.editableValues || {},
       units: Object.assign({}, payload.units || {}, payload.energy_units || {}),
       icons: payload.icons || {},
       names: payload.names || {},
@@ -1653,7 +1655,7 @@ function t(key) {
     return trimmed === '-' || trimmed === 'none' || trimmed === 'null' || trimmed === 'no' || trimmed === 'off';
   }
 
-  // Mirrors appendHtmlEscaped() in src/web/web_admin_utils.cpp. The tile
+  // Mirrors appendHtmlEscaped() in src/web/server/web_admin_utils.cpp. The tile
   // previews are assembled as markup strings, so every tile title, unit, value
   // and icon name coming from a configuration or from Home Assistant has to be
   // escaped before it is inserted.
@@ -1691,6 +1693,24 @@ function t(key) {
       return metaUnits[entityId];
     }
     return '';
+  }
+
+  function normalizeTileTitle(value) {
+    const lines = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\\n/g, '\n').split('\n');
+    const text = lines.length > 2 ? lines[0] + '\n' + lines.slice(1).join(' ') : lines.join('\n');
+    let bytes = 0, result = '';
+    for (const character of text) {
+      const code = character.codePointAt(0);
+      bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      if (bytes > 255) break;
+      result += character;
+    }
+    return result;
+  }
+
+  function tileTitleHtml(value) {
+    return '<span class="tile-title-lines">' + normalizeTileTitle(value).split('\n')
+      .map(line => '<span class="tile-title-line">' + escapeHtml(line) + '</span>').join('') + '</span>';
   }
 
   function getTileTypeMeta(typeValue) {
@@ -1797,6 +1817,10 @@ function t(key) {
       .then(data => {
         rebuildEntitySelect(tab + '_sensor_entity', data.sensors);
         rebuildEntitySelect(tab + '_binary_sensor_entity', data.binary_sensors);
+        rebuildEntitySelect(tab + '_number_entity', data.numbers);
+        rebuildEntitySelect(tab + '_select_entity', data.selects);
+        rebuildEntitySelect(tab + '_datetime_entity', data.datetimes);
+
         rebuildEntitySelect(tab + '_energy_entity', data.energy);
         rebuildEntitySelect(tab + '_weather_entity', data.weathers);
         rebuildEntitySelect(tab + '_switch_entity', data.switches);
@@ -1899,6 +1923,9 @@ function t(key) {
 
     if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'switch_entity')) {
       tile.sensor_entity = snapshot.switch_entity || '';
+    }
+    for (const kind of ['number', 'select', 'datetime']) {
+      if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, kind + '_entity')) tile.sensor_entity = snapshot[kind + '_entity'] || '';
     }
     if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'binary_sensor_entity')) {
       tile.sensor_entity = snapshot.binary_sensor_entity || '';
@@ -3074,7 +3101,11 @@ function t(key) {
     const clockDateFormatSelect = document.getElementById(prefix + '_clock_date_format');
     const settingsPanel = document.getElementById(prefix + 'Settings');
 
-    bindLive(titleInput, 'input', 'tileTitle', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(titleInput, 'input', 'tileTitle', () => {
+      const normalized = normalizeTileTitle(titleInput.value);
+      if (normalized !== titleInput.value) titleInput.value = normalized;
+      updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+    });
     bindLive(iconInput, 'input', 'tileIcon', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colorInput, 'input', 'tileColor', () => { markTileColorInputExplicit(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(opacityInput, 'input', 'tileOpacity', () => { updateTilePreview(tab); updateDraft(tab); });
@@ -3107,6 +3138,21 @@ function t(key) {
       scheduleAutoSave(tab);
     });
     bindLive(entitySelect, 'change', 'sensorEntity', () => { maybeFillTitleFromSensor(tab); updateTilePreview(tab); updateSensorValuePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    for (const kind of ['number', 'select', 'datetime']) {
+      const select = document.getElementById(prefix + '_' + kind + '_entity');
+      bindLive(select, 'change', kind + 'Entity', () => {
+        if (select.value) select.dataset.configuredValue = select.value;
+        else delete select.dataset.configuredValue;
+        maybeFillTitleFromEntity(tab, '_' + kind + '_entity');
+        updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+      });
+      bindLive(document.getElementById(prefix + '_' + kind + '_value_font'), 'change', kind + 'ValueFont', () => {
+        updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+      });
+      bindLive(document.getElementById(prefix + '_' + kind + '_popup_open_mode'), 'change', kind + 'PopupMode', () => {
+        updateDraft(tab); scheduleAutoSave(tab);
+      });
+    }
     bindLive(binarySensorSelect, 'change', 'binarySensorEntity', () => {
       if (binarySensorSelect.value) {
         binarySensorSelect.dataset.configuredValue = binarySensorSelect.value;
@@ -3325,8 +3371,9 @@ function t(key) {
     const sensorValueFont = isEnergyType
       ? (document.getElementById(prefix + '_energy_value_font')?.value || '0')
       : (document.getElementById(prefix + '_sensor_value_font')?.value || '0');
-    const sensorValueClass = getSensorValueFontClass(sensorValueFont);
     const previewKind = meta.preview || 'none';
+    const sensorValueClass = getSensorValueFontClass(isEditablePreview(previewKind)
+      ? (document.getElementById(prefix + '_' + previewKind + '_value_font')?.value ?? '2') : sensorValueFont);
     const sensorEntity = document.getElementById(prefix + '_sensor_entity')?.value || '';
     const binarySensorEntity = document.getElementById(
       prefix + '_binary_sensor_entity')?.value || '';
@@ -3337,7 +3384,7 @@ function t(key) {
     const climateEntity = document.getElementById(prefix + '_climate_entity')?.value || '';
     const coverEntity = document.getElementById(prefix + '_cover_entity')?.value || '';
     const cameraEntity = document.getElementById(prefix + '_camera_entity')?.value || '';
-    const iconEntity = (previewKind === 'sensor')
+    let iconEntity = (previewKind === 'sensor')
       ? (isEnergyType ? energyEntity : sensorEntity)
       : (previewKind === 'binary_sensor'
         ? binarySensorEntity
@@ -3352,6 +3399,7 @@ function t(key) {
               : (previewKind === 'cover'
                 ? coverEntity
                 : (previewKind === 'camera' ? cameraEntity : '')))))));
+    if (isEditablePreview(previewKind)) iconEntity = document.getElementById(prefix + '_' + previewKind + '_entity')?.value || '';
     const rawIcon = iconInput ? iconInput.value : '';
     let iconName = resolveIconName(
       rawIcon,
@@ -3447,7 +3495,7 @@ function t(key) {
     }
     if (displayTitle) {
       html += '<div class="tile-title" id="' + tileId + '-title">' +
-        escapeHtml(displayTitle) + '</div>';
+        tileTitleHtml(displayTitle) + '</div>';
     }
     applyTileAriaLabel(tileElem, displayTitle, type);
 
@@ -3482,6 +3530,8 @@ function t(key) {
         escapeHtml(binarySensorPreviewStateText(binarySensorPreviewState)) +
         '</div>';
     }
+
+    if (isEditablePreview(previewKind)) html += '<div class="tile-value tile-editable-value ' + sensorValueClass + '">' + escapeHtml(editablePreviewText(iconEntity, previewKind)) + '</div>';
 
     if (previewKind === 'sensor') {
       const entitySelect = document.getElementById(prefix + (isEnergyType ? '_energy_entity' : '_sensor_entity'));
@@ -4236,7 +4286,7 @@ function t(key) {
     const currentTiles = await fetchTilesForImport(folderId);
     const tileCount = GRID_COLS * GRID_ROWS;
     const preparedTiles = prepareScreensaverTilesForImport(sourceTiles, sourceLayout);
-    const supportedTypes = new Set([1, 2, 5, 14, 20, MEDIA_TILE_TYPE]);
+    const supportedTypes = new Set([1, 2, 5, 14, 20, 21, 22, 23, MEDIA_TILE_TYPE]);
     for (const entry of preparedTiles) {
       if (!supportedTypes.has(Number(entry.tile.type || 0))) {
         throw new Error('Unsupported screensaver tile type');
@@ -4378,6 +4428,7 @@ function t(key) {
       fd.append('background_opacity', tile.background_opacity);
     }
 
+    if ([21, 22, 23].includes(safeType)) fd.append('sensor_value_font', tile.sensor_value_font ?? 2);
     if (safeType === 1) {
       fd.append('sensor_entity', tile.sensor_entity || '');
       fd.append('sensor_unit', tile.sensor_unit || '');
@@ -4418,6 +4469,10 @@ function t(key) {
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
+    } else if (safeType >= 21 && safeType <= 23) {
+      const kind = ['number', 'select', 'datetime'][safeType - 21];
+      fd.append(kind + '_entity', tile.sensor_entity || tile[kind + '_entity'] || '');
+      fd.append('popup_open_mode', tile.popup_open_mode ?? 1);
     } else if (safeType === 20) {
       fd.append(
         'binary_sensor_entity',
@@ -4631,7 +4686,7 @@ function t(key) {
     }
     else {
       const previewKind = meta.preview || 'none';
-      const iconEntity = (previewKind === 'sensor' ||
+      const iconEntity = (isEditablePreview(previewKind) || previewKind === 'sensor' ||
                           previewKind === 'binary_sensor' ||
                           previewKind === 'switch' ||
                           previewKind === 'weather' || previewKind === 'media' ||
@@ -4696,7 +4751,7 @@ function t(key) {
       }
       if (displayTitle.length) {
         html += '<div class="tile-title" id="' + tab + '-tile-' + index + '-title">' +
-          escapeHtml(displayTitle) + '</div>';
+          tileTitleHtml(displayTitle) + '</div>';
       }
       applyTileAriaLabel(el, displayTitle, typeValue);
 
@@ -4739,6 +4794,7 @@ function t(key) {
           escapeHtml(binarySensorPreviewStateText(binarySensorPreviewState)) +
           '</div>';
       }
+      if (isEditablePreview(previewKind)) html += '<div class="tile-value tile-editable-value ' + sensorValueClass + '">' + escapeHtml(editablePreviewText(iconEntity, previewKind, sensorMeta)) + '</div>';
       if (previewKind === 'clock') {
         const flags = normalizeClockFlags(tile.sensor_decimals);
         const clockTimeFont = tile.key_code || 40;
@@ -7622,19 +7678,7 @@ function normalizeIconName(value) {
   }
 
   function loadNavigateFields(tab, data) {
-    // Fork: optional live value on a folder tile. The navigation target lives
-    // in key_code/key_modifier, so sensor_entity and friends are free to reuse.
     const prefix = tab;
-    const entEl = document.getElementById(prefix + '_navigate_sensor_entity');
-    if (entEl) entEl.value = (data && data.sensor_entity) ? data.sensor_entity : '';
-    const decEl = document.getElementById(prefix + '_navigate_sensor_decimals');
-    if (decEl) {
-      const dec = (data && data.sensor_decimals !== undefined && data.sensor_decimals !== null)
-        ? Number(data.sensor_decimals) : -1;
-      decEl.value = (dec >= 0 && dec <= 6) ? dec : '';
-    }
-    const fontEl = document.getElementById(prefix + '_navigate_sensor_value_font');
-    if (fontEl) fontEl.value = String((data && data.sensor_value_font) || '0');
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
     const status = document.getElementById(prefix + '_folder_pin_status');
@@ -7662,27 +7706,10 @@ function normalizeIconName(value) {
     if (navEl) {
       formData.append('navigate_target', navEl.value || '0');
     }
-    // Fork: always send the live-value fields, so clearing the entity actually
-    // removes it (an empty string resets the stored field).
-    const entEl = document.getElementById(prefix + '_navigate_sensor_entity');
-    if (entEl) {
-      formData.append('sensor_entity', entEl.value || '');
-      const decEl = document.getElementById(prefix + '_navigate_sensor_decimals');
-      const decRaw = decEl ? String(decEl.value).trim() : '';
-      formData.append('sensor_decimals', decRaw.length ? decRaw : '-1');
-      const fontEl = document.getElementById(prefix + '_navigate_sensor_value_font');
-      formData.append('sensor_value_font', fontEl ? (fontEl.value || '0') : '0');
-    }
   }
 
   function resetNavigateFields(tab) {
     const prefix = tab;
-    const entEl = document.getElementById(prefix + '_navigate_sensor_entity');
-    if (entEl) entEl.value = '';
-    const decEl = document.getElementById(prefix + '_navigate_sensor_decimals');
-    if (decEl) decEl.value = '';
-    const fontEl = document.getElementById(prefix + '_navigate_sensor_value_font');
-    if (fontEl) fontEl.value = '0';
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
     const status = document.getElementById(prefix + '_folder_pin_status');
@@ -7728,6 +7755,7 @@ function normalizeIconName(value) {
   }
 
   async function applyFolderPin(tab) {
+    const prefix = tab;
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
     const button = document.getElementById(prefix + '_folder_pin_apply');
@@ -11096,4 +11124,174 @@ function normalizeTextValueFont(value) {
     if (textEl) textEl.value = '';
     const fontEl = document.getElementById(prefix + '_text_value_font');
     if (fontEl) fontEl.value = '0';
+  }
+  function isEditablePreview(kind) { return ['number', 'select', 'datetime'].includes(kind); }
+  function editablePreviewText(entity, kind, meta = sensorMetaCache) {
+    let value = meta?.editableValues?.[entity];
+    if (typeof value === 'string') { try { value = JSON.parse(value); } catch (_) { return '--'; } }
+    if (!value || value.version !== 1 || value.state === null || value.state === undefined) return '--';
+    const tr = kind === 'number' ? NUMBER_I18N : kind === 'select' ? SELECT_I18N : DATETIME_I18N;
+    if (!value.available || value.state === 'unavailable') return tr.unavailable;
+    if (value.state === 'unknown') return tr.unknown;
+    if (value.kind === 'number') {
+      if (!String(value.state).trim() || !Number.isFinite(Number(value.state))) return tr.unknown;
+      return formatSensorValue(String(value.state), undefined) + (value.unit ? ' ' + value.unit : '');
+    }
+    return String(value.state);
+  }
+
+  function loadNumberFields(tab, data) {
+    const font = document.getElementById(tab + '_number_value_font');
+    if (font) font.value = String(data.sensor_value_font ?? 2);
+    const entity = document.getElementById(tab + '_number_entity');
+    const configured = data.sensor_entity || data.number_entity || '';
+    if (entity) {
+      if (configured) {
+        entity.dataset.configuredValue = configured;
+        if (!Array.from(entity.options).some(option => option.value === configured)) {
+          const option = document.createElement('option');
+          option.value = configured;
+          option.textContent = configured;
+          entity.appendChild(option);
+        }
+      } else {
+        delete entity.dataset.configuredValue;
+      }
+      entity.value = configured;
+    }
+    const popup = document.getElementById(
+      tab + '_number_popup_open_mode');
+    if (popup) {
+      popup.value = data.popup_open_mode !== undefined
+        ? String(data.popup_open_mode) : '1';
+    }
+  }
+
+  function saveNumberFields(tab, formData) {
+    formData.append('sensor_value_font', document.getElementById(tab + '_number_value_font')?.value ?? '2');
+    const entityEl = document.getElementById(tab + '_number_entity');
+    const entity = entityEl
+      ? (entityEl.value || entityEl.dataset.configuredValue || '') : '';
+    formData.append('number_entity', entity);
+    formData.append('sensor_entity', entity);
+    const popup = document.getElementById(
+      tab + '_number_popup_open_mode');
+    if (popup) formData.append('popup_open_mode', popup.value || '1');
+  }
+
+  function resetNumberFields(tab) {
+    const font = document.getElementById(tab + '_number_value_font');
+    if (font) font.value = '2';
+    const entity = document.getElementById(tab + '_number_entity');
+    if (entity) {
+      entity.value = '';
+      delete entity.dataset.configuredValue;
+    }
+    const popup = document.getElementById(
+      tab + '_number_popup_open_mode');
+    if (popup) popup.value = '1';
+  }
+
+  function loadSelectFields(tab, data) {
+    const font = document.getElementById(tab + '_select_value_font');
+    if (font) font.value = String(data.sensor_value_font ?? 2);
+    const entity = document.getElementById(tab + '_select_entity');
+    const configured = data.sensor_entity || data.select_entity || '';
+    if (entity) {
+      if (configured) {
+        entity.dataset.configuredValue = configured;
+        if (!Array.from(entity.options).some(option => option.value === configured)) {
+          const option = document.createElement('option');
+          option.value = configured;
+          option.textContent = configured;
+          entity.appendChild(option);
+        }
+      } else {
+        delete entity.dataset.configuredValue;
+      }
+      entity.value = configured;
+    }
+    const popup = document.getElementById(
+      tab + '_select_popup_open_mode');
+    if (popup) {
+      popup.value = data.popup_open_mode !== undefined
+        ? String(data.popup_open_mode) : '1';
+    }
+  }
+
+  function saveSelectFields(tab, formData) {
+    formData.append('sensor_value_font', document.getElementById(tab + '_select_value_font')?.value ?? '2');
+    const entityEl = document.getElementById(tab + '_select_entity');
+    const entity = entityEl
+      ? (entityEl.value || entityEl.dataset.configuredValue || '') : '';
+    formData.append('select_entity', entity);
+    formData.append('sensor_entity', entity);
+    const popup = document.getElementById(
+      tab + '_select_popup_open_mode');
+    if (popup) formData.append('popup_open_mode', popup.value || '1');
+  }
+
+  function resetSelectFields(tab) {
+    const font = document.getElementById(tab + '_select_value_font');
+    if (font) font.value = '2';
+    const entity = document.getElementById(tab + '_select_entity');
+    if (entity) {
+      entity.value = '';
+      delete entity.dataset.configuredValue;
+    }
+    const popup = document.getElementById(
+      tab + '_select_popup_open_mode');
+    if (popup) popup.value = '1';
+  }
+
+  function loadDateTimeFields(tab, data) {
+    const font = document.getElementById(tab + '_datetime_value_font');
+    if (font) font.value = String(data.sensor_value_font ?? 2);
+    const entity = document.getElementById(tab + '_datetime_entity');
+    const configured = data.sensor_entity || data.datetime_entity || '';
+    if (entity) {
+      if (configured) {
+        entity.dataset.configuredValue = configured;
+        if (!Array.from(entity.options).some(option => option.value === configured)) {
+          const option = document.createElement('option');
+          option.value = configured;
+          option.textContent = configured;
+          entity.appendChild(option);
+        }
+      } else {
+        delete entity.dataset.configuredValue;
+      }
+      entity.value = configured;
+    }
+    const popup = document.getElementById(
+      tab + '_datetime_popup_open_mode');
+    if (popup) {
+      popup.value = data.popup_open_mode !== undefined
+        ? String(data.popup_open_mode) : '1';
+    }
+  }
+
+  function saveDateTimeFields(tab, formData) {
+    formData.append('sensor_value_font', document.getElementById(tab + '_datetime_value_font')?.value ?? '2');
+    const entityEl = document.getElementById(tab + '_datetime_entity');
+    const entity = entityEl
+      ? (entityEl.value || entityEl.dataset.configuredValue || '') : '';
+    formData.append('datetime_entity', entity);
+    formData.append('sensor_entity', entity);
+    const popup = document.getElementById(
+      tab + '_datetime_popup_open_mode');
+    if (popup) formData.append('popup_open_mode', popup.value || '1');
+  }
+
+  function resetDateTimeFields(tab) {
+    const font = document.getElementById(tab + '_datetime_value_font');
+    if (font) font.value = '2';
+    const entity = document.getElementById(tab + '_datetime_entity');
+    if (entity) {
+      entity.value = '';
+      delete entity.dataset.configuredValue;
+    }
+    const popup = document.getElementById(
+      tab + '_datetime_popup_open_mode');
+    if (popup) popup.value = '1';
   }
