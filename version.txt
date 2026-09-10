@@ -10,4 +10,4 @@
 // orders correctly: github_update.cpp parses each component with atoi(), giving
 // {0,6,101} > {0,6,91}. Note our previous v0.6.91 therefore sorts ABOVE upstream
 // v0.6.10; only this fork's own releases are ever compared, so that is harmless.
-#define FW_VERSION "v0.6.102"
+#define FW_VERSION "v0.6.103"

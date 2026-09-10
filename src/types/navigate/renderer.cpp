@@ -140,13 +140,20 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       // Register in the same widget table the sensor tiles update through --
       // update_sensor_tile_value() works purely off the grid index and is
       // therefore type-independent.
+      //
+      // Reset the whole record instead of naming fields. This table is static
+      // and nothing clears it when a grid is rebuilt, so every field a
+      // previously rendered tile left at this slot index is a dangling
+      // lv_obj_t. Naming fields individually is how the 86-panels came to crash
+      // on opening a folder that contains folder tiles: subtitle_label survived
+      // from a caption-bearing sensor tile at the same index, and
+      // update_sensor_tile_value() called lv_label_set_text() on freed memory
+      // (load fault, MCAUSE=5). Default-constructing also means a field added
+      // to SensorTileWidgets later cannot reintroduce the same bug here.
       SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
       if (target && index < TILES_PER_GRID) {
+        target[index] = SensorTileWidgets{};
         target[index].value_label = v;
-        target[index].unit_label = nullptr;
-        target[index].gauge = nullptr;
-        target[index].chart = nullptr;
-        target[index].series = nullptr;
       }
     }
   }

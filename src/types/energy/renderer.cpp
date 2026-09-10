@@ -146,13 +146,14 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
 
   SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
   if (target && index < TILES_PER_GRID) {
+    // Fork change: reset the record rather than naming fields. This fork adds
+    // subtitle_label to SensorTileWidgets, which upstream's field list here
+    // cannot know about, so an energy tile would inherit a dangling label
+    // pointer from whatever sensor tile last used this slot index and
+    // update_sensor_tile_value() would write through it. The defaults match the
+    // values this list set explicitly (gauge_min 0, gauge_max 100).
+    target[index] = SensorTileWidgets{};
     target[index].value_label = value_label;
-    target[index].unit_label = nullptr;
-    target[index].gauge = nullptr;
-    target[index].gauge_min = 0;
-    target[index].gauge_max = 100;
-    target[index].chart = nullptr;
-    target[index].series = nullptr;
   }
 
   if (tile.sensor_entity.length() && grid_type != GridType::SCREENSAVER) {
