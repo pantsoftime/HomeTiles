@@ -8,6 +8,6 @@
 //
 // Upstream's patch is two digits from v0.6.10 on, so this reads oddly but still
 // orders correctly: github_update.cpp parses each component with atoi(), giving
-// {0,6,101} > {0,6,91}. Note our previous v0.6.91 therefore sorts ABOVE upstream
-// v0.6.10; only this fork's own releases are ever compared, so that is harmless.
-#define FW_VERSION "v0.6.103"
+// {0,6,121} > {0,6,103}. Note v0.6.91 and later sort ABOVE upstream's v0.6.1x;
+// only this fork's own releases are ever compared, so that is harmless.
+#define FW_VERSION "v0.6.121"

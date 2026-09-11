@@ -4,6 +4,10 @@ site_url: https://galusperes.github.io/
 repo_url: https://github.com/GalusPeres/HomeTiles
 repo_name: GalusPeres/HomeTiles
 
+extra:
+  sitemap_aliases:
+    - https://galusperes.github.io/HomeTiles/
+
 theme:
   name: material
   custom_dir: overrides
@@ -15,6 +19,7 @@ theme:
       primary: black
       accent: teal
   features:
+    - navigation.instant
     - navigation.sections
     - navigation.top
     - navigation.footer
@@ -38,6 +43,7 @@ nav:
   - Help:
       - Firmware Updates: updating.md
       - Troubleshooting: faq.md
+      - Device logs: device-logs.md
       - Release Notes: releases/index.md
 
 extra_css:
@@ -45,6 +51,12 @@ extra_css:
   - stylesheets/readability.css?v=20260906-docs20
 
   - stylesheets/device-status.css?v=2
+  - stylesheets/device-logs.css?v=device-logs-2
+  - stylesheets/serial-status.css?v=serial-navigation-3
+
+extra_javascript:
+  - path: assets/javascripts/docs-session.mjs?v=serial-navigation-4
+    type: module
 
 markdown_extensions:
   - admonition

@@ -1,6 +1,6 @@
 # HomeTiles shared project context
 
-Last reviewed: 2026-09-07
+Last reviewed: 2026-09-09
 
 ## Sources of truth
 
@@ -16,18 +16,16 @@ Last reviewed: 2026-09-07
 
 ## Current firmware baseline
 
-- Release `v0.6.10`: editable values/history, HA View control, compatible Switch/Scene domains, centered two-line titles, Web preview/fonts, MQTT/icon fixes and capability-based sensor cleanup.
-- v0.6.10 includes the tested JC8012 V1 SDIO RX fix and Waveshare S3 LCD-4 Rev 4.0 (PR #35). Release workflow builds 15 profiles / 30 images and deploys the installer.
+- v0.6.12 prepared: Guition V1/V2 UI PPA and Weather alignment; daily extrema preserved. 102 tests pass; release CI pending. V2 confirmed, V1 hardware pending.
 - Stabilization: S3 display/update guards, MQTT validation, Light coalescing and incremental Weather (`e3de63c`–`33b4e06`).
-- Maintainer approved the current 8-inch/S3 test builds for release on 2026-09-07. Other device/runtime limits remain below.
+- TLS fallback ships on all three S3 RGB profiles; 87 tests and three CI builds pass. Guition hardware OTA passed all 11 ranges first try; Waveshare S3 OTA awaits field tests. Prior TLS error/two boot watchdog resets remain unproven. Evidence: `build/s3-ota-release-v0.6.10/`.
 - The experimental Guition S3 XIP/`-O2` performance path was reverted in
   `5279456`. Do not reintroduce it as an assumed optimization. It increased
   risk and did not solve the measured interaction problem.
 
 ## Hardware and validation reality
 
-- The maintainer can directly test M5Stack Tab5, Waveshare 4B, Waveshare
-  8-inch, and Guition ESP32-4848S040 S3 hardware.
+- Maintainer hardware: Tab5, Waveshare 4B/8-inch, Guition S3/V2. V2 PPA/SD confirmed; V1 port awaits CI/hardware. See `docs/releases/v0.6.12.md`.
 - v0.6.9 Binary/Text-State Sensor UI passed hardware tests on 4B, 8-inch and S3.
 - Other exact revisions depend on community testers. A successful compile does
   not promote an untested revision to supported status.
@@ -39,66 +37,15 @@ Last reviewed: 2026-09-07
 
 Issue: https://github.com/GalusPeres/HomeTiles/issues/30
 
-- External hardware: Guition `JC8012P4A1C_I_W_Y` V1. The reporter uses Foscam
-  cameras through Home Assistant's Generic Camera integration.
-- The reporter also cannot install normal OTA updates; USB installation works.
-- The `v0.6.8b1` and `v0.6.8b2` logs repeatedly show the same sequence: the
-  stream connects and the first JPEG decodes successfully, then
-  ESP-Hosted/SDIO reports CMD53 error `0x109`, wait timeout `0x107`, raw
-  `0xcccccccc`, and an out-of-range RX length, followed by
-  `rst:0xc (SW_CPU_RESET)`. One b2 failure began before opening the camera.
-- The same SDIO failure can occur during ordinary MQTT startup without an open
-  camera. Camera traffic and OTA both exercise the P4-to-C6 network transport;
-  the evidence points below JPEG decoding and LVGL, but the exact electrical,
-  board-revision, or driver cause is not yet proven.
-- There is no normal panic core dump because the observed path ends in a
-  software restart/transport recovery rather than an application exception.
-- Beta b1 already contained the a8204 raw-PKT_LEN/pending-drain recovery and
-  the short-tail CMD53 marker. It still failed, so repeating that patch or
-  merely changing its label is not a solution.
-- The ESP-Hosted version RPC timeout `0x15e` also occurs on a stable Waveshare
-  8-inch unit. It identifies an older C6 protocol but is not sufficient to
-  cause the crash; the fatal Guition-only evidence is the `0x109`/`0x107`
-  transport cascade.
-- Do not use or publish `v0.6.8b3`; it only requested 4-bit SDIO at 20 MHz and
-  did not contain the later first-fault diagnostics. Espressif issue #167 also
-  reports that 20 MHz did not reliably prevent this failure sequence.
-- The b4 logs locate the first failure at a large C6-to-P4 CMD53 block read:
-  raw DCRC status `0x80` occurs on 11- or 14-block reads before `0x109` and the
-  later `0x107` timeout. JPEG decode, display, and Home Assistant are downstream
-  of the failing transport operation.
-- The b5 1-bit/40-MHz build still produces the same first DCRC failure, including
-  failures before opening the camera. Reducing the active SDIO data lanes is
-  therefore not a fix.
-- Exact schematics explain why this Guition can behave differently from other
-  P4 boards despite sharing the same P4/C6 architecture: Guition V1 uses
-  5.1-kohm pull-ups on CMD, CLK, and D0-D3 without series termination;
-  Waveshare 8-inch uses 51-kohm pull-ups, while Tab5 combines 5.1-kohm
-  pull-ups with 22-ohm series resistors and a separately switched WLAN rail.
-  This makes Guition-specific SDIO signal or power margin plausible. The b6
-  result proves that limiting the RX CMD53 transaction length is an effective
-  mitigation, but it does not by itself prove the underlying electrical cause.
-- Guition's original `JC8012P4A1_C6.bin` and the current HomeTiles host both
-  use ESP-Hosted streaming mode. The newer official
-  `JC-C6-slave_v2.3.2.bin` uses packet mode and is not a drop-in C6 update for
-  the current host. Do not flash it alone. The onboard USB paths reach only
-  the P4; C6 UART/boot access requires the internal CN5 header and an external
-  3.3 V UART adapter.
-- Do not use the reported ESP-Hosted 2.9.3 rollback as the next test. That
-  report concerns a different `0x102` TX/alignment failure on another board;
-  the normal 2.9.3-to-2.11.6 CMD53 RX path does not explain this Guition's
-  `0x109` CRC failure, and rollback would discard relevant safety fixes.
-- `v0.6.8b6` passed the reporter's hardware test: both cameras ran at 15-20 FPS,
-  Web Admin OTA succeeded, and the previous `0x109`/`0x107` failure did not
-  recur. The regular-source integration retains the proven 1-bit/40-MHz V1
-  configuration and splits large P4 RX reads into individual 512-byte CMD53
-  reads. Reporter confirmed integrated v0.6.9b1 Camera/Web OTA; v0.6.10 ships it.
-- Lowering camera FPS, resolution, or quality may be used only as a clearly
-  identified diagnostic A/B test. It is not an acceptable final fix and must
-  not silently reduce normal camera performance.
-- Keep the release integration limited to the exact V1 profile and verify the
-  single-block marker plus 1-bit configuration in its final build. Other P4
-  profiles must retain their baseline ESP-Hosted object; S3 remains unaffected.
+- External Guition `JC8012P4A1C_I_W_Y` V1; Foscam via HA Generic Camera. Normal OTA failed; USB worked.
+- b1/b2 logs: first JPEG succeeds, then CMD53 `0x109`, timeout `0x107`, raw `0xcccccccc`, invalid RX length and `rst:0xc`. Failures also occur during MQTT startup without a camera. Recovery restarts explain the absence of a panic core dump.
+- b1 already contained a8204 raw-PKT_LEN/pending-drain and short-tail markers; repeating that patch is not a solution. Version RPC `0x15e` also occurs on stable Waveshare 8-inch and is insufficient to explain the fatal Guition transport cascade.
+- Do not use/publish b3 (4-bit/20 MHz, no first-fault diagnostics). Issue #167 also found 20 MHz unreliable. b4 located the first DCRC `0x80` on 11-/14-block C6-to-P4 reads, before `0x109`/`0x107`. b5 1-bit/40 MHz still failed, sometimes before Camera; lane reduction alone is not a fix.
+- Schematics: Guition V1 has 5.1-kohm CMD/CLK/D0-D3 pull-ups without series termination; Waveshare 8-inch has 51-kohm pull-ups; Tab5 has 5.1-kohm pull-ups, 22-ohm series resistors and switched WLAN power. Signal/power margin is plausible, not proven by the working mitigation.
+- Original `JC8012P4A1_C6.bin` and HomeTiles use streaming mode. New `JC-C6-slave_v2.3.2.bin` uses packet mode: do not flash it alone. USB reaches P4 only; C6 flashing needs CN5 and a 3.3 V UART adapter.
+- Do not retry the reported 2.9.3 rollback: it concerns another board's `0x102` TX/alignment failure, not this CRC path, and discards relevant safety fixes.
+- b6 passed reporter hardware tests: two cameras at 15-20 FPS and Web OTA, without the transport cascade. Exact V1 retains 1-bit/40 MHz and splits large RX into individual 512-byte CMD53 reads. Reporter confirmed integrated v0.6.9b1; v0.6.10 ships it.
+- Keep the single-block marker/1-bit configuration exact-V1 only; other P4 profiles retain baseline objects, S3 is unaffected. Lower camera quality/FPS/resolution is allowed only for a labeled diagnostic A/B, never a silent final fix.
 
 ## ESP32-P4 network history that remains relevant
 
@@ -134,12 +81,27 @@ Issue: https://github.com/GalusPeres/HomeTiles/issues/30
 - Wi-Fi audit: S3 idle (>3 s) requests MIN_MODEM/11 dBm; sleep/wake NONE/19.5. P4 blocks idle saving; boot/reconnect and failed-call caching have gaps on both. Unfixed; probes: `build/wifi-power-audit/VERIFICATION.md`.
 - Titles: two centered lines with ellipsis, 255 UTF-8 bytes in `/_tile_titles`; Settings uses `set_title`, record v4 unchanged. View labels flatten CR/LF to fix Bridge `writable:false` from multiline S3 titles. Current builds approved by maintainer.
 - S3 froze adding Number to active screensaver: Web answered, save persisted, user rebooted; crash log has an older ELF. Cause unproven; retained as a release validation limitation.
+
+## Shared-popup/artwork checkpoint (2026-09-08)
+
+- v0.6.11 includes checkpoint `3b534ab` and shared-style fixes resolving large Weather opening on 8-inch.
+- Popups share one visible frame/header/close button and cached bodies; title/icon/color remain variable. Matching bodies/Sensor graphs stay visible, cold contents follow the first frame. Close/switch/deletion cancel pending work; PIN checks remain. Settings forms are disposable; Camera widgets preloaded.
+- Artwork: Bridge URL-only `state_fast` precedes full MQTT. Blocked/failed replacements retain loaded covers; URL/content pairing prevents S3 redownloads/stale results. Deferred Media opening resolves current descriptors without borrowed pixels.
+- Memory unchanged: PSRAM LVGL pools S3 2 MiB/P4 12 MiB; internal/DMA draw band capped at 72 KiB; page caches S3 4/P4 6. Bindings use PSRAM, no extra framebuffers. Larger covers and bounded idle Media service remain.
+- Maintainer accepted fast 8-inch opening: removed state-specific zero translations/border widths that forced descendant layout. Tests use real global borders and Weather trees. BIN/hash: `build/tile-state-layout/VERIFICATION.md`.
+- Weather values/preview headers match Sensor; runtime names use the shared title helper. Maintainer confirms `Viecht...` on 8-inch. 95 tests/build pass; BIN/hash: `build/weather-title-ellipsis/VERIFICATION.md`.
+- Native Weather/Sensor tests cover all 17 profiles: real global styles, colors, short/long input, first-frame gating, geometry and covered drawing. Timing instrumentation is opt-in only.
+- Maintainer confirms Guition S3, 4B and Tab5 builds work well; 95 tests, no popup timing. BINs/hashes: `build/test-devices-popup-title/VERIFICATION.md`.
+- PIN reuse updates the full title; maintainer confirmed Tab5 correction. BIN/hash: `build/pin-popup-title/VERIFICATION.md`.
+- Pending: broader controls/artwork, navigation, sleep/wake, camera/ESP-Hosted soak and memory minima. No post-fix serial timing comparison captured.
+
 ## Current maintenance refactoring
 
 - Architecture/workflows: `ARCHITECTURE.md`, `CONTRIBUTING.md`; host dependencies need `npm ci --ignore-scripts`.
 - Docs source: `docs/`, `mkdocs.yml`, `overrides/`; root hosting deploys `HomeTiles/gh-pages`.
-- https://galusperes.github.io/ desktop/mobile pages and all 14 published flasher profiles checked 2026-09-06.
-- Previous maintenance BINs and hashes: `build/maintenance-20260905/VERIFICATION.md`.
+- Docs: `/HomeTiles/` reloaded because the root-canonical sitemap omitted that mount. Sitemap aliases preserve native navigation at both mounts; saved flash results no longer overwrite current USB status. Browser regressions cover both.
+- Public docs serve v0.6.11 at both mounts; navigation/USB checks use simulated ports.
+- Flash success clears on reload or after viewing and leaving/changing selection; recovery persists. USB status is active-only. Logger help: paragraphs, menu restart or RESET if fitted, local-only log notice.
 
 ## Current view control, telemetry and compatible controls
 
@@ -151,7 +113,7 @@ Issue: https://github.com/GalusPeres/HomeTiles/issues/30
 - Commands validate selected targets, availability and on/off features; retained commands are ignored.
 - Firmware battery is a stub on all profiles. Unsupported battery/probes are no longer auto-registered; explicit local I/O remains.
 - Bridge migration checks registry ownership/capabilities, cleans shared selections and preserves user entities.
-- Current firmware verification: 85 host tests; sequential incremental S3/8-inch builds pass. BINs/hashes: `build/editable-colors-view/VERIFICATION.md`.
+- Pre-OTA-fix verification: 85 tests and S3/8-inch builds; hashes: `build/editable-colors-view/VERIFICATION.md`.
 - Maintainer reports View and editable controls working on Waveshare 8-inch/S3; broader HA/device validation remains pending.
 - HA migration/re-pairing, old firmware compatibility, PIN, stream cleanup and sleep/reconnect remain pending.
 - Issue #37: valid 20,033-byte packet disconnects v0.6.9 at 16 KiB; local reception grows to 65,535 bytes with bounded queues/draining/ACKs/logs. Reporter confirmation pending. Maintainer log: no unplanned MQTT loss (~7.5 h earlier BIN, ~25 min latest; two OTA restarts).

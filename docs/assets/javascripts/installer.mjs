@@ -1,6 +1,9 @@
 import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.6.1/bundle.js";
 import { ESP32P4ROM } from "https://unpkg.com/esptool-js@0.6.1/lib/targets/esp32p4.js";
 import { ESP32S3ROM } from "https://unpkg.com/esptool-js@0.6.1/lib/targets/esp32s3.js";
+import { retainPageComponent } from "./retained-page-component.mjs?v=serial-navigation-2";
+import { serialAccess } from "./serial-access.mjs?v=serial-navigation-2";
+import { serialActivity } from "./serial-activity.mjs?v=serial-navigation-3";
 
 import {
   APP_SLOTS,
@@ -19,9 +22,8 @@ import {
   releaseAssetNames,
   resolveSameOriginAsset,
   validateFirmwareDescriptor,
-} from "./installer-contract.mjs?v=installer-ui-11";
+} from "./installer-contract.mjs?v=installer-ui-15";
 
-const root = document.querySelector("[data-hometiles-installer]");
 const LAST_RUN_STORAGE_KEY = "hometiles.webInstaller.lastRun.v1";
 const LOG_MAX_LINES = 300;
 const LOG_MAX_CHARACTERS = 64 * 1024;
@@ -48,7 +50,7 @@ class HomeTilesESPLoader extends ESPLoader {
   }
 }
 
-if (root) {
+export function mountInstaller(root) {
   const elements = {
     copyLog: root.querySelector("#installer-copy-log"),
     device: root.querySelector("#installer-device"),
@@ -68,6 +70,7 @@ if (root) {
     progressPanel: root.querySelector("#installer-progress-panel"),
     progressText: root.querySelector("#installer-progress-text"),
     status: root.querySelector("#installer-status"),
+    serialBusy: root.querySelector("#installer-serial-busy"),
   };
   function readLastRun() {
     try {
@@ -77,6 +80,11 @@ if (root) {
         !DEVICE_PROFILES.some((device) => device.key === saved.deviceKey) ||
         !["update", "factory"].includes(saved.mode)
       ) {
+        return null;
+      }
+      // Older versions persisted successful results indefinitely.
+      if (!saved.busy && !saved.recoveryRequired && saved.kind === "success") {
+        window.localStorage.removeItem(LAST_RUN_STORAGE_KEY);
         return null;
       }
       return {
@@ -107,6 +115,7 @@ if (root) {
     lastRun: readLastRun(),
     progress: 0,
     releaseIndex: null,
+    visible: root.isConnected,
   };
 
   const logState = {
@@ -164,6 +173,7 @@ if (root) {
 
   function renderLog() {
     logState.renderPending = false;
+    if (!root.isConnected) return;
     elements.logOutput.textContent = completeLogText();
     if (logState.followTail) elements.logOutput.scrollTop = elements.logOutput.scrollHeight;
   }
@@ -179,7 +189,7 @@ if (root) {
   }
 
   function scheduleLogRender() {
-    if (logState.renderPending) return;
+    if (logState.renderPending || !root.isConnected) return;
     logState.renderPending = true;
     window.requestAnimationFrame(renderLog);
   }
@@ -276,6 +286,8 @@ if (root) {
     state.progress = Math.max(0, Math.min(100, Number(value) || 0));
     elements.progress.value = state.progress;
     elements.progressText.textContent = `${Math.round(state.progress)}%`;
+    if (state.busy) serialActivity.set("installer", state.flashMutationStarted
+      ? `Flashing · ${Math.round(state.progress)}%` : elements.phase.textContent, "busy", true);
   }
 
   function persistLastRun(overrides = {}) {
@@ -294,7 +306,11 @@ if (root) {
       ...overrides,
     };
     try {
-      window.localStorage.setItem(LAST_RUN_STORAGE_KEY, JSON.stringify(record));
+      if (!record.busy && !record.recoveryRequired && record.kind === "success") {
+        window.localStorage.removeItem(LAST_RUN_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(LAST_RUN_STORAGE_KEY, JSON.stringify(record));
+      }
       state.lastRun = record;
     } catch (error) {
       console.debug("[WebInstaller] Installer state could not be saved", error);
@@ -304,11 +320,14 @@ if (root) {
   function showActivity(
     phase,
     message,
-    { kind = "info", progress = state.progress, persist = state.busy } = {},
+    { kind = "info", progress = state.progress, persist = state.busy, announce = true } = {},
   ) {
     setPhase(phase);
     setProgress(progress);
     setStatus(message, kind);
+    if (announce && !state.busy && (kind === "error" || kind === "warning" || kind === "success")) {
+      serialActivity.set("installer", kind === "success" ? "Flash complete" : phase, kind === "success" ? "success" : "error");
+    }
     elements.progressPanel.hidden = !(state.busy || progress > 0);
     if (state.busy || progress > 0 || kind === "warning" || kind === "error") {
       elements.logPanel.hidden = false;
@@ -364,10 +383,27 @@ if (root) {
         kind: saved.kind,
         progress: saved.progress,
         persist: false,
+        announce: false,
       });
     }
     updateFormState();
     return true;
+  }
+
+  function resetCompletedRun() {
+    if (state.busy || elements.status.dataset.kind !== "success") return;
+    state.lastRun = null;
+    state.flashMutationStarted = false;
+    serialActivity.clear("installer");
+    resetLog();
+    setLogActionStatus("");
+    elements.logPanel.hidden = true;
+    showActivity("Ready", "Choose a device and confirm its model.", { progress: 0 });
+  }
+
+  function formChanged() {
+    resetCompletedRun();
+    updateFormState();
   }
 
   function updateFormState() {
@@ -399,9 +435,12 @@ if (root) {
       !!state.releaseIndex &&
       (selectedFirmwareSource() === "published" || elements.firmwareFile.files.length === 1) &&
       !state.busy &&
+      serialAccess.owner !== "installer" &&
+      !serialAccess.installerPending &&
       window.isSecureContext &&
       "serial" in navigator;
     elements.flash.disabled = !ready;
+    elements.serialBusy.hidden = serialAccess.owner !== "logs";
     elements.device.disabled = state.busy;
     elements.firmwareSource.disabled = state.busy || !state.releaseIndex;
     elements.firmwareFile.hidden = selectedFirmwareSource() !== "local";
@@ -629,7 +668,7 @@ if (root) {
   async function flashSelectedFirmware() {
     const device = selectedDevice();
     const mode = selectedMode();
-    if (!device || state.busy) return;
+    if (!device || state.busy || serialAccess.owner === "installer" || serialAccess.installerPending) return;
 
     resetLog();
     setLogActionStatus("");
@@ -649,7 +688,7 @@ if (root) {
     let flashMutationStarted = false;
     let outcome = null;
     try {
-      const port = await navigator.serial.requestPort();
+      const port = await serialAccess.requestInstallerPort(navigator.serial);
       transport = new Transport(port);
       esploader = new HomeTilesESPLoader({
         transport,
@@ -780,6 +819,10 @@ if (root) {
       const safeToReset = completed || !flashMutationStarted || mode === "update";
       await resetAndDisconnect(esploader, transport, safeToReset, device);
       state.busy = false;
+      serialAccess.release("installer");
+      serialActivity.set("installer", completed ? "Flash complete"
+        : outcome?.outcomeKind === "info" ? "Flash cancelled" : "Flash failed",
+      completed ? "success" : outcome?.outcomeKind === "info" ? "idle" : "error");
       if (completed) {
         showActivity(
           "Complete",
@@ -810,15 +853,15 @@ if (root) {
   elements.device.addEventListener("change", () => {
     elements.exactHardware.checked = false;
     elements.factoryConfirmation.checked = false;
-    updateFormState();
+    formChanged();
   });
-  elements.firmwareSource.addEventListener("change", updateFormState);
-  elements.firmwareFile.addEventListener("change", updateFormState);
+  elements.firmwareSource.addEventListener("change", formChanged);
+  elements.firmwareFile.addEventListener("change", formChanged);
   root.querySelectorAll('input[name="installer-mode"]').forEach((input) => {
-    input.addEventListener("change", updateFormState);
+    input.addEventListener("change", formChanged);
   });
-  elements.exactHardware.addEventListener("change", updateFormState);
-  elements.factoryConfirmation.addEventListener("change", updateFormState);
+  elements.exactHardware.addEventListener("change", formChanged);
+  elements.factoryConfirmation.addEventListener("change", formChanged);
   elements.flash.addEventListener("click", flashSelectedFirmware);
   elements.copyLog.addEventListener("click", copyFlashLog);
   elements.logOutput.addEventListener("scroll", () => {
@@ -866,4 +909,15 @@ if (root) {
       });
   }
   updateFormState();
+  serialAccess.subscribe(updateFormState);
+  return {
+    pageChanged(visible) {
+      // A flash completed offscreen stays available until its result is viewed.
+      if (state.visible && !visible) resetCompletedRun();
+      state.visible = visible;
+      if (visible) scheduleLogRender();
+    },
+  };
 }
+
+retainPageComponent("[data-hometiles-installer]", mountInstaller);

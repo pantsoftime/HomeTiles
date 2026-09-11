@@ -114,16 +114,16 @@ Match the exact hardware revision before flashing. [Open online flasher](install
 
 <div class="ht-device-note" id="device-note-16" popover="auto" role="dialog" aria-labelledby="device-note-16-title"><div class="ht-device-note-title" id="device-note-16-title">Waveshare LCD-4B (S3)</div><button type="button" class="ht-device-note-close" aria-label="Close support details">×</button><p>Initial hardware testing was reported with PR #29. The adapted release profile still needs confirmation. No microSD or Camera tiles.</p><p class="ht-device-note-links"><a href="https://github.com/GalusPeres/HomeTiles/issues/26">Issue #26</a><a href="https://github.com/GalusPeres/HomeTiles/pull/29">PR #29</a></p></div>
 
-<script src="javascripts/device-status.js?v=2" defer></script>
+<script src="javascripts/device-status.js?v=3" defer></script>
 
-## New In v0.6.10
+## New In v0.6.12
 
-- **Editable tiles:** Number, Select and Date/Time controls with history, plus more switchable entities and button actions.
-- **Dashboard:** Home Assistant View control, two-line titles, configurable value sizes and matching live previews.
-- **Hardware:** Waveshare S3 LCD-4 Rev 4.0 support and the confirmed Guition JC8012 V1 Camera/Web OTA transport fix.
+- **Faster Guition UI:** PPA hardware rotation now handles larger ordinary interface updates on JC8012P4A1 V1 and V2. The improvement is confirmed on V2; V1 hardware feedback is pending.
+- **Aligned Weather forecasts:** both Guition revisions now use the same forecast position as Waveshare 8-inch and 10.1-inch.
+- **Correct daily temperatures:** partial hourly forecasts preserve the provider's full-day minimum and maximum.
 - **Bridge:** use v0.6.44 or newer through HACS. Camera remains experimental and ESP32-P4-only.
 
-[Read the v0.6.10 release notes](releases/v0.6.10.md)
+[Read the v0.6.12 release notes](releases/v0.6.12.md)
 
 ## How It Works
 
