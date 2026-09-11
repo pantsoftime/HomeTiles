@@ -199,7 +199,6 @@ lv_obj_t* render_weather_tile(lv_obj_t* parent, int col, int row, const Tile& ti
       // with neighbouring sensor tiles rather than sitting lower.
       lv_obj_align(humidity_label, LV_ALIGN_CENTER, 0, tile_layout::scale(48));
       lv_label_set_text(humidity_label, "");
-      enable_bubble(humidity_label);
     }
   }
 
