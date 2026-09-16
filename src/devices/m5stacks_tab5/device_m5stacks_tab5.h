@@ -23,7 +23,8 @@ inline constexpr Device::Profile kProfile{
     Device::RotationStepMode::FlipOnly,
     0,
     2,
-    Device::Capabilities{false, false, false, false, false, false},
+    // has_battery: Tab5 carries an NP-F battery read through M5.Power.
+    Device::Capabilities{true, false, false, false, false, false},
     kHardwareIoProfile,
 };
 

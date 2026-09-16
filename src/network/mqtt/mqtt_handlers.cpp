@@ -807,10 +807,17 @@ static int readBatterySocPercent() {
 }
 
 static void sync_internal_battery_entity() {
-  if (!batteryStateSupportsMeasurement() || batteryStateIsBatteryMissing()) {
+  if (!batteryStateSupportsMeasurement()) {
     return;
   }
+  // Poll before testing "battery missing". batteryStateUpdate(), reached through
+  // readBatterySocPercent(), is the only thing that can clear a latched missing
+  // flag, and this is its only caller. Testing the flag first would freeze that
+  // state until reboot whenever a battery is inserted after startup.
   const int soc = readBatterySocPercent();
+  if (batteryStateIsBatteryMissing()) {
+    return;
+  }
   char soc_payload[8];
   snprintf(soc_payload, sizeof(soc_payload), "%d", soc);
 
