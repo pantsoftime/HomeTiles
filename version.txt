@@ -4,7 +4,8 @@
 // Important: Only a tag push starts the build, and the tag must match FW_VERSION exactly.
 //
 // Fork line: upstream release tag + an extra patch digit (see README-FORK.md).
-// Merge upstream RELEASE TAGS, not upstream/master.
+// Merge upstream RELEASE TAGS, not upstream's default branch (renamed
+// master -> main on 2026-09-11).
 //
 // Upstream's patch is two digits from v0.6.10 on, so this reads oddly but still
 // orders correctly: github_update.cpp parses each component with atoi(), giving

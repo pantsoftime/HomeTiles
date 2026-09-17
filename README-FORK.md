@@ -52,12 +52,14 @@ a change before releasing anything.
 ```bash
 git remote add upstream https://github.com/GalusPeres/HomeTiles.git   # once
 git fetch upstream --tags
-git merge v0.6.9          # a RELEASE TAG, never upstream/master
+git merge v0.6.9          # a RELEASE TAG, never upstream/main
 ```
 
-Merge upstream **release tags**, not `upstream/master`. `v0.6.81` was built from
-master nine commits past the `v0.6.8` tag and shipped unreleased work; every
-panel then reconnect-looped and never got its entity list back.
+Merge upstream **release tags**, not upstream's default branch. That branch was
+renamed `master` -> `main` on 2026-09-11; the rule is unchanged, only the name.
+`v0.6.81` was built from it nine commits past the `v0.6.8` tag and shipped
+unreleased work; every panel then reconnect-looped and never got its entity list
+back.
 
 Do **not** resolve an unwanted upstream merge by keeping our tree and discarding
 theirs. `v0.6.82` did that, which made those nine commits ancestors of our master
@@ -66,10 +68,18 @@ silently omitted 4,664 lines of `v0.6.9`. If a merge must be rebuilt, branch fro
 the upstream tag and replay the fork delta onto it:
 
 ```bash
-git checkout --detach v0.6.8 && git read-tree -u --reset master
+git checkout --detach v0.6.8 && git read-tree -u --reset v0.6.122   # PREVIOUS FORK TAG
 git commit -m "fork delta" && git branch -f fork-delta
 git checkout -B fork-vX.Y.Z1 v0.6.9 && git merge fork-delta   # base is v0.6.8
 ```
+
+Replay from the **previous fork release tag**, never from `master`. Recovering
+from the `v0.6.82` incident moved the live line onto `fork-vX.Y.ZN` branches and
+left `master` abandoned at `v0.6.82`; the two have since diverged, so neither is
+an ancestor of the other. Running the recipe above against `master` today would
+replay a 73-commit-old tree and quietly revert four releases — the very failure
+it is meant to prevent. `git branch -vv` and the newest `v0.6.*` tag identify the
+real tip.
 
 Conflicts are most likely in the files touched below. After merging, bump
 `FW_VERSION` to the new upstream base + `1` and tag.
