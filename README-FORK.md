@@ -9,7 +9,7 @@ features and re-releases them so the panels can update themselves over the air.
 The on-device updater checks a single hard-coded repository. Running a patched
 build against upstream's release feed means the next "Check for updates" would
 happily install upstream firmware over the local changes. So `kRepoUrl` in
-`src/core/github_update.h` points at **this** fork, and releases are published
+`src/core/firmware/github_update.h` points at **this** fork, and releases are published
 here.
 
 ## Versioning
@@ -86,18 +86,27 @@ Conflicts are most likely in the files touched below. After merging, bump
 
 ### MQTT receive buffer must fit the retained bridge config
 
-`kMqttBufferNormal` is raised from upstream's 16 KB to **32 KB**
-(`src/network/network_manager.cpp`). The bridge publishes its config retained, so
-it arrives the instant the panel subscribes — measured at 19,299 and 23,262 bytes
-on the panels here. Since `v0.6.9` an oversized packet no longer gets skipped;
-`packetFitsBuffer()` failing calls `abortPacket(MQTT_MALFORMED_PACKET)`, which
-stops the client. Because reconnecting also restarts the storm window that defers
-the grow to `kMqttBufferLarge`, the buffer never grows and the panel loops.
+> **Superseded by upstream v0.6.10 — there is no fork override here any more.**
+> `kMqttBufferNormal` is upstream's 16 KB again. `readPacket()` now grows the
+> receive buffer up to `kMaxInboundPacketBytes` (`UINT16_MAX`) and drains
+> anything larger instead of aborting, which fixes the same failure generically.
+> The account below is kept because it explains the panel-side symptom, not
+> because the tree still looks like this.
 
-`mqttNormalBufferSize()` is also floored at `kMqttBufferNormal`: the 24 KB media
-tier is now *below* the baseline, and returning it unconditionally would shrink
-the buffer whenever a media tile exists. Guarded by
-`tools/test-mqtt-config-buffer-fit.mjs`.
+The bridge publishes its config retained, so it arrives the instant the panel
+subscribes — measured at 19,299 and 23,262 bytes on the panels here. In `v0.6.9`
+an oversized packet stopped being skipped: `packetFitsBuffer()` failing called
+`abortPacket(MQTT_MALFORMED_PACKET)`, which stops the client. Because
+reconnecting also restarts the storm window that defers the grow to
+`kMqttBufferLarge`, the buffer never grew and the panel looped. The fork's fix
+was a 32 KB baseline; upstream's later fix made that unnecessary.
+
+`mqttNormalBufferSize()` now returns the media tier (24 KB) or the normal tier
+(16 KB), floored at `mqtt_receive_buffer_floor`, the observed high-water mark, so
+a large retained config does not cause a reallocation on every repeat. The old
+warning that the 24 KB media tier sat *below* the baseline no longer applies —
+that was only true while the baseline was 32 KB. Guarded by
+`tools/tests/network/test-mqtt-config-buffer-fit.mjs`.
 
 ## Local changes
 
@@ -121,8 +130,8 @@ Files touched:
 | `src/types/navigate/web_html.cpp` / `.h` | Entity picker + decimals + font size in the folder tile editor |
 | `src/types/navigate/web_scripts.cpp` | `load` / `save` / `reset` for the new fields |
 | `src/types/types_registry.cpp` | Pass `GridType` and the sensor option list through the wrappers |
-| `src/network/mqtt_handlers.cpp` | Subscribe to entities referenced by folder tiles |
-| `src/ui/tab_tiles_unified.cpp` | Route cached + live state updates to folder tiles |
+| `src/network/mqtt/mqtt_handlers.cpp` | Subscribe to entities referenced by folder tiles |
+| `src/ui/tabs/tiles/tab_tiles_unified.cpp` | Route cached + live state updates to folder tiles |
 
 Value updates reuse the existing sensor pipeline unchanged —
 `update_sensor_tile_value()` addresses widgets by grid index and is not
