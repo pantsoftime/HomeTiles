@@ -806,6 +806,16 @@ static int readBatterySocPercent() {
   return g_soc_pct;
 }
 
+// Pushes the internal battery value to the grids only when it changes. This runs
+// every 500 ms, and each call caches the payload, queues an LVGL update and logs
+// for every tile it reaches -- the Settings-tile battery caption among them.
+static void publish_battery_to_grids(const char* payload) {
+  static String last_payload;
+  if (last_payload == payload) return;
+  last_payload = payload;
+  update_all_grids(kEntityInternalBatterySoc, payload);
+}
+
 static void sync_internal_battery_entity() {
   if (!batteryStateSupportsMeasurement()) {
     return;
@@ -816,16 +826,36 @@ static void sync_internal_battery_entity() {
   // state until reboot whenever a battery is inserted after startup.
   const int soc = readBatterySocPercent();
   if (batteryStateIsBatteryMissing()) {
+    // On the device a pulled pack reads "--" instead of a frozen last value.
+    // Home Assistant is left alone: nothing synthetic is published there.
+    publish_battery_to_grids("unavailable");
+    return;
+  }
+  // readBatterySocPercent() returns 0 until a reading has ever succeeded -- the
+  // false zero this entity used to show. Unknown is not empty: skip it everywhere.
+  if (!batteryStateHasDisplayPercent()) {
+    publish_battery_to_grids("unavailable");
     return;
   }
   char soc_payload[8];
   snprintf(soc_payload, sizeof(soc_payload), "%d", soc);
+  publish_battery_to_grids(soc_payload);
 
+  // Write to the bridge only when its copy differs. updateSensorValue() rebuilds
+  // the whole multi-KB value map as a String, which is real heap churn at 500 ms
+  // for a value that moves a few times an hour. Comparing against the bridge's
+  // own index rather than a local "last sent" keeps this self-healing: a bridge
+  // config reload that rebuilds these maps shows up as a mismatch and is repaired
+  // on the next poll.
   const char* sensor_name = "WS_P4 Intern Batterie SoC";
-  haBridgeConfig.registerSensorMeta(kEntityInternalBatterySoc, sensor_name, "%");
-  haBridgeConfig.updateEntityMeta(kEntityInternalBatterySoc, sensor_name, "%", "battery");
-  haBridgeConfig.updateSensorValue(kEntityInternalBatterySoc, soc_payload);
-  update_all_grids(kEntityInternalBatterySoc, soc_payload);
+  if (haBridgeConfig.findSensorName(kEntityInternalBatterySoc) != sensor_name ||
+      haBridgeConfig.findEntityIcon(kEntityInternalBatterySoc) != "battery") {
+    haBridgeConfig.registerSensorMeta(kEntityInternalBatterySoc, sensor_name, "%");
+    haBridgeConfig.updateEntityMeta(kEntityInternalBatterySoc, sensor_name, "%", "battery");
+  }
+  if (haBridgeConfig.findSensorInitialValue(kEntityInternalBatterySoc) != soc_payload) {
+    haBridgeConfig.updateSensorValue(kEntityInternalBatterySoc, soc_payload);
+  }
 }
 
 static const char* kSleepOptionLabels[] = {

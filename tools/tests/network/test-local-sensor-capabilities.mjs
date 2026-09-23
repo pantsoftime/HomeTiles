@@ -21,7 +21,14 @@ const batterySync = mqtt.slice(
 assert.ok(batterySync.length > 0, 'sync_internal_battery_entity() must exist');
 assert.match(batterySync, /if \(!batteryStateSupportsMeasurement\(\)\) \{\s*return;/,
   'Unsupported profiles must not register the internal battery entity');
-assert.match(batterySync, /if \(batteryStateIsBatteryMissing\(\)\) \{\s*return;/,
+// The missing branch may update the device's own caption, but must return
+// before anything reaches Home Assistant.
+const missingStart = batterySync.indexOf('if (batteryStateIsBatteryMissing()) {');
+assert.ok(missingStart >= 0, 'sync must test for a missing battery');
+const missingBlock = batterySync.slice(missingStart,
+  batterySync.indexOf('\n  }\n', missingStart) + 4);
+assert.match(missingBlock, /return;/, 'the missing branch must return');
+assert.doesNotMatch(missingBlock, /haBridgeConfig\.|mqttEnqueuePublish/,
   'A missing battery must not publish a synthetic value');
 assert.ok(
   batterySync.indexOf('const int soc = readBatterySocPercent();') <
