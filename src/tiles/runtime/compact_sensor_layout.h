@@ -52,7 +52,10 @@ inline void apply_content(lv_obj_t* card, lv_obj_t* icon, lv_obj_t* title, lv_ob
   auto text = [&](lv_obj_t* label, const lv_font_t* font, int y) {
     if (!label) return;
     lv_obj_set_style_text_font(label, font, 0);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+    // Beside an icon the text reads left to right from the disc; without one
+    // it spans a symmetric box (8 px either side) and is centred, like the
+    // full-size tiles.
+    lv_obj_set_style_text_align(label, icon ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(label, 0, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_set_size(label, width - text_x - margin * 2, font->line_height);

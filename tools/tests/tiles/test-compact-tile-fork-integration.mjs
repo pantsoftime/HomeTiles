@@ -99,4 +99,15 @@ assert.match(css,
   /\.tile\.sensor-compact:not\(:has\(> \.tile-icon\)\) > \.tile-title,\s*\.tile\.sensor-compact:not\(:has\(> \.tile-icon\)\) > \.tile-value \{[^}]*left:calc\(2 \* var\(--compact-inset\)\);/,
   'the Web preview must shift icon-less compact text exactly like the device');
 
+// Without an icon the text is centred in a symmetric 8 px box: left-aligned
+// text across the full width read as misplaced once the icon column was gone.
+assert.match(compactLayout,
+  /lv_obj_set_style_text_align\(label, icon \? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0\);/,
+  'icon-less compact text must be centred; text beside an icon stays left-aligned');
+const noIconRule = between(css, '.tile.sensor-compact:not(:has(> .tile-icon)) > .tile-value {', '}');
+assert.match(noIconRule, /right:calc\(2 \* var\(--compact-inset\)\);/,
+  'the preview box must be symmetric (8 px each side) for centring to match the device');
+assert.match(noIconRule, /text-align:center;/,
+  'the Web preview must centre icon-less compact text like the device');
+
 console.log('Compact-tile fork integration regressions passed.');

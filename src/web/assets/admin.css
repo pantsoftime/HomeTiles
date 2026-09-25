@@ -2264,9 +2264,11 @@
 }
 .tile.sensor-compact:not(:has(> .tile-icon)) > .tile-title,
 .tile.sensor-compact:not(:has(> .tile-icon)) > .tile-value {
-  /* Fork: no icon -> the text takes the icon column too, matching
-     compact_sensor_layout::apply_content() on the device. */
+  /* Fork: no icon -> the text takes the icon column too and is centred in a
+     symmetric 8 px box, matching compact_sensor_layout::apply_content(). */
   left:calc(2 * var(--compact-inset));
+  right:calc(2 * var(--compact-inset));
+  text-align:center;
 }
 .tile.sensor-compact > .tile-title {
   top:max(0px, calc((var(--compact-h) - var(--compact-title-line) - var(--compact-value-line) - var(--compact-text-gap)) / 2));
