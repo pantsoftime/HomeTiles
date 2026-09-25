@@ -1,3 +1,5 @@
+#include "src/tiles/runtime/compact_sensor_layout.h"
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/energy/renderer.h"
 
 #include <Arduino.h>
@@ -75,7 +77,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
 
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
@@ -83,7 +85,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
 
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   lv_obj_t* icon_lbl = nullptr;
   String icon_name = tile.icon_name;
@@ -111,8 +113,9 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
     title_text = haBridgeConfig.findSensorName(tile.sensor_entity);
   }
 
+  lv_obj_t* title_label = nullptr;
   if (title_text.length() > 0) {
-    lv_obj_t* title_label = lv_label_create(card);
+    title_label = lv_label_create(card);
     if (title_label) {
       set_label_style(title_label, lv_color_hex(0xFFFFFF),
                       tile_layout::header_title_font());
@@ -143,6 +146,10 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   value_y_offset = tile_layout::scale_i16(value_y_offset);
   lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
                tile_layout::scale(28) + value_y_offset);
+
+  if (tile_geometry::compact(tile.type, tile.span_w, tile.span_h)) {
+    compact_sensor_layout::apply(card, icon_lbl, title_label, value_label, tile);
+  }
 
   SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
   if (target && index < TILES_PER_GRID) {

@@ -1,11 +1,16 @@
 
   function syncClimateSlotFields(
       tab, finalizePreviewSelection = false) {
+    if (Number(document.getElementById(tab + '_tile_type')?.value) !== 17) {
+      parkClimateMiniEditor(tab);
+      return;
+    }
     mountClimateMiniEditor(tab);
-    const spanW = Math.max(1, Number(document.getElementById(
-      tab + '_tile_span_w')?.value) || 1);
-    const spanH = Math.max(1, Number(document.getElementById(
-      tab + '_tile_span_h')?.value) || 1);
+    // Half steps do not change the mini-grid, so only whole cells count here.
+    const spanW = Math.max(1, Math.floor(Number(document.getElementById(
+      tab + '_tile_span_w')?.value) || 1));
+    const spanH = Math.max(1, Math.floor(Number(document.getElementById(
+      tab + '_tile_span_h')?.value) || 1));
     const capacity = climateSlotCapacity(spanW, spanH);
     const { columns, rows } =
       climateGridDimensions(spanW, spanH);

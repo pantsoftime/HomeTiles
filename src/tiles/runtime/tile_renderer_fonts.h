@@ -166,4 +166,21 @@ inline const lv_font_t* content_font_40() {
 #endif
 }
 
+inline const lv_font_t* value_font_for_choice(uint8_t choice, const lv_font_t* fallback) {
+  switch (choice) {
+    case 1: return content_font_20();
+    case 2: return content_font_24();
+    case 3: return content_font_32();
+    case 4: return content_font_40();
+    // Fork: monospace choices for table-like multi-line values. Upstream folded
+    // the per-renderer switch into this helper; without these cases every mono
+    // tile would silently fall back to the default font after the merge.
+    case 5: return mono_font_20();
+    case 6: return mono_font_24();
+    case 7: return mono_bold_font_20();
+    case 8: return mono_bold_font_24();
+    default: return fallback;
+  }
+}
+
 }  // namespace tile_layout

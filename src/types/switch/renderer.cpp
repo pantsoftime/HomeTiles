@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/switch/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
@@ -118,7 +119,7 @@ static bool is_switch_widget_tile(const Tile& tile) {
 lv_obj_t* render_switch_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index, GridType grid_type) {
   const bool use_switch_widget = is_switch_widget_tile(tile);
   lv_obj_t* container = use_switch_widget ? lv_obj_create(parent) : lv_button_create(parent);
-  lv_obj_set_style_radius(container, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(container, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(container, 0, 0);
 
   // Use the configured color; default to 0x353535 when color is 0.
@@ -145,7 +146,7 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
   lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
   if (!use_switch_widget) disable_pressed_button_animation(container);
 
-  set_tile_grid_cell(container, col, row, tile.span_w, tile.span_h);
+  place_tile_card(container, col, row, tile);
 
   // Optional icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;

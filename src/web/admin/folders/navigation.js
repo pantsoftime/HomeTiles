@@ -88,6 +88,7 @@
 
   function syncFolderFragmentWithRoot(tabEl) {
     if (!tabEl) return;
+    syncTileRadiusControls(tabEl);
 
     const sourceBorderToggle = Array.from(
       document.querySelectorAll('.normal-tile-border-toggle'))
@@ -193,6 +194,7 @@
       enableTileDrag(String(data.tab_id));
       enableTileKeys(String(data.tab_id));
       enableTileResize(String(data.tab_id));
+      enableFreeSlotHover(String(data.tab_id));
     }
     if (name !== null || icon !== null) {
       ensureNavigateTargetOption(

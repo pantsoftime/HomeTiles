@@ -56,6 +56,79 @@ function t(key) {
       showNotification(t('networkErrorSave'), false);
     }
   }
+
+// The shared root variables also reach cached and lazily inserted folder grids.
+let tileRadiusConfirmed = null;
+let tileRadiusWanted = null;
+let tileRadiusSaving = false;
+let tileRadiusRevision = 0;
+let tileRadiusPreviewTimer = null;
+let tileRadiusLiveWanted = null;
+function previewTileRadiusLive(value) {
+  const radius = previewTileRadius(value);
+  tileRadiusLiveWanted = radius;
+  if (tileRadiusPreviewTimer === null) tileRadiusPreviewTimer = setTimeout(() => {
+    tileRadiusPreviewTimer = null;
+    queueTileRadius(tileRadiusLiveWanted, false);
+  }, 80);
+}
+function previewTileRadius(value) {
+  const input = document.querySelector('.global-tile-radius');
+  if (!input) return;
+  const radius = Math.max(Number(input.min), Math.min(Number(input.max), Math.round(Number(value))));
+  if (!Number.isFinite(radius)) return;
+  const root = document.documentElement;
+  if (tileRadiusConfirmed === null) {
+    tileRadiusConfirmed = Number(getComputedStyle(root).getPropertyValue('--tile-radius-device'));
+  }
+  const scale = Number(getComputedStyle(root).getPropertyValue('--radius-preview-scale'));
+  root.style.setProperty('--tile-radius', Math.max(1, Math.round(radius * scale)) + 'px');
+  root.style.setProperty('--tile-radius-device', String(radius));
+  document.querySelectorAll('.global-tile-radius').forEach(control => { control.value = radius; });
+  document.querySelectorAll('.global-tile-radius-value').forEach(output => { output.textContent = radius; });
+  tileRadiusRevision++;
+  return radius;
+}
+function saveTileRadius(value) {
+  clearTimeout(tileRadiusPreviewTimer);
+  tileRadiusPreviewTimer = null;
+  return queueTileRadius(value, true);
+}
+async function queueTileRadius(value, persist) {
+  const radius = previewTileRadius(value);
+  if (radius === undefined) return;
+  tileRadiusWanted = { radius, persist };
+  if (tileRadiusSaving) return;
+  tileRadiusSaving = true;
+  try {
+    while (tileRadiusWanted !== null) {
+      const wanted = tileRadiusWanted;
+      const revision = tileRadiusRevision;
+      tileRadiusWanted = null;
+      try {
+        const response = await fetch('/api/display/tile-radius', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ radius: String(wanted.radius), preview: wanted.persist ? '0' : '1' }).toString()
+        });
+        if (!response.ok) throw new Error('save failed');
+        const result = await response.json();
+        if (!result.success || result.radius !== wanted.radius) throw new Error('invalid response');
+        if (wanted.persist) tileRadiusConfirmed = wanted.radius;
+      } catch (error) {
+        if (tileRadiusWanted === null && revision === tileRadiusRevision) {
+          previewTileRadius(tileRadiusConfirmed);
+          showNotification(t('networkErrorSave'), false);
+        }
+      }
+    }
+  } finally { tileRadiusSaving = false; }
+}
+function syncTileRadiusControls(tabEl) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue('--tile-radius-device').trim();
+  tabEl.querySelectorAll('.global-tile-radius').forEach(control => { control.value = value; });
+  tabEl.querySelectorAll('.global-tile-radius-value').forEach(output => { output.textContent = value; });
+}
   let tabSwitchSequence = 0;
 
   function folderIdFromAdminTabName(tabName) {
@@ -225,6 +298,9 @@ function t(key) {
         el.textContent = getClockPreviewDate(0);
       }
     });
+    if (typeof fitCompactClockPreview === 'function') {
+      document.querySelectorAll('.tile.clock-compact').forEach(fitCompactClockPreview);
+    }
     if (screensaverDraft) {
       const time = document.getElementById('screensaverClockTime');
       const date = document.getElementById('screensaverClockDate');
@@ -710,6 +786,356 @@ function t(key) {
       showNotification(err?.message || t('screenshotFailed'), false);
     }
   }
+  // Built-in camera opt-in (only rendered on the exact camera profile). The
+  // server provides every visible text as data attributes on the status line;
+  // this code only selects between them. A ready sensor adds its model name
+  // and chip ID; internal detail codes stay diagnostic-only in the JSON.
+  // The live-stream mode select is server-rendered too and saves on change.
+  let localCameraSaveSequence = 0;
+  let localCameraModeSequence = 0;
+  let localCameraMirrorSequence = 0;
+  let localCameraIndicatorSequence = 0;
+  let localCameraPollTimer = null;
+  const LOCAL_CAMERA_STATE_KEYS = {
+    disabled: 'stateDisabled',
+    probing: 'stateProbing',
+    ready: 'stateReady',
+    not_found: 'stateNotFound',
+    error: 'stateError'
+  };
+
+  function localCameraStatusText(note, status) {
+    const state = status && typeof status.state === 'string' ? status.state : 'error';
+    const key = LOCAL_CAMERA_STATE_KEYS[state] || 'stateError';
+    let text = (note.dataset.label || '') + ': ' + (note.dataset[key] || state);
+    if (state === 'ready') {
+      const parts = [];
+      if (status.sensor) parts.push(String(status.sensor).toUpperCase());
+      if (status.chip_id) parts.push(String(status.chip_id));
+      if (parts.length) text += ' (' + parts.join(', ') + ')';
+    }
+    return text;
+  }
+
+  function applyLocalCameraStatus(status) {
+    const note = document.getElementById('local_camera_status');
+    const toggle = document.getElementById('local_camera_enabled');
+    if (!note || !status || typeof status !== 'object') return;
+    if (toggle && typeof status.enabled === 'boolean') toggle.checked = status.enabled;
+    const mirrorToggle = document.getElementById('local_camera_mirror');
+    if (mirrorToggle && typeof status.mirror === 'boolean') mirrorToggle.checked = status.mirror;
+    if (Number.isInteger(status.indicator)) applyLocalCameraIndicator(status.indicator);
+    const modeSelect = document.getElementById('local_camera_stream_mode');
+    if (modeSelect && Number.isInteger(status.stream_mode)) {
+      modeSelect.value = String(status.stream_mode);
+      modeSelect.dataset.saved = String(status.stream_mode);
+    }
+    if (Number.isInteger(status.stream_mode)) showLocalCameraCustom(status.stream_mode);
+    applyLocalCameraCustom(status.custom);
+    applyLocalCameraImage(status.image);
+    note.dataset.state = String(status.state || '');
+    note.textContent = localCameraStatusText(note, status);
+    clearTimeout(localCameraPollTimer);
+    localCameraPollTimer = null;
+    // The sensor probe runs on the camera worker; follow it briefly.
+    if (status.state === 'probing') {
+      localCameraPollTimer = setTimeout(refreshLocalCameraStatus, 1000);
+    }
+  }
+
+  async function refreshLocalCameraStatus() {
+    if (!document.getElementById('local_camera_status')) return;
+    try {
+      const response = await fetch('/api/local-camera', {cache: 'no-store'});
+      if (!response.ok) return;
+      applyLocalCameraStatus(await response.json());
+    } catch (error) {
+      // A status refresh is optional; the next toggle or reload retries.
+    }
+  }
+
+  async function saveLocalCameraEnabled(enabled) {
+    const wanted = !!enabled;
+    const sequence = ++localCameraSaveSequence;
+    const toggle = document.getElementById('local_camera_enabled');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'enabled=' + (wanted ? '1' : '0')
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraSaveSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraSaveSequence) return;
+      if (toggle) toggle.checked = !wanted;
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  async function saveLocalCameraMirror(enabled) {
+    const wanted = !!enabled;
+    const sequence = ++localCameraMirrorSequence;
+    const toggle = document.getElementById('local_camera_mirror');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'mirror=' + (wanted ? '1' : '0')
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraMirrorSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraMirrorSequence) return;
+      if (toggle) toggle.checked = !wanted;
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Indicator style (experimental): 0 none, 1 line only, 2 line with the pill.
+  // The pill checkbox only applies while the line is shown and keeps its own
+  // state while the line is off.
+  function applyLocalCameraIndicator(style) {
+    const line = document.getElementById('local_camera_indicator_line');
+    const pill = document.getElementById('local_camera_indicator_pill');
+    if (line) line.checked = style !== 0;
+    if (pill) {
+      if (style !== 0) pill.checked = style === 2;
+      pill.disabled = style === 0;
+    }
+  }
+
+  function localCameraIndicatorStyle() {
+    const line = document.getElementById('local_camera_indicator_line');
+    const pill = document.getElementById('local_camera_indicator_pill');
+    if (!line || !line.checked) return 0;
+    return pill && pill.checked ? 2 : 1;
+  }
+
+  async function saveLocalCameraIndicator() {
+    const style = localCameraIndicatorStyle();
+    const sequence = ++localCameraIndicatorSequence;
+    const line = document.getElementById('local_camera_indicator_line');
+    const pill = document.getElementById('local_camera_indicator_pill');
+    if (pill) pill.disabled = style === 0;
+    const saved = line && line.dataset.saved !== undefined ? parseInt(line.dataset.saved, 10) : null;
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'indicator=' + style
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraIndicatorSequence) return;
+      if (line && Number.isInteger(status.indicator)) line.dataset.saved = String(status.indicator);
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraIndicatorSequence) return;
+      if (Number.isInteger(saved)) applyLocalCameraIndicator(saved);
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Custom stream mode: frames per second and JPEG quality sliders, shown only
+  // while the Custom mode is selected (its id comes from data-mode). A slider
+  // saves on release; a failed save restores the last saved value. Numbers
+  // are untranslated.
+  const LOCAL_CAMERA_CUSTOM_KEYS = ['fps', 'quality'];
+  let localCameraCustomSequence = 0;
+
+  function showLocalCameraCustom(mode) {
+    const block = document.getElementById('local_camera_custom');
+    if (!block) return;
+    block.hidden = String(mode) !== String(block.dataset.mode);
+  }
+
+  function setLocalCameraCustomSlider(key, value) {
+    const slider = document.getElementById('local_camera_custom_' + key);
+    if (!slider) return;
+    slider.value = String(value);
+    const output = document.getElementById('local_camera_custom_' + key + '_value');
+    if (output) output.textContent = String(value);
+  }
+
+  function applyLocalCameraCustom(custom) {
+    if (!custom || typeof custom !== 'object') return;
+    for (const key of LOCAL_CAMERA_CUSTOM_KEYS) {
+      const slider = document.getElementById('local_camera_custom_' + key);
+      if (!slider || !Number.isInteger(custom[key])) continue;
+      slider.dataset.saved = String(custom[key]);
+      setLocalCameraCustomSlider(key, custom[key]);
+    }
+  }
+
+  function localCameraCustomInput(slider) {
+    const key = slider && slider.dataset ? slider.dataset.customKey : '';
+    if (!LOCAL_CAMERA_CUSTOM_KEYS.includes(key)) return;
+    const output = document.getElementById('local_camera_custom_' + key + '_value');
+    if (output) output.textContent = String(slider.value);
+  }
+
+  async function localCameraCustomChange(slider) {
+    const key = slider && slider.dataset ? slider.dataset.customKey : '';
+    if (!LOCAL_CAMERA_CUSTOM_KEYS.includes(key)) return;
+    const value = parseInt(slider.value, 10);
+    if (!Number.isInteger(value)) return;
+    localCameraCustomInput(slider);
+    const sequence = ++localCameraCustomSequence;
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'custom_' + key + '=' + value
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraCustomSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraCustomSequence) return;
+      if (slider.dataset.saved !== undefined) setLocalCameraCustomSlider(key, slider.dataset.saved);
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  async function saveLocalCameraStreamMode(value) {
+    const mode = String(value);
+    const sequence = ++localCameraModeSequence;
+    const select = document.getElementById('local_camera_stream_mode');
+    const previous = select && select.dataset.saved !== undefined ? select.dataset.saved : null;
+    showLocalCameraCustom(mode);
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'mode=' + encodeURIComponent(mode)
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraModeSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraModeSequence) return;
+      if (select && previous !== null) select.value = previous;
+      if (previous !== null) showLocalCameraCustom(previous);
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Image controls (brightness, contrast, saturation, red, blue, Max. gain). Sliders save
+  // while dragging (debounced) and immediately on release. One POST is in
+  // flight at a time so the device applies values in order; a value that is
+  // still pending is never overwritten by a status update, and a failed save
+  // restores the last saved value. Numbers are untranslated.
+  const LOCAL_CAMERA_IMAGE_KEYS = ['brightness', 'contrast', 'saturation', 'red', 'blue', 'gain'];
+  const LOCAL_CAMERA_IMAGE_DEBOUNCE_MS = 300;
+  let localCameraImagePending = {};
+  let localCameraImageTimer = null;
+  let localCameraImageInFlight = null;
+
+  function localCameraImageSlider(key) {
+    return document.getElementById('local_camera_' + key);
+  }
+
+  function showLocalCameraImageValue(slider, value) {
+    const output = document.getElementById('local_camera_' + slider.dataset.imageKey + '_value');
+    if (output) output.textContent = String(value) + (slider.dataset.unit || '');
+  }
+
+  function setLocalCameraImageSlider(key, value) {
+    const slider = localCameraImageSlider(key);
+    if (!slider) return;
+    slider.value = String(value);
+    showLocalCameraImageValue(slider, value);
+  }
+
+  function applyLocalCameraImage(image) {
+    if (!image || typeof image !== 'object') return;
+    for (const key of LOCAL_CAMERA_IMAGE_KEYS) {
+      const slider = localCameraImageSlider(key);
+      if (!slider || !Number.isInteger(image[key])) continue;
+      slider.dataset.saved = String(image[key]);
+      // Keep what the user is dragging or has not sent yet.
+      const busy = key in localCameraImagePending ||
+        (localCameraImageInFlight && key in localCameraImageInFlight &&
+         String(localCameraImageInFlight[key]) !== String(image[key]));
+      if (!busy) setLocalCameraImageSlider(key, image[key]);
+    }
+  }
+
+  function queueLocalCameraImage(slider) {
+    const key = slider && slider.dataset ? slider.dataset.imageKey : '';
+    if (!LOCAL_CAMERA_IMAGE_KEYS.includes(key)) return false;
+    const value = parseInt(slider.value, 10);
+    if (!Number.isInteger(value)) return false;
+    showLocalCameraImageValue(slider, value);
+    localCameraImagePending[key] = value;
+    return true;
+  }
+
+  function localCameraImageInput(slider) {
+    if (!queueLocalCameraImage(slider)) return;
+    clearTimeout(localCameraImageTimer);
+    localCameraImageTimer = setTimeout(flushLocalCameraImage, LOCAL_CAMERA_IMAGE_DEBOUNCE_MS);
+  }
+
+  function localCameraImageChange(slider) {
+    if (!queueLocalCameraImage(slider)) return;
+    return flushLocalCameraImage();
+  }
+
+  function resetLocalCameraImage() {
+    localCameraImagePending = {reset: 1};
+    return flushLocalCameraImage();
+  }
+
+  async function flushLocalCameraImage() {
+    clearTimeout(localCameraImageTimer);
+    localCameraImageTimer = null;
+    // The running save flushes the rest when it finishes.
+    if (localCameraImageInFlight) return;
+    const values = localCameraImagePending;
+    const keys = Object.keys(values);
+    if (!keys.length) return;
+    localCameraImagePending = {};
+    localCameraImageInFlight = values;
+    const body = keys.map(key => key + '=' + encodeURIComponent(String(values[key]))).join('&');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      localCameraImageInFlight = null;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      localCameraImageInFlight = null;
+      const sent = 'reset' in values ? LOCAL_CAMERA_IMAGE_KEYS : keys;
+      for (const key of sent) {
+        const slider = localCameraImageSlider(key);
+        if (!slider || key in localCameraImagePending) continue;
+        if (slider.dataset.saved !== undefined) setLocalCameraImageSlider(key, slider.dataset.saved);
+      }
+      showNotification(t('networkErrorSave'), false);
+    }
+    if (Object.keys(localCameraImagePending).length) await flushLocalCameraImage();
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const modeSelect = document.getElementById('local_camera_stream_mode');
+    if (modeSelect) modeSelect.dataset.saved = modeSelect.value;
+    const indicatorLine = document.getElementById('local_camera_indicator_line');
+    if (indicatorLine) indicatorLine.dataset.saved = String(localCameraIndicatorStyle());
+    const note = document.getElementById('local_camera_status');
+    if (note && note.dataset.state === 'probing') refreshLocalCameraStatus();
+  });
 
   let fileManagerLoaded = false;
   const fileManagerState = { fs: 'sd', path: '/', selected: null, sdAvailable: null };
@@ -1853,10 +2279,10 @@ function t(key) {
     const fallbackRow = (index >= 0)
       ? (Math.max(firstRow, Math.floor(index / GRID_COLS)) + 1)
       : (firstRow + 1);
-    let col = clampInt(snapshot?.col, 1, GRID_COLS, fallbackCol);
-    let row = clampInt(snapshot?.row, firstRow + 1, GRID_ROWS, fallbackRow);
-    let spanW = clampInt(snapshot?.span_w, 1, GRID_COLS, 1);
-    let spanH = clampInt(snapshot?.span_h, 1, GRID_ROWS, 1);
+    let col = clampHalf(snapshot?.col, 1, GRID_COLS, fallbackCol);
+    let row = clampHalf(snapshot?.row, firstRow + 1, GRID_ROWS + 0.5, fallbackRow);
+    let spanW = clampHalf(snapshot?.span_w, 0.5, GRID_COLS, 1);
+    let spanH = clampHalf(snapshot?.span_h, 0.5, GRID_ROWS, 1);
     return constrainLayoutToTab(
       normalizeLayoutForTileType(snapshot?.type, col - 1, row - 1,
                                  spanW, spanH),
@@ -1969,6 +2395,9 @@ function t(key) {
       tile.sensor_gauge_max = Number.isFinite(num) ? num : 100;
     }
 
+    if ([9,10].includes(Number(tile.type)) && snapshot?.tile_border !== undefined) {
+      tile.sensor_display_mode = ['0','false'].includes(String(snapshot.tile_border)) ? 1 : 0;
+    }
     tiles[index] = tile;
     tilesData[tab] = tiles;
   }
@@ -2092,6 +2521,7 @@ function t(key) {
 
   function syncFolderFragmentWithRoot(tabEl) {
     if (!tabEl) return;
+    syncTileRadiusControls(tabEl);
 
     const sourceBorderToggle = Array.from(
       document.querySelectorAll('.normal-tile-border-toggle'))
@@ -2197,6 +2627,7 @@ function t(key) {
       enableTileDrag(String(data.tab_id));
       enableTileKeys(String(data.tab_id));
       enableTileResize(String(data.tab_id));
+      enableFreeSlotHover(String(data.tab_id));
     }
     if (name !== null || icon !== null) {
       ensureNavigateTargetOption(
@@ -2532,19 +2963,59 @@ function t(key) {
     return v;
   }
 
+  function clampHalf(value, min, max, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number * 2) / 2)) : fallback;
+  }
+  function isCompactSensorType(type) { return [1, 14, 20].includes(Number(type)); }
+  // Types that may use half-cell sizes (mirrors tile_geometry::half_size).
+  function supportsHalfSize(type) { return isCompactSensorType(type) || Number(type) === 9; }
+  // Every type resizes in half steps from 1x1; only half-size types may be half
+  // a row high. Settings/Back stay whole (mirrors tile_geometry::supported).
+  function supportedTileLayout(type, layout) {
+    const values = layout ? [layout.col, layout.row, layout.span_w, layout.span_h] : [];
+    if (!layout || !values.every(v => Number.isFinite(v) && v >= 0 && Number.isInteger(v * 2))) return false;
+    if ([7, 8].includes(Number(type)) && values.some(v => !Number.isInteger(v))) return false;
+    if (layout.span_w < 1) return false;
+    return layout.span_h >= 1 || (supportsHalfSize(type) && layout.span_h === 0.5);
+  }
+  function applyCompactSensorPreview(el, type, layout, mode = 0) {
+    const compact = isCompactSensorType(type) && layout?.span_w >= 1 &&
+      layout.span_h === 0.5;
+    el.classList.toggle('sensor-compact', compact);
+    el.classList.toggle('sensor-half', compact && layout.span_h === 0.5);
+    el.classList.toggle('clock-compact', Number(type) === 9 && layout?.span_w >= 1 &&
+      layout.span_h === 0.5);
+    if (Number(type) === 9) fitCompactClockPreview(el);
+  }
+
   function normalizeLayoutForTileType(typeValue, col, row, spanW, spanH) {
-    let safeCol = clampInt(col, 0, GRID_COLS - 1, 0);
-    let safeRow = clampInt(row, 0, GRID_ROWS - 1, 0);
-    let safeW = clampInt(spanW, 1, GRID_COLS, 1);
-    let safeH = clampInt(spanH, 1, GRID_ROWS, 1);
+    let safeCol = clampHalf(col, 0, GRID_COLS - 0.5, 0);
+    let safeRow = clampHalf(row, 0, GRID_ROWS - 0.5, 0);
+    let safeW = clampHalf(spanW, 0.5, GRID_COLS, 1);
+    let safeH = clampHalf(spanH, 0.5, GRID_ROWS, 1);
     if (Number(typeValue) === MEDIA_TILE_TYPE) {
       const minW = Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS);
       const minH = Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS);
-      safeW = clampInt(safeW, minW, Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS), minW);
-      safeH = clampInt(safeH, minH, Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS), minH);
+      safeW = clampHalf(safeW, minW, Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS), minW);
+      safeH = clampHalf(safeH, minH, Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS), minH);
       safeCol = Math.min(safeCol, GRID_COLS - safeW);
       safeRow = Math.min(safeRow, GRID_ROWS - safeH);
     } else {
+      // Keep at least a whole cell wide (and a whole row high unless the type
+      // allows half a row), so clamping at the grid edge never yields 0.5.
+      const type = Number(typeValue);
+      const minH = (type === 0 || supportsHalfSize(type)) ? 0.5 : 1;
+      safeW = Math.max(1, safeW);
+      safeH = Math.max(minH, safeH);
+      safeCol = Math.min(safeCol, GRID_COLS - 1);
+      safeRow = Math.min(safeRow, GRID_ROWS - minH);
+      if (type === 7 || type === 8) {
+        safeCol = Math.floor(safeCol);
+        safeRow = Math.floor(safeRow);
+        safeW = Math.max(1, Math.floor(safeW));
+        safeH = Math.max(1, Math.floor(safeH));
+      }
       safeW = Math.min(safeW, GRID_COLS - safeCol);
       safeH = Math.min(safeH, GRID_ROWS - safeRow);
     }
@@ -2564,10 +3035,10 @@ function t(key) {
     const fallbackCol = index % GRID_COLS;
     const firstRow = firstAllowedGridRow(tab);
     const fallbackRow = Math.max(firstRow, Math.floor(index / GRID_COLS));
-    const col = clampInt(tile?.col, 0, GRID_COLS - 1, fallbackCol);
-    const row = clampInt(tile?.row, firstRow, GRID_ROWS - 1, fallbackRow);
-    let spanW = clampInt(tile?.span_w, 1, GRID_COLS, 1);
-    let spanH = clampInt(tile?.span_h, 1, GRID_ROWS, 1);
+    const col = clampHalf(tile?.col, 0, GRID_COLS - 0.5, fallbackCol);
+    const row = clampHalf(tile?.row, firstRow, GRID_ROWS - 0.5, fallbackRow);
+    let spanW = clampHalf(tile?.span_w, 0.5, GRID_COLS, 1);
+    let spanH = clampHalf(tile?.span_h, 0.5, GRID_ROWS, 1);
     return constrainLayoutToTab(
       normalizeLayoutForTileType(tile?.type, col, row, spanW, spanH), tab);
   }
@@ -2584,22 +3055,27 @@ function t(key) {
 
   function setTileGridPosition(el, col, row, spanW, spanH) {
     setGridItemPosition(el, col, row, spanW, spanH);
+    const fractional = [col, row, spanW, spanH].some(v => !Number.isInteger(v));
+    el.classList.toggle('fractional-tile', fractional);
+    for (const [name, value] of Object.entries({col, row, w: spanW, h: spanH})) el.style.setProperty('--tile-' + name, String(value));
+    if (fractional) { el.style.gridColumn = 'auto'; el.style.gridRow = 'auto'; }
+
   }
 
   function getTileElementLayout(tab, index) {
     const el = document.getElementById(tab + '-tile-' + index);
     if (!el) return null;
-    const col = clampInt(el.dataset.col, 0, GRID_COLS - 1, null);
-    const row = clampInt(el.dataset.row, firstAllowedGridRow(tab), GRID_ROWS - 1, null);
-    const spanW = clampInt(el.dataset.spanW, 1, GRID_COLS, null);
-    const spanH = clampInt(el.dataset.spanH, 1, GRID_ROWS, null);
+    const col = clampHalf(el.dataset.col, 0, GRID_COLS - 0.5, null);
+    const row = clampHalf(el.dataset.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, null);
+    const spanW = clampHalf(el.dataset.spanW, 0.5, GRID_COLS, null);
+    const spanH = clampHalf(el.dataset.spanH, 0.5, GRID_ROWS, null);
     if (col === null || row === null || spanW === null || spanH === null) return null;
     return { col, row, span_w: spanW, span_h: spanH };
   }
 
   function layoutTiles(tab, tiles) {
     if (!Array.isArray(tiles)) return;
-    const occupied = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(false));
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
     const emptyIndices = [];
 
     tiles.forEach((tile, idx) => {
@@ -2614,30 +3090,205 @@ function t(key) {
         setTileGridPosition(el, layout.col, layout.row, layout.span_w, layout.span_h);
         el.style.display = '';
       }
-      for (let r = layout.row; r < layout.row + layout.span_h; r++) {
-        for (let c = layout.col; c < layout.col + layout.span_w; c++) {
-          if (r < GRID_ROWS && c < GRID_COLS) occupied[r][c] = true;
-        }
-      }
+      markOccupied(occupied, layout);
     });
 
-    const freeCells = [];
-    for (let r = firstAllowedGridRow(tab); r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (!occupied[r][c]) freeCells.push({ col: c, row: r });
+    // A selected new tile keeps the spot the user picked (newTileSpot), even
+    // when a grid re-render recreates its element. One further empty tile is
+    // the free slot that follows the pointer (enableFreeSlotHover); it rests
+    // on the first free spot so keyboard and touch users reach it.
+    const editingNew = idx => currentTileTab === tab && currentTileIndex === idx;
+    const empties = emptyIndices
+      .map(idx => ({ idx, el: document.getElementById(tab + '-tile-' + idx) }))
+      .filter(entry => entry.el)
+      .sort((a, b) => editingNew(b.idx) - editingNew(a.idx));
+    let freeEl = null;
+    empties.forEach(({ idx, el }) => {
+      delete el.dataset.freeSlot;
+      el.classList.remove('free-slot-hover');
+      const kept = editingNew(idx) && newTileSpot?.tab === tab && newTileSpot.index === idx
+        ? newTileSpot.layout : null;
+      if (kept && slotFits(tab, occupied, kept.col, kept.row, kept.span_w, kept.span_h)) {
+        markOccupied(occupied, kept);
+        setTileGridPosition(el, kept.col, kept.row, kept.span_w, kept.span_h);
+        el.style.display = '';
+        return;
       }
-    }
-
-    emptyIndices.forEach((idx, i) => {
-      const el = document.getElementById(tab + '-tile-' + idx);
-      if (!el) return;
-      if (i < freeCells.length) {
-        const cell = freeCells[i];
-        setTileGridPosition(el, cell.col, cell.row, 1, 1);
+      const slot = freeEl ? null : firstFreeSlot(tab, occupied);
+      if (slot) {
+        freeEl = el;
+        el.dataset.freeSlot = '1';
+        setTileGridPosition(el, slot.col, slot.row, slot.span_w, slot.span_h);
         el.style.display = '';
       } else {
         el.style.display = 'none';
       }
+    });
+  }
+
+  function markOccupied(occupied, layout) {
+    for (let r = layout.row * 2; r < (layout.row + layout.span_h) * 2; r++) {
+      for (let c = layout.col * 2; c < (layout.col + layout.span_w) * 2; c++) {
+        if (r >= 0 && c >= 0 && r < GRID_ROWS * 2 && c < GRID_COLS * 2) occupied[r][c] = true;
+      }
+    }
+  }
+
+  function slotFits(tab, occupied, col, row, spanW, spanH) {
+    if (col < 0 || row < firstAllowedGridRow(tab) ||
+        col + spanW > GRID_COLS || row + spanH > GRID_ROWS) return false;
+    for (let r = row * 2; r < (row + spanH) * 2; r++) {
+      for (let c = col * 2; c < (col + spanW) * 2; c++) {
+        if (occupied[r][c]) return false;
+      }
+    }
+    return true;
+  }
+
+  // New tiles start as 1x1. The 1x0.5 slot is offered only where 1x1 does not
+  // fit; choosing a type that needs more grows it (grownNewTileLayout).
+  const FREE_SLOT_SIZES = [[1, 1], [1, 0.5]];
+
+  // Spot of the new (still empty) tile open in the editor: {tab, index, layout}.
+  let newTileSpot = null;
+
+  // Smallest size a type accepts (Media needs 2x2, half-size types 1x0.5).
+  function minimumTileSize(type) {
+    if (Number(type) === MEDIA_TILE_TYPE) return [Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS), Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS)];
+    return [1, supportsHalfSize(type) ? 0.5 : 1];
+  }
+
+  // Layout a new half-height tile grows to for a type that needs more room:
+  // downwards first, then upwards, then left. Null when it does not fit.
+  function grownNewTileLayout(tab, type) {
+    if (!newTileSpot || newTileSpot.tab !== tab || newTileSpot.index !== currentTileIndex ||
+        !newTileSpot.layout) return null;
+    const base = newTileSpot.layout;
+    const [minW, minH] = minimumTileSize(type);
+    if (base.span_w >= minW && base.span_h >= minH) return base;
+    const spanW = Math.max(base.span_w, minW), spanH = Math.max(base.span_h, minH);
+    for (const [dx, dy] of [[0, 0], [0, base.span_h - spanH], [base.span_w - spanW, 0], [base.span_w - spanW, base.span_h - spanH]]) {
+      const layout = { col: base.col + dx, row: base.row + dy, span_w: spanW, span_h: spanH };
+      if (supportedTileLayout(type, layout) && canPlaceTileLayout(tab, currentTileIndex, layout)) return layout;
+    }
+    return null;
+  }
+
+  // Pointer position in (fractional) grid cells.
+  function pointerGridPoint(tab, clientX, clientY) {
+    const metrics = getTileGridMetrics(tab);
+    if (!metrics) return null;
+    const x = (clientX - metrics.rect.left - metrics.padLeft + metrics.gapX / 2) / (metrics.cellW + metrics.gapX);
+    const y = (clientY - metrics.rect.top - metrics.padTop + metrics.gapY / 2) / (metrics.cellH + metrics.gapY);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  }
+
+  // The free slot centred under the pointer, snapped to half cells. Nearby
+  // half steps that still cover the pointer are tried before a smaller size.
+  function freeSlotNear(tab, occupied, point) {
+    const snap = value => Math.round(value * 2) / 2;
+    const offsets = [0, -0.5, 0.5];
+    for (const [spanW, spanH] of FREE_SLOT_SIZES) {
+      const baseCol = snap(point.x - spanW / 2);
+      const baseRow = snap(point.y - spanH / 2);
+      const candidates = [];
+      for (const dy of offsets) {
+        for (const dx of offsets) {
+          const col = baseCol + dx, row = baseRow + dy;
+          if (col <= point.x && point.x < col + spanW && row <= point.y && point.y < row + spanH) {
+            candidates.push({ col, row, cost: Math.abs(dx) + Math.abs(dy) });
+          }
+        }
+      }
+      candidates.sort((a, b) => a.cost - b.cost);
+      for (const { col, row } of candidates) {
+        if (slotFits(tab, occupied, col, row, spanW, spanH)) {
+          return { col, row, span_w: spanW, span_h: spanH };
+        }
+      }
+    }
+    return null;
+  }
+
+  function firstFreeSlot(tab, occupied) {
+    for (const [spanW, spanH, step] of [[1, 1, 1], [1, 1, 0.5], [1, 0.5, 1], [1, 0.5, 0.5]]) {
+      for (let r = firstAllowedGridRow(tab); r + spanH <= GRID_ROWS; r += step) {
+        for (let c = 0; c + spanW <= GRID_COLS; c += step) {
+          if (slotFits(tab, occupied, c, r, spanW, spanH)) {
+            return { col: c, row: r, span_w: spanW, span_h: spanH };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // Occupancy as currently shown, including unsaved local edits and a selected
+  // new tile, but without the free slot itself.
+  function occupiedFromGrid(tab, grid, freeEl) {
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
+    grid.querySelectorAll(':scope > .tile[data-index]').forEach(el => {
+      if (el === freeEl || el.style.display === 'none') return;
+      if (Number(el.dataset.type || 0) === 0 && el.dataset.selected !== '1') return;
+      const layout = getTileElementLayout(tab, parseInt(el.dataset.index, 10));
+      if (layout) markOccupied(occupied, layout);
+    });
+    return occupied;
+  }
+
+  function freeSlotElement(grid) {
+    const free = grid.querySelector(':scope > .tile.empty[data-free-slot="1"]:not([data-selected="1"])');
+    if (free) return free;
+    const spare = Array.from(grid.querySelectorAll(':scope > .tile.empty'))
+      .find(el => el.dataset.selected !== '1' && el.style.display === 'none');
+    if (spare) spare.dataset.freeSlot = '1';
+    return spare || null;
+  }
+
+  // Moves the free slot to the pointer in half-cell steps. A click on it (or a
+  // tap on free space) opens the editor for a new tile at exactly that spot.
+  function enableFreeSlotHover(tab) {
+    const grid = getTileGrid(tab);
+    if (!grid || grid.dataset.freeSlotBound === '1') return;
+    grid.dataset.freeSlotBound = '1';
+    const placeAt = (clientX, clientY) => {
+      const el = freeSlotElement(grid);
+      if (!el) return null;
+      const point = pointerGridPoint(tab, clientX, clientY);
+      const slot = point && freeSlotNear(tab, occupiedFromGrid(tab, grid, el), point);
+      if (!slot) {
+        el.classList.remove('free-slot-hover');
+        return null;
+      }
+      // Only one unselected placeholder may exist, so a stale one left by a
+      // previous selection can never catch the click.
+      grid.querySelectorAll(':scope > .tile.empty').forEach(other => {
+        if (other === el || other.dataset.selected === '1') return;
+        other.style.display = 'none';
+        delete other.dataset.freeSlot;
+        other.classList.remove('free-slot-hover');
+      });
+      setTileGridPosition(el, slot.col, slot.row, slot.span_w, slot.span_h);
+      el.style.display = '';
+      el.classList.add('free-slot-hover');
+      return el;
+    };
+    grid.addEventListener('pointermove', event => {
+      if (event.pointerType === 'touch' || resizeState || dragSource) return;
+      const over = event.target.closest('.tile');
+      if (over && over.parentElement === grid && !over.classList.contains('empty')) {
+        grid.querySelector(':scope > .tile.free-slot-hover')?.classList.remove('free-slot-hover');
+        return;
+      }
+      placeAt(event.clientX, event.clientY);
+    });
+    grid.addEventListener('pointerleave', () => {
+      grid.querySelector(':scope > .tile.free-slot-hover')?.classList.remove('free-slot-hover');
+    });
+    grid.addEventListener('click', event => {
+      if (event.target !== grid) return;
+      const el = placeAt(event.clientX, event.clientY);
+      if (el) selectTile(parseInt(el.dataset.index, 10), tab);
     });
   }
 
@@ -2665,11 +3316,11 @@ function t(key) {
       return { col: 0, row: 0, span_w: 1, span_h: 1 };
     }
 
-    let col = clampInt(colEl.value, 1, GRID_COLS, 1);
+    let col = clampHalf(colEl.value, 1, GRID_COLS, 1);
     const firstRow = firstAllowedGridRow(tab);
-    let row = clampInt(rowEl.value, firstRow + 1, GRID_ROWS, firstRow + 1);
-    let spanW = clampInt(spanWEl.value, 1, GRID_COLS, 1);
-    let spanH = clampInt(spanHEl.value, 1, GRID_ROWS, 1);
+    let row = clampHalf(rowEl.value, firstRow + 1, GRID_ROWS + 0.5, firstRow + 1);
+    let spanW = clampHalf(spanWEl.value, 0.5, GRID_COLS, 1);
+    let spanH = clampHalf(spanHEl.value, 0.5, GRID_ROWS, 1);
 
     const typeValue = document.getElementById(prefix + '_tile_type')?.value || '0';
     const layout = constrainLayoutToTab(
@@ -2691,6 +3342,9 @@ function t(key) {
   function updateLayoutFromInputs(tab) {
     if (currentTileIndex === -1) return;
     const layout = normalizeLayoutInputs(tab);
+    if (newTileSpot && newTileSpot.tab === tab && newTileSpot.index === currentTileIndex) {
+      newTileSpot.layout = layout;
+    }
     const tiles = getTilesData(tab);
     const tileEl = document.getElementById(tab + '-tile-' + currentTileIndex);
     if (tileEl && (!Array.isArray(tiles) || tiles.length === 0)) {
@@ -2699,6 +3353,11 @@ function t(key) {
     }
     if (!Array.isArray(tiles) || currentTileIndex >= tiles.length) return;
     const tile = tiles[currentTileIndex] || {};
+    const type = document.getElementById(tab + '_tile_type')?.value ?? tile.type;
+    if (Number(type) !== 0 && (!supportedTileLayout(type, layout) || !canPlaceTileLayout(tab, currentTileIndex, layout))) {
+      applyLayoutInputsFromLayout(tab, normalizeTileLayout(tile, currentTileIndex, tab), false);
+      return;
+    }
     tile.col = layout.col;
     tile.row = layout.row;
     tile.span_w = layout.span_w;
@@ -2708,6 +3367,7 @@ function t(key) {
     tile.type = isNaN(typeNum) ? 0 : typeNum;
     tiles[currentTileIndex] = tile;
     layoutTiles(tab, tiles);
+    syncTileSizePolicy(tab);
   }
 
   function applyLayoutInputsFromLayout(tab, layout, persistDraft = true) {
@@ -2809,6 +3469,7 @@ function t(key) {
     if (spanWEl) spanWEl.value = d.span_w || '1';
     const spanHEl = document.getElementById(prefix + '_tile_span_h');
     if (spanHEl) spanHEl.value = d.span_h || '1';
+    syncTileSizePolicy(tab);
     const meta = getTileTypeMeta(d.type || '0');
     callTypeHandler(meta, 'load', prefix, d);
     refreshEntityOptionLists(prefix);
@@ -2869,6 +3530,7 @@ function t(key) {
     if (spanWEl) spanWEl.value = data.span_w || '1';
     const spanHEl = document.getElementById(prefix + '_tile_span_h');
     if (spanHEl) spanHEl.value = data.span_h || '1';
+    syncTileSizePolicy(tab);
     const meta = getTileTypeMeta(typeValue);
     callTypeHandler(meta, 'load', prefix, data);
     refreshEntityOptionLists(prefix);
@@ -2908,6 +3570,10 @@ function t(key) {
     }
     currentTileIndex = index;
     currentTileTab = tab;
+    // A new tile keeps the spot it was picked at (see layoutTiles).
+    newTileSpot = Number(getTilesData(tab)?.[index]?.type || 0) === 0
+      ? { tab, index, layout: getTileElementLayout(tab, index) }
+      : null;
     document.getElementById('settingsHiddenTile')?.classList.remove('active');
     persistSelectedTileState();
     document.querySelectorAll(
@@ -3118,6 +3784,19 @@ function t(key) {
       const tileEl = document.getElementById(tab + '-tile-' + currentTileIndex);
       const previousType = Number(tileEl?.dataset.type ?? 0);
       const nextType = Number(typeSelect.value);
+      let currentLayout = getTileElementLayout(tab, currentTileIndex);
+      // A new tile grows from 1x0.5 to the smallest size the chosen type needs.
+      const grown = previousType === 0 && nextType !== 0 ? grownNewTileLayout(tab, nextType) : null;
+      if (grown && currentLayout && (grown.span_w !== currentLayout.span_w || grown.span_h !== currentLayout.span_h)) {
+        applyLayoutInputsFromLayout(tab, grown, false);
+        newTileSpot.layout = grown;
+        if (tileEl) setTileGridPosition(tileEl, grown.col, grown.row, grown.span_w, grown.span_h);
+        currentLayout = grown;
+      }
+      if (nextType !== 0 && currentLayout && !supportedTileLayout(nextType, currentLayout)) {
+        typeSelect.value = String(previousType);
+        return;
+      }
       // A freshly created tile must start with the selected type's real
       // default colour. Do not inherit an explicit colour state from the empty
       // editor placeholder.
@@ -3164,6 +3843,7 @@ function t(key) {
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
+    bindLive(document.getElementById(prefix + '_binary_sensor_value_font'), 'change', 'binarySensorValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(binarySensorPopupModeSelect, 'change', 'binarySensorPopupMode', () => {
       updateDraft(tab);
       scheduleAutoSave(tab);
@@ -3277,6 +3957,9 @@ function t(key) {
     bindLive(animationFpsInput, 'input', 'animationFps', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(animationFitSelect, 'change', 'animationFit', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(animationZoomInput, 'input', 'animationZoom', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    for (const kind of ['clock','text']) {
+      bindLive(document.getElementById(prefix + '_' + kind + '_tile_border'), 'change', kind + 'TileBorder', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    }
     bindLive(clockTimeCheck, 'change', 'clockShowTime', () => {
       ensureClockSelection(prefix);
       updateTilePreview(tab);
@@ -3370,7 +4053,7 @@ function t(key) {
     const isEnergyType = type === '14';
     const sensorValueFont = isEnergyType
       ? (document.getElementById(prefix + '_energy_value_font')?.value || '0')
-      : (document.getElementById(prefix + '_sensor_value_font')?.value || '0');
+      : (document.getElementById(prefix + (type === '20' ? '_binary_sensor_value_font' : '_sensor_value_font'))?.value || '0');
     const previewKind = meta.preview || 'none';
     const sensorValueClass = getSensorValueFontClass(isEditablePreview(previewKind)
       ? (document.getElementById(prefix + '_' + previewKind + '_value_font')?.value ?? '2') : sensorValueFont);
@@ -3442,6 +4125,7 @@ function t(key) {
     if (type === '5' && switchStyle === '1') tileElem.classList.add('switch-toggle');
     tileElem.style.background = '';
     tileElem.dataset.type = type;
+    tileElem.classList.toggle('tile-border-hidden', ['9','10'].includes(type) && document.getElementById(prefix + (type === '9' ? '_clock_tile_border' : '_text_tile_border'))?.checked === false);
 
     if (type === '0') {
       tileElem.classList.add('empty');
@@ -3450,6 +4134,9 @@ function t(key) {
       applyTileAriaLabel(tileElem, '', type);
       if (wasActive) tileElem.classList.add('active');
       updateLayoutFromInputs(tab);
+    applyCompactSensorPreview(tileElem, type, {span_w:Number(document.getElementById(prefix + '_tile_span_w')?.value || 1),
+      span_h:Number(document.getElementById(prefix + '_tile_span_h')?.value || 1)},
+      document.getElementById(prefix + '_sensor_display_mode')?.value || 0);
       return;
     }
 
@@ -3525,7 +4212,7 @@ function t(key) {
         '<br>' + escapeHtml(value) + '</div>';
     }
     if (previewKind === 'binary_sensor') {
-      html += '<div class="tile-value tile-binary-sensor-value" id="' +
+      html += '<div class="tile-value tile-binary-sensor-value ' + (Number(sensorValueFont) ? sensorValueClass : '') + '" id="' +
         tileId + '-value">' +
         escapeHtml(binarySensorPreviewStateText(binarySensorPreviewState)) +
         '</div>';
@@ -3584,6 +4271,9 @@ function t(key) {
     }
     if (type === '5') updateSwitchValuePreview(tab);
     updateLayoutFromInputs(tab);
+    applyCompactSensorPreview(tileElem, type, {span_w:Number(document.getElementById(prefix + '_tile_span_w')?.value || 1),
+      span_h:Number(document.getElementById(prefix + '_tile_span_h')?.value || 1)},
+      document.getElementById(prefix + '_sensor_display_mode')?.value || 0);
     if (previewKind === 'climate' &&
         typeof mountClimateMiniEditor === 'function') {
       mountClimateMiniEditor(tab);
@@ -3620,6 +4310,7 @@ function t(key) {
         if (colEl && rowEl && spanWEl && spanHEl) {
           const fallbackLayout = (data.type === 0) ? getTileElementLayout(tab, index) : null;
           const layoutInput = {
+            type: data.type,
             col: data.col,
             row: data.row,
             span_w: data.span_w,
@@ -3636,6 +4327,7 @@ function t(key) {
           rowEl.value = String(layout.row + 1);
           spanWEl.value = String(layout.span_w);
           spanHEl.value = String(layout.span_h);
+          syncTileSizePolicy(tab);
         }
         const meta = colorMeta;
         callTypeHandler(meta, 'load', prefix, data);
@@ -3664,9 +4356,15 @@ function t(key) {
     }
     const folderId = getFolderIdForTab(tab);
     if (folderId === undefined) return;
+    const baseline = JSON.stringify(cached);
     fetch('/api/tiles?folder=' + encodeURIComponent(folderId) + '&index=' + index)
       .then(res => res.json())
-      .then(data => applyTileDataToEditor(index, tab, data))
+      .then(data => {
+        const current = getTilesData(tab)[index];
+        const changed = JSON.stringify(current) !== baseline;
+        applyTileDataToEditor(index, tab,
+          current && (changed || drafts[tab]?.[index]?._dirty) ? current : data);
+      })
       .catch(error => console.error('Tile load failed:', error));
   }
 
@@ -3734,6 +4432,42 @@ function t(key) {
     syncGaugeUi(tab);
     applySpecialTileUiState(tab);
     syncFolderPinControls(tab);
+    syncTileSizePolicy(tab);
+  }
+
+  function syncTileSizePolicy(tab) {
+    const typeEl = document.getElementById(tab + '_tile_type');
+    if (!typeEl) return;
+    const w = Number(document.getElementById(tab + '_tile_span_w')?.value || 1);
+    const h = Number(document.getElementById(tab + '_tile_span_h')?.value || 1);
+    // Half a row high only suits the half-size types; any other half step
+    // only excludes Settings/Back, which stay whole.
+    const halfHeight = h < 1;
+    const fractional = !Number.isInteger(w) || !Number.isInteger(h);
+    const fixedGrid = type => [7, 8].includes(Number(type));
+    // A new half-height tile may still take a larger type when it can grow.
+    const isNewTile = Number(getTilesData(tab)?.[currentTileIndex]?.type || 0) === 0;
+    for (const option of typeEl.options) {
+      if (option.dataset.sizeDisabled === '1') { option.disabled = false; delete option.dataset.sizeDisabled; }
+      const type = Number(option.value);
+      const grows = isNewTile && type !== 0 && !!grownNewTileLayout(tab, type);
+      const blocked = type !== 0 && !grows &&
+        ((halfHeight && !supportsHalfSize(type)) || (fractional && fixedGrid(type)));
+      if (blocked && !option.disabled) {
+        option.disabled = true; option.dataset.sizeDisabled = '1';
+      }
+    }
+    const compact = supportsHalfSize(typeEl.value);
+    for (const field of ['col', 'row', 'span_w', 'span_h']) {
+      const input = document.getElementById(tab + '_tile_' + field);
+      if (input) input.step = fixedGrid(typeEl.value) ? '1' : '0.5';
+    }
+    const row = document.getElementById(tab + '_tile_row');
+    if (row) row.max = String(GRID_ROWS + (compact && h === 0.5 ? 0.5 : 0));
+    const height = document.getElementById(tab + '_tile_span_h');
+    if (height && compact) height.min = '0.5';
+    const note = document.getElementById(tab + '_tile_size_note');
+    if (note) note.hidden = !halfHeight;
   }
 
   let notificationTimer = null;
@@ -4230,14 +4964,15 @@ function t(key) {
     // bottom rows and packs it into the target grid.
     const firstTargetRow = Math.max(0, GRID_ROWS - 2);
     const firstSourceRow = sourceRows > 1 ? sourceRows - 2 : 0;
-    const occupied = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(false));
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
     const prepared = [];
     for (const entry of sourceEntries) {
       if (prepared.length >= tileCount) throw new Error('Screensaver grid does not fit target device');
       const tile = entry.tile;
       const mediaTile = Number(tile.type) === MEDIA_TILE_TYPE;
-      let spanW = Math.max(1, Number(tile.span_w || 1));
-      let spanH = Math.max(1, Number(tile.span_h || 1));
+      const half = value => Math.round(Number(value || 1) * 2) / 2;
+      let spanW = Math.max(1, half(tile.span_w));
+      let spanH = Math.max(supportsHalfSize(tile.type) ? 0.5 : 1, half(tile.span_h));
       if (mediaTile) {
         spanW = Math.max(MEDIA_TILE_MIN_SPAN, spanW);
         spanH = Math.max(MEDIA_TILE_MIN_SPAN, spanH);
@@ -4245,7 +4980,7 @@ function t(key) {
       spanW = Math.min(spanW, GRID_COLS, mediaTile ? MEDIA_TILE_MAX_SPAN : GRID_COLS);
       spanH = Math.min(spanH, 2, mediaTile ? MEDIA_TILE_MAX_SPAN : 2);
 
-      const sourceSpanW = Math.max(1, Number(tile.span_w || 1));
+      const sourceSpanW = Math.max(1, half(tile.span_w));
       const sourceColRange = Math.max(0, sourceCols - sourceSpanW);
       const targetColRange = Math.max(0, GRID_COLS - spanW);
       const relativeCol = sourceColRange > 0
@@ -4256,11 +4991,11 @@ function t(key) {
       const desiredRow = Math.min(GRID_ROWS - spanH, firstTargetRow + sourceRowOffset);
 
       let best = null;
-      for (let row = firstTargetRow; row <= GRID_ROWS - spanH; row++) {
-        for (let col = 0; col <= GRID_COLS - spanW; col++) {
+      for (let row = firstTargetRow; row <= GRID_ROWS - spanH; row += 0.5) {
+        for (let col = 0; col <= GRID_COLS - spanW; col += 0.5) {
           let free = true;
-          for (let y = row; y < row + spanH && free; y++) {
-            for (let x = col; x < col + spanW; x++) {
+          for (let y = row * 2; y < (row + spanH) * 2 && free; y++) {
+            for (let x = col * 2; x < (col + spanW) * 2; x++) {
               if (occupied[y][x]) { free = false; break; }
             }
           }
@@ -4270,8 +5005,8 @@ function t(key) {
         }
       }
       if (!best) throw new Error('Screensaver grid does not fit target device');
-      for (let y = best.row; y < best.row + spanH; y++) {
-        for (let x = best.col; x < best.col + spanW; x++) occupied[y][x] = true;
+      for (let y = best.row * 2; y < (best.row + spanH) * 2; y++) {
+        for (let x = best.col * 2; x < (best.col + spanW) * 2; x++) occupied[y][x] = true;
       }
       prepared.push({
         targetIndex: prepared.length,
@@ -4419,7 +5154,7 @@ function t(key) {
     } else {
       fd.append('bg_color_default', '1');
     }
-    const layout = normalizeTileLayout(tile, index, tabByFolder[folderId] || '');
+    const layout = normalizeTileLayout({ ...tile, type: safeType }, index, tabByFolder[folderId] || '');
     fd.append('col', layout.col);
     fd.append('row', layout.row);
     fd.append('span_w', layout.span_w);
@@ -4474,6 +5209,7 @@ function t(key) {
       fd.append(kind + '_entity', tile.sensor_entity || tile[kind + '_entity'] || '');
       fd.append('popup_open_mode', tile.popup_open_mode ?? 1);
     } else if (safeType === 20) {
+      fd.append('sensor_value_font', tile.sensor_value_font ?? 0);
       fd.append(
         'binary_sensor_entity',
         tile.sensor_entity || tile.binary_sensor_entity || '');
@@ -4504,7 +5240,9 @@ function t(key) {
     } else if (safeType === 10) {
       fd.append('text_value', tile.text_value || tile.scene_alias || tile.key_macro || '');
       fd.append('text_value_font', tile.text_value_font || tile.sensor_value_font || '0');
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
     } else if (safeType === 9) {
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
       fd.append('clock_show_time', ((Number(tile.sensor_decimals || 1) & 1) !== 0) ? '1' : '0');
       fd.append('clock_show_date', ((Number(tile.sensor_decimals || 1) & 2) !== 0) ? '1' : '0');
       fd.append('key_code', tile.key_code || 40);
@@ -4660,6 +5398,8 @@ function t(key) {
     if (typeValue === '0' && (!meta.css || meta.css !== 'empty')) cls.push('empty');
     el.className = cls.join(' ');
     el.dataset.type = typeValue;
+    el.classList.toggle('tile-border-hidden', ['9','10'].includes(typeValue) && Number(tile.sensor_display_mode) === 1);
+    applyCompactSensorPreview(el, typeValue, tile, tile.sensor_display_mode);
     if (typeValue === '4') el.dataset.navigateTarget = String(tile.navigate_target || 0);
     else delete el.dataset.navigateTarget;
     if (typeValue === '0') el.style.background = 'transparent';
@@ -4789,7 +5529,7 @@ function t(key) {
           '<br>' + escapeHtml(value) + '</div>';
       }
       if (previewKind === 'binary_sensor') {
-        html += '<div class="tile-value tile-binary-sensor-value" id="' +
+        html += '<div class="tile-value tile-binary-sensor-value ' + (Number(tile.sensor_value_font) ? sensorValueClass : '') + '" id="' +
           tab + '-tile-' + index + '-value">' +
           escapeHtml(binarySensorPreviewStateText(binarySensorPreviewState)) +
           '</div>';
@@ -4817,6 +5557,7 @@ function t(key) {
       }
       html += getTileResizeHandlesHtml(typeValue);
       el.innerHTML = html;
+      if (typeValue === '9') fitCompactClockPreview(el);
     }
     if (currentTileTab === tab && currentTileIndex === index) el.classList.add('active');
     if (typeValue === '5' && tile.sensor_entity) {
@@ -4833,15 +5574,21 @@ function t(key) {
     const folderId = getFolderIdForTab(tab);
     if (folderId === undefined) return Promise.resolve([]);
 
+    const baseline = getTilesData(tab).map(tile => JSON.stringify(tile));
     tileDataLoadPromises[tab] = fetch(
       '/api/tiles?folder=' + encodeURIComponent(folderId))
       .then(async response => {
         if (!response.ok) throw new Error('Tiles HTTP ' + response.status);
         const tiles = await response.json();
         if (!Array.isArray(tiles)) throw new Error('Invalid tile grid response');
-        tilesData[tab] = tiles;
+        const current = getTilesData(tab);
+        tilesData[tab] = tiles.map((tile, index) => {
+          const changed = JSON.stringify(current[index]) !== baseline[index];
+          return current[index] && (changed || drafts[tab]?.[index]?._dirty)
+            ? current[index] : tile;
+        });
         tileDataLoadedTabs.add(tab);
-        return tiles;
+        return tilesData[tab];
       })
       .finally(() => { delete tileDataLoadPromises[tab]; });
     return tileDataLoadPromises[tab];
@@ -4878,11 +5625,8 @@ function t(key) {
       const sensorMeta = normalizeSensorMetaPayload(results[0] || {});
       sensorMetaCache = sensorMeta;
       tabs.forEach((tab, idx) => {
-        const tiles = Array.isArray(results[idx + 1]) ? results[idx + 1] : [];
-        if (refreshTiles) {
-          tilesData[tab] = tiles;
-        }
-        const tilesForRender = refreshTiles ? tiles : getTilesData(tab);
+        // Metadata may finish after another edit; render the current cache.
+        const tilesForRender = getTilesData(tab);
         if (!Array.isArray(tilesForRender)) return;
         tilesForRender.forEach((tile, i) => renderTileFromData(tab, i, tile, sensorMeta));
         layoutTiles(tab, tilesForRender);
@@ -5024,7 +5768,7 @@ function t(key) {
     return getGridElementMetrics(grid, GRID_COLS, GRID_ROWS);
   }
 
-  function getRawGridCellFromPointer(tab, clientX, clientY) {
+  function getRawGridCellFromPointer(tab, clientX, clientY, sizeStep = null) {
     const metrics = getTileGridMetrics(tab);
     if (!metrics) return null;
     const stepX = metrics.cellW + metrics.gapX;
@@ -5034,15 +5778,17 @@ function t(key) {
     if (!isFinite(relX) || !isFinite(relY)) return null;
     relX = Math.max(0, relX);
     relY = Math.max(0, relY);
-    let col = Math.floor((relX + (metrics.gapX / 2)) / stepX);
-    let row = Math.floor((relY + (metrics.gapY / 2)) / stepY);
+    const type = Number(dragSource?.type ?? getTilesData(tab)?.[currentTileIndex]?.type);
+    const unit = sizeStep ?? ([7, 8].includes(type) ? 1 : 0.5);
+    let col = Math.floor((relX + (metrics.gapX / 2)) / (stepX * unit)) * unit;
+    let row = Math.floor((relY + (metrics.gapY / 2)) / (stepY * unit)) * unit;
     if (!isFinite(col)) col = 0;
     if (!isFinite(row)) row = 0;
     if (col < 0) col = 0;
     const firstRow = firstAllowedGridRow(tab);
     if (row < firstRow) row = firstRow;
-    if (col >= GRID_COLS) col = GRID_COLS - 1;
-    if (row >= GRID_ROWS) row = GRID_ROWS - 1;
+    if (col >= GRID_COLS) col = GRID_COLS - unit;
+    if (row >= GRID_ROWS) row = GRID_ROWS - unit;
     return { col, row };
   }
 
@@ -5050,8 +5796,8 @@ function t(key) {
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!rawCell) return null;
     if (!dragSource || dragSource.tab !== tab) return rawCell;
-    const anchorCol = clampInt(dragSource.grabCellCol, 0, GRID_COLS - 1, 0);
-    const anchorRow = clampInt(dragSource.grabCellRow, 0, GRID_ROWS - 1, 0);
+    const anchorCol = clampHalf(dragSource.grabCellCol, 0, GRID_COLS - 1, 0);
+    const anchorRow = clampHalf(dragSource.grabCellRow, 0, GRID_ROWS - 1, 0);
     return {
       col: rawCell.col - anchorCol,
       row: rawCell.row - anchorRow
@@ -5074,8 +5820,9 @@ function t(key) {
   function getDragAnchorCell(tab, layout, clientX, clientY) {
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!layout || !rawCell) return { col: 0, row: 0 };
-    const col = clampInt(rawCell.col - layout.col, 0, Math.max(0, layout.span_w - 1), 0);
-    const row = clampInt(rawCell.row - layout.row, 0, Math.max(0, layout.span_h - 1), 0);
+    const unit = [7, 8].includes(Number(getTilesData(tab)?.[currentTileIndex]?.type)) ? 1 : 0.5;
+    const col = clampHalf(rawCell.col - layout.col, 0, Math.max(0, layout.span_w - unit), 0);
+    const row = clampHalf(rawCell.row - layout.row, 0, Math.max(0, layout.span_h - unit), 0);
     return { col, row };
   }
 
@@ -5088,8 +5835,9 @@ function t(key) {
         y: Math.max(0, (rect.height / 2) || 0)
       };
     }
-    const x = (grabCellCol * (metrics.cellW + metrics.gapX)) + (metrics.cellW / 2);
-    const y = (grabCellRow * (metrics.cellH + metrics.gapY)) + (metrics.cellH / 2);
+    const unit = [7, 8].includes(Number(getTilesData(tab)?.[currentTileIndex]?.type)) ? 1 : 0.5;
+    const x = (grabCellCol * (metrics.cellW + metrics.gapX)) + ((metrics.cellW + metrics.gapX) * unit - metrics.gapX) / 2;
+    const y = (grabCellRow * (metrics.cellH + metrics.gapY)) + ((metrics.cellH + metrics.gapY) * unit - metrics.gapY) / 2;
     const maxX = Math.max(0, rect.width - 1);
     const maxY = Math.max(0, rect.height - 1);
     return {
@@ -5197,8 +5945,8 @@ function t(key) {
     if (!candidateLayout) return false;
     if (candidateLayout.col < 0 ||
         candidateLayout.row < firstRow ||
-        candidateLayout.span_w < 1 ||
-        candidateLayout.span_h < 1 ||
+        candidateLayout.span_w < 0.5 ||
+        candidateLayout.span_h < 0.5 ||
         candidateLayout.col + candidateLayout.span_w > columns ||
         candidateLayout.row + candidateLayout.span_h > rows) {
       return false;
@@ -5218,6 +5966,9 @@ function t(key) {
   function canPlaceTileLayout(tab, index, candidateLayout) {
     const tiles = getTilesData(tab);
     if (!Array.isArray(tiles)) return false;
+    const type = tab === currentTileTab && index === currentTileIndex
+      ? document.getElementById(tab + '_tile_type')?.value ?? tiles[index]?.type : tiles[index]?.type;
+    if (Number(type) !== 0 && index >= 0 && !supportedTileLayout(type, candidateLayout)) return false;
     const layouts = tiles.map((tile, tileIndex) =>
       getTileElementLayout(tab, tileIndex) ||
       getTileLayoutFromData(tab, tileIndex));
@@ -5255,10 +6006,10 @@ function t(key) {
 
   function buildGridPlacementCandidates(
       columns, rows, firstRow,
-      spanW, spanH, preferredCol, preferredRow) {
+      spanW, spanH, preferredCol, preferredRow, step = 1) {
     const candidates = [];
-    for (let row = firstRow; row < rows; row++) {
-      for (let col = 0; col < columns; col++) {
+    for (let row = firstRow; row < rows; row += step) {
+      for (let col = 0; col < columns; col += step) {
         if ((col + spanW) > columns || (row + spanH) > rows) continue;
         let distance = (row * columns) + col;
         if (preferredCol >= 0 && preferredRow >= 0) {
@@ -5284,7 +6035,7 @@ function t(key) {
 
   function simulateGridReorderLayouts(
       baseLayouts, activeIndices, fromIdx,
-      targetCol, targetRow, columns, rows, firstRow = 0) {
+      targetCol, targetRow, columns, rows, firstRow = 0, tileTypes = []) {
     const active = activeIndices instanceof Set
       ? new Set(activeIndices) : new Set(activeIndices || []);
     if (!active.has(fromIdx)) return null;
@@ -5314,6 +6065,8 @@ function t(key) {
         displacedIndices.push(index);
       }
     });
+    const fractional = [targetLayout, ...baseLayouts.filter((_, i) => active.has(i))]
+      .some(layout => layout && [layout.col, layout.row, layout.span_w, layout.span_h].some(v => !Number.isInteger(v)));
     displacedIndices.sort((a, b) => {
       const layoutA = baseLayouts[a];
       const layoutB = baseLayouts[b];
@@ -5334,7 +6087,8 @@ function t(key) {
       const candidates = buildGridPlacementCandidates(
         columns, rows, firstRow,
         layout.span_w, layout.span_h,
-        preferredCol, preferredRow);
+        preferredCol, preferredRow,
+        fractional && ![7, 8].includes(Number(tileTypes[displacedIndex])) ? 0.5 : 1);
       let placed = false;
       for (const candidate of candidates) {
         const nextLayout = {
@@ -5385,7 +6139,7 @@ function t(key) {
     return simulateGridReorderLayouts(
       baseLayouts, active, fromIdx,
       targetCol, targetRow,
-      GRID_COLS, GRID_ROWS, firstAllowedGridRow(tab));
+      GRID_COLS, GRID_ROWS, firstAllowedGridRow(tab), tiles.map(tile => tile?.type));
   }
 
   function clearDragPlaceholder() {
@@ -5472,6 +6226,8 @@ function t(key) {
         layout.span_h);
       if (slots && html) slots.outerHTML = html;
     }
+    const data = getTilesData(tab)?.[resizeState?.index];
+    applyCompactSensorPreview(preview, data?.type, layout, data?.sensor_display_mode);
     placeholder.replaceChildren(preview);
   }
 
@@ -5496,8 +6252,7 @@ function t(key) {
   }
 
   function buildResizeCandidate(layout, direction, clientX, clientY, tab) {
-    const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
-    if (!layout || !rawCell) return null;
+    if (!layout) return null;
 
     let spanW = layout.span_w;
     let spanH = layout.span_h;
@@ -5507,18 +6262,24 @@ function t(key) {
     const typeValue = document.getElementById(tab + '_tile_type')?.value ?? tile?.type ?? 0;
     const isMedia = Number(typeValue) === MEDIA_TILE_TYPE;
     const minW = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS) : 1;
-    const minH = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS) : 1;
+    // Every type resizes in half steps except Settings/Back, which stay whole.
+    const fixedGrid = [7, 8].includes(Number(typeValue));
+    const unit = fixedGrid ? 1 : 0.5;
+    const snap = fixedGrid ? clampInt : clampHalf;
+    const rawCell = getRawGridCellFromPointer(tab, clientX, clientY, unit);
+    if (!rawCell) return null;
+    const minH = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS) : (supportsHalfSize(typeValue) ? 0.5 : 1);
     const maxW = isMedia
       ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS - layout.col)
       : GRID_COLS - layout.col;
     const maxH = isMedia
       ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS - layout.row)
       : GRID_ROWS - layout.row;
-    if (String(direction || '').includes('e')) {
-      spanW = clampInt(rawCell.col - layout.col + 1, minW, maxW, layout.span_w);
-    }
     if (String(direction || '').includes('s')) {
-      spanH = clampInt(rawCell.row - layout.row + 1, minH, maxH, layout.span_h);
+      spanH = snap(rawCell.row - layout.row + unit, minH, maxH, layout.span_h);
+    }
+    if (String(direction || '').includes('e')) {
+      spanW = snap(rawCell.col - layout.col + unit, minW, maxW, layout.span_w);
     }
 
     return {
@@ -5646,12 +6407,12 @@ function t(key) {
     const placeholder = ensureDragPlaceholder(tab);
     if (!sourceLayout || !placeholder) return;
 
-    const targetCol = clampInt(col, 0, GRID_COLS - 1, sourceLayout.col);
-    const targetRow = clampInt(row, firstAllowedGridRow(tab), GRID_ROWS - 1, sourceLayout.row);
+    const targetCol = clampHalf(col, 0, GRID_COLS - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
     const fits = (targetCol + sourceLayout.span_w <= GRID_COLS) &&
                  (targetRow + sourceLayout.span_h <= GRID_ROWS);
     const spanW = Math.max(1, Math.min(sourceLayout.span_w, GRID_COLS - targetCol));
-    const spanH = Math.max(1, Math.min(sourceLayout.span_h, GRID_ROWS - targetRow));
+    const spanH = Math.max(0.5, Math.min(sourceLayout.span_h, GRID_ROWS - targetRow));
 
     placeholder.classList.toggle('invalid', !fits);
     placeholder.classList.add('show');
@@ -5666,8 +6427,8 @@ function t(key) {
     e.dataTransfer.dropEffect = 'move';
     const sourceLayout = getDragSourceLayout();
     if (!sourceLayout) return;
-    const targetCol = clampInt(cell.col, 0, GRID_COLS - 1, sourceLayout.col);
-    const targetRow = clampInt(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 1, sourceLayout.row);
+    const targetCol = clampHalf(cell.col, 0, GRID_COLS - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
     updateDragPlaceholder(tab, targetCol, targetRow);
 
     if (dragSource.kind === 'hidden-settings') {
@@ -5715,8 +6476,8 @@ function t(key) {
 
     e.preventDefault();
     e.stopPropagation();
-    const targetCol = clampInt(cell.col, 0, GRID_COLS - 1, sourceLayout.col);
-    const targetRow = clampInt(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 1, sourceLayout.row);
+    const targetCol = clampHalf(cell.col, 0, GRID_COLS - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
     const fits = (targetCol + sourceLayout.span_w <= GRID_COLS) &&
                  (targetRow + sourceLayout.span_h <= GRID_ROWS);
 
@@ -5779,9 +6540,17 @@ function t(key) {
       const tile = tiles[i];
       const layout = previewResult.layouts[i];
       if (!tile || Number(tile.type || 0) === 0 || !layout) continue;
+      const changed = tile.col !== layout.col || tile.row !== layout.row;
       tile.col = layout.col;
       tile.row = layout.row;
+      const draft = drafts[tab]?.[i];
+      if (changed && draft?._dirty) {
+        draft.col = String(layout.col + 1);
+        draft.row = String(layout.row + 1);
+        draft._rev = Number(draft._rev || 0) + 1;
+      }
     }
+    persistDrafts();
 
     tilesData[tab] = tiles;
     layoutTiles(tab, tiles);
@@ -5798,9 +6567,17 @@ function t(key) {
       const tile = tiles[i];
       const saved = snapshot[i];
       if (!tile || !saved) continue;
+      const changed = tile.col !== saved.col || tile.row !== saved.row;
       tile.col = saved.col;
       tile.row = saved.row;
+      const draft = drafts[tab]?.[i];
+      if (changed && draft?._dirty) {
+        draft.col = String(saved.col + 1);
+        draft.row = String(saved.row + 1);
+        draft._rev = Number(draft._rev || 0) + 1;
+      }
     }
+    persistDrafts();
     tilesData[tab] = tiles;
     layoutTiles(tab, tiles);
     clearReflowPreviewClasses(tab);
@@ -6067,8 +6844,8 @@ function t(key) {
   }
 
   function reorderTiles(tab, fromIdx, toIdx, targetCol, targetRow) {
-    let col = parseInt(targetCol, 10);
-    let row = parseInt(targetRow, 10);
+    let col = Number(targetCol);
+    let row = Number(targetRow);
     if (isNaN(col)) col = -1;
     if (isNaN(row)) row = -1;
     const folderId = getFolderIdForTab(tab);
@@ -6130,8 +6907,8 @@ function t(key) {
     document.querySelectorAll('#tab-tiles-' + tab + ' .tile').forEach(tile => {
       const index = parseInt(tile.dataset.index, 10);
       if (isNaN(index) || Number(tile.dataset.type || 0) === 0) return;
-      const row = parseInt(tile.style.gridRowStart, 10);
-      const col = parseInt(tile.style.gridColumnStart, 10);
+      const row = Number(tile.dataset.row);
+      const col = Number(tile.dataset.col);
       const safeRow = isNaN(row) ? Number.MAX_SAFE_INTEGER : row;
       const safeCol = isNaN(col) ? Number.MAX_SAFE_INTEGER : col;
       if (safeRow < selectedRow || (safeRow === selectedRow && safeCol < selectedCol)) {
@@ -6483,14 +7260,18 @@ function t(key) {
     const clockResize = clock?.querySelector('.screensaver-clock-resize-handle');
     if (!preview || preview.dataset.bound === '1') return;
     preview.dataset.bound = '1';
+    // Tile selection replaces the clicked child before the event reaches the grid.
+    // The original event path retains its tile even when that child is detached.
+    const fromTileOrClock = event => event.composedPath().some(
+      node => node?.matches?.('.tile, #screensaverClock'));
     preview.addEventListener('click', e => {
-      if (!e.target.closest('.tile') && !e.target.closest('#screensaverClock')) {
+      if (!fromTileOrClock(e)) {
         selectScreensaverBackground();
       }
     });
     let backgroundDrag = null;
     preview.addEventListener('pointerdown', e => {
-      if (e.target.closest('.tile') || e.target.closest('#screensaverClock')) return;
+      if (fromTileOrClock(e)) return;
       selectScreensaverBackground();
       const wallpaper = ssCurrentWallpaper();
       if (!wallpaper) return;
@@ -7130,6 +7911,7 @@ function t(key) {
       enableTileDrag(tab);
       enableTileKeys(tab);
       enableTileResize(tab);
+      enableFreeSlotHover(tab);
     });
     enableSettingsHiddenSlot();
     associateFieldLabels();
@@ -7444,6 +8226,8 @@ function maybeFillTitleFromSensor(tab) {
       }
       entity.value = configured;
     }
+    const font = document.getElementById(tab + '_binary_sensor_value_font');
+    if (font) font.value = normalizeSensorValueFont(data.sensor_value_font);
     const popup = document.getElementById(
       tab + '_binary_sensor_popup_open_mode');
     if (popup) {
@@ -7458,12 +8242,15 @@ function maybeFillTitleFromSensor(tab) {
       ? (entityEl.value || entityEl.dataset.configuredValue || '') : '';
     formData.append('binary_sensor_entity', entity);
     formData.append('sensor_entity', entity);
+    formData.append('sensor_value_font', document.getElementById(tab + '_binary_sensor_value_font')?.value || '0');
     const popup = document.getElementById(
       tab + '_binary_sensor_popup_open_mode');
     if (popup) formData.append('popup_open_mode', popup.value || '1');
   }
 
   function resetBinarySensorFields(tab) {
+    const font = document.getElementById(tab + '_binary_sensor_value_font');
+    if (font) font.value = '0';
     const entity = document.getElementById(tab + '_binary_sensor_entity');
     if (entity) {
       entity.value = '';
@@ -8293,10 +9080,10 @@ function maybeFillTitleFromMedia(tab) {
   function climateGridDimensions(spanW, spanH) {
     const columns = Math.max(
       1, Math.min(
-        climateMaxGridColumns(), Number(spanW) || 1));
+        climateMaxGridColumns(), Math.floor(Number(spanW) || 1)));
     const outerRows = Math.max(
       1, Math.min(
-        climateMaxOuterRows(), Number(spanH) || 1));
+        climateMaxOuterRows(), Math.floor(Number(spanH) || 1)));
     return {
       columns,
       rows: outerRows * 2 - 1
@@ -8986,12 +9773,12 @@ function maybeFillTitleFromMedia(tab) {
 
   function climateAutomaticEditorKinds(tab) {
     const state = climateEditorState(tab);
-    const spanW = Math.max(1, Number(
+    const spanW = Math.max(1, Math.floor(Number(
       document.getElementById(
-        tab + '_tile_span_w')?.value) || 1);
-    const spanH = Math.max(1, Number(
+        tab + '_tile_span_w')?.value) || 1));
+    const spanH = Math.max(1, Math.floor(Number(
       document.getElementById(
-        tab + '_tile_span_h')?.value) || 1);
+        tab + '_tile_span_h')?.value) || 1));
     const capacity = climateSlotCapacity(spanW, spanH);
     const kinds = [];
     const add = kind => {
@@ -9965,11 +10752,16 @@ function maybeFillTitleFromMedia(tab) {
 
   function syncClimateSlotFields(
       tab, finalizePreviewSelection = false) {
+    if (Number(document.getElementById(tab + '_tile_type')?.value) !== 17) {
+      parkClimateMiniEditor(tab);
+      return;
+    }
     mountClimateMiniEditor(tab);
-    const spanW = Math.max(1, Number(document.getElementById(
-      tab + '_tile_span_w')?.value) || 1);
-    const spanH = Math.max(1, Number(document.getElementById(
-      tab + '_tile_span_h')?.value) || 1);
+    // Half steps do not change the mini-grid, so only whole cells count here.
+    const spanW = Math.max(1, Math.floor(Number(document.getElementById(
+      tab + '_tile_span_w')?.value) || 1));
+    const spanH = Math.max(1, Math.floor(Number(document.getElementById(
+      tab + '_tile_span_h')?.value) || 1));
     const capacity = climateSlotCapacity(spanW, spanH);
     const { columns, rows } =
       climateGridDimensions(spanW, spanH);
@@ -10370,8 +11162,9 @@ function maybeFillTitleFromMedia(tab) {
   function climatePreviewSlots(
       state, spanW, spanH, slotConfig = null,
       targetLayoutConfig = null, geometryConfig = null) {
-    const w = Math.max(1, Number(spanW) || 1);
-    const h = Math.max(1, Number(spanH) || 1);
+    // Layout variants follow whole cells, like build_automatic_slot_kinds.
+    const w = Math.max(1, Math.floor(Number(spanW) || 1));
+    const h = Math.max(1, Math.floor(Number(spanH) || 1));
     const capacity = climateSlotCapacity(w, h);
     const { columns, rows } =
       climateGridDimensions(w, h);
@@ -10944,12 +11737,14 @@ function getClockPreviewLanguage() {
   function getClockPreviewTextStyle(raw, fallback, color) {
     const size = getClockPreviewCssPx(raw, fallback);
     const safeColor = color || '#fff';
-    return 'style="font-size:' + size + 'px; line-height:1; color:' + safeColor + ';"';
+    return 'data-clock-font="' + normalizeClockPreviewFont(raw, fallback) +
+      '" style="font-size:' + size + 'px; line-height:1; color:' + safeColor + ';"';
   }
 
   function applyClockPreviewTextStyle(el, raw, fallback, color, lineHeight) {
     if (!el) return;
     const size = getClockPreviewCssPx(raw, fallback);
+    el.dataset.clockFont = String(normalizeClockPreviewFont(raw, fallback));
     el.style.fontSize = size + 'px';
     el.style.color = color || '#fff';
     el.style.lineHeight = lineHeight || '1';
@@ -10988,6 +11783,8 @@ function getClockPreviewLanguage() {
   }
 
   function loadClockFields(tab, data) {
+    const border = document.getElementById(tab + '_clock_tile_border');
+    if (border) border.checked = data?.tile_border !== undefined ? !['0','false'].includes(String(data.tile_border)) : Number(data?.sensor_display_mode) !== 1;
     const timeFontEl = document.getElementById(tab + '_clock_time_font');
     if (timeFontEl) {
       const timeFont = (data && data.key_code !== undefined) ? Number(data.key_code) : 40;
@@ -11057,9 +11854,77 @@ function getClockPreviewLanguage() {
       dateEl.textContent = getClockPreviewDate(dateFormat);
       applyClockPreviewTextStyle(dateEl, dateFont, 24, '#fff', '1.1');
     }
+    fitCompactClockPreview(tileElem);
+  }
+
+  const CLOCK_PREVIEW_FONT_SIZES = [20, 24, 28, 32, 40, 48, 56, 64, 72, 80, 96];
+  let clockPreviewMeasureContext = null;
+
+  function measureClockPreviewText(el, text, px) {
+    clockPreviewMeasureContext = clockPreviewMeasureContext ||
+      document.createElement('canvas').getContext('2d');
+    if (!clockPreviewMeasureContext) return 0;
+    const style = getComputedStyle(el);
+    clockPreviewMeasureContext.font = style.fontWeight + ' ' + px + 'px ' + style.fontFamily;
+    return clockPreviewMeasureContext.measureText(text).width;
+  }
+
+  // Worst-case samples keep the chosen size stable while the time changes.
+  function clockPreviewSample(el, isTime) {
+    return isTime ? (/[AP]M/.test(el.textContent) ? '88:88 PM' : '88:88')
+      : el.textContent.replace(/[0-9]/g, '8');
+  }
+
+  // Half-height clocks use one row: the largest configured-or-smaller size whose
+  // rendered size fits 80% of the tile height and whose text fits the width.
+  // The date follows only from width 2 and only when it still fits.
+  // The firmware applies the same rule (fit_compact_clock in clock/renderer.cpp).
+  function fitCompactClockPreview(tileElem) {
+    if (!tileElem) return;
+    const lines = [tileElem.querySelector('.tile-clock-time'), tileElem.querySelector('.tile-clock-date')];
+    lines.forEach(el => {
+      if (!el) return;
+      el.hidden = false;
+      el.style.fontSize = getClockPreviewCssPx(el.dataset.clockFont, 40) + 'px';
+    });
+    if (!tileElem.classList.contains('clock-compact')) return;
+    const style = getComputedStyle(tileElem);
+    const root = getComputedStyle(document.documentElement);
+    const cellW = parseFloat(root.getPropertyValue('--preview-cell-w'));
+    const cellH = parseFloat(root.getPropertyValue('--preview-cell-h'));
+    const gridGap = parseFloat(root.getPropertyValue('--preview-gap')) || 0;
+    const span = (value, cell) => (Number(value) || 1) * (cell + gridGap) - gridGap;
+    // Hidden folder tabs have no layout yet; the grid variables still hold the size.
+    const tileW = cellW > 0 ? span(tileElem.dataset.spanW, cellW) : tileElem.clientWidth;
+    const tileH = cellH > 0 ? span(tileElem.dataset.spanH, cellH) : tileElem.clientHeight;
+    const availW = tileW - parseFloat(style.paddingLeft || 0) - parseFloat(style.paddingRight || 0);
+    const maxPx = tileH * 0.8;
+    const gap = parseFloat(style.columnGap || 0) || 0;
+    const [time, date] = lines;
+    const primary = time || date;
+    const secondary = time && date && Number(tileElem.dataset.spanW) >= 2 ? date : null;
+    if (date && date !== primary && date !== secondary) date.hidden = true;
+    if (!primary) return;
+    const fit = (el, capPx, usedW) => {
+      const sample = clockPreviewSample(el, el === time);
+      for (const size of [...CLOCK_PREVIEW_FONT_SIZES].reverse()) {
+        const px = getClockPreviewCssPx(size, size);
+        if (size > Number(el.dataset.clockFont || 40) || px > capPx) continue;
+        const width = measureClockPreviewText(el, sample, px);
+        if (usedW + width <= availW) return { px, width };
+      }
+      return null;
+    };
+    const first = fit(primary, maxPx, 0) || { px: getClockPreviewCssPx(20, 20), width: 0 };
+    primary.style.fontSize = first.px + 'px';
+    if (!secondary) return;
+    const second = fit(secondary, first.px, first.width + gap);
+    if (second) secondary.style.fontSize = second.px + 'px';
+    else secondary.hidden = true;
   }
 
   function saveClockFields(tab, formData) {
+    formData.append('tile_border', document.getElementById(tab + '_clock_tile_border')?.checked === false ? '0' : '1');
     ensureClockSelection(tab);
     const flags = getClockFlagsFromInputs(tab);
     formData.append('clock_show_time', (flags & 1) ? '1' : '0');
@@ -11071,6 +11936,8 @@ function getClockPreviewLanguage() {
   }
 
   function resetClockFields(tab) {
+    const border = document.getElementById(tab + '_clock_tile_border');
+    if (border) border.checked = true;
     applyClockFlagsToInputs(tab, 1);
     const timeFontEl = document.getElementById(tab + '_clock_time_font');
     if (timeFontEl) timeFontEl.value = '40';
@@ -11088,6 +11955,8 @@ function normalizeTextValueFont(value) {
   }
 
   function loadTextFields(tab, data) {
+    const border = document.getElementById(tab + '_text_tile_border');
+    if (border) border.checked = data?.tile_border !== undefined ? !['0','false'].includes(String(data.tile_border)) : Number(data?.sensor_display_mode) !== 1;
     const prefix = tab;
     const textEl = document.getElementById(prefix + '_text_value');
     const fontEl = document.getElementById(prefix + '_text_value_font');
@@ -11113,12 +11982,15 @@ function normalizeTextValueFont(value) {
   }
 
   function saveTextFields(tab, formData) {
+    formData.append('tile_border', document.getElementById(tab + '_text_tile_border')?.checked === false ? '0' : '1');
     const prefix = tab;
     formData.append('text_value', document.getElementById(prefix + '_text_value')?.value || '');
     formData.append('text_value_font', document.getElementById(prefix + '_text_value_font')?.value || '0');
   }
 
   function resetTextFields(tab) {
+    const border = document.getElementById(tab + '_text_tile_border');
+    if (border) border.checked = true;
     const prefix = tab;
     const textEl = document.getElementById(prefix + '_text_value');
     if (textEl) textEl.value = '';

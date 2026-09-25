@@ -1,3 +1,5 @@
+#include "src/tiles/runtime/compact_sensor_layout.h"
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/binary_sensor/renderer.h"
 
 #include <ArduinoJson.h>
@@ -484,13 +486,13 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
       card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(card, 0, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
   lv_obj_set_style_pad_ver(card, tile_layout::scale_480(24), 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   BinarySensorTileWidgets& widgets =
       tile_renderer_get_binary_sensor_widgets(grid_type)[index];
@@ -538,7 +540,7 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
 
   widgets.state_label = lv_label_create(card);
   set_label_style(widgets.state_label, lv_color_white(),
-                  tile_layout::header_title_font());
+                  tile_layout::value_font_for_choice(tile.sensor_value_font, tile_layout::header_title_font()));
   lv_label_set_long_mode(widgets.state_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(widgets.state_label, LV_PCT(100));
   lv_obj_set_style_text_align(widgets.state_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -546,6 +548,10 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
   lv_label_set_text(widgets.state_label, initial_label.c_str());
   lv_obj_align(widgets.state_label, LV_ALIGN_CENTER, 0,
                tile_layout::scale(28));
+
+  if (tile_geometry::compact(tile.type, tile.span_w, tile.span_h)) {
+    compact_sensor_layout::apply(card, widgets.icon_label, widgets.title_label, widgets.state_label, tile);
+  }
 
   if (grid_type != GridType::SCREENSAVER && tile.sensor_entity.length()) {
     BinarySensorEventData* data =

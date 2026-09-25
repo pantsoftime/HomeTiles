@@ -1,3 +1,4 @@
+import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,7 +48,9 @@ MediaTileWidgets widgets[16];
 MediaTileWidgets* tile_renderer_get_media_widgets(GridType){return widgets;}
 struct Logger{void println(const char*){}}Serial;
 struct Bridge{String findEntityIcon(const String&){return "speaker";}String findSensorName(const String&){return "Player";}String findSensorInitialValue(const String&){return "";}}haBridgeConfig;
-struct Config{const char*language="en";};struct Manager{Config cfg;const Config&getConfig(){return cfg;}}configManager;
+${radiusPolicyHost(root)}
+struct Config{bool tile_borders=true;int tile_radius=tile_radius::kMinimum;const char*language="en";};struct Manager{Config cfg;const Config&getConfig(){return cfg;}}configManager;
+${surfaceStyleHost(root)}
 namespace i18n{struct Strings{const char*media_no_playback="No playback";};const Strings&strings(const char*){static Strings s;return s;}}
 uint32_t tileBgColorOrDefault(const Tile&,uint32_t d){return d;}
 uint32_t brighten_rgb_color(uint32_t c,uint32_t){return c;}
@@ -58,6 +61,8 @@ void set_label_style(lv_obj_t*l,lv_color_t c,const lv_font_t*f){lv_obj_set_style
 void enable_event_bubble(lv_obj_t*){}void apply_media_text_scroll_style(lv_obj_t*){}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'disable_pressed_button_animation')}
 void set_tile_grid_cell(lv_obj_t*c,int,int,int w,int h){lv_obj_set_size(c,w*CELL_W+(w-1)*GAP,h*CELL_H+(h-1)*GAP);lv_obj_center(c);}
+void apply_fractional_tile_geometry(lv_obj_t*,const Tile&){}
+void place_tile_card(lv_obj_t*c,int col,int row,const Tile&t){set_tile_grid_cell(c,col,row,t.span_w,t.span_h);apply_fractional_tile_geometry(c,t);}
 void cover_ref_delete_cb(lv_event_t*e){delete static_cast<MediaCoverRef*>(lv_event_get_user_data(e));}
 ${renderer.match(/struct MediaPopupEventData \{[\s\S]*?\n};/)[0]}
 void show_media_popup_event_cb(lv_event_t*){}

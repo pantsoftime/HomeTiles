@@ -29,7 +29,6 @@
 // Layout constants
 static const int GAP = GRID_GAP;
 static const int OUTER = 0;
-static const int GRID_PAD_PX = GRID_PAD;
 
 // Global state shared by all three grids
 static lv_obj_t* g_tiles_grids[3] = {nullptr};           // [TAB0, TAB1, TAB2]
@@ -269,8 +268,8 @@ static void schedule_navigation_preload(
 
   struct NavigationCandidate {
     uint16_t folder_id = kInvalidFolderId;
-    uint8_t row = 0;
-    uint8_t col = 0;
+    float row = 0;
+    float col = 0;
     uint8_t config_index = 0;
   };
   NavigationCandidate candidates[TILES_PER_GRID]{};
@@ -686,21 +685,21 @@ static const char* getGridName(GridType type) {
   return "TilesFolder";
 }
 
-static bool get_tile_layout(const Tile& tile, uint8_t& col, uint8_t& row, uint8_t& span_w, uint8_t& span_h) {
+static bool get_tile_layout(const Tile& tile, float& col, float& row, float& span_w, float& span_h) {
   if (tile.col >= GRID_COLS || tile.row >= GRID_ROWS) return false;
   col = tile.col;
   row = tile.row;
-  span_w = tile.span_w < 1 ? 1 : tile.span_w;
-  span_h = tile.span_h < 1 ? 1 : tile.span_h;
+  span_w = tile.span_w < 0.5f ? 1 : tile.span_w;
+  span_h = tile.span_h < 0.5f ? 1 : tile.span_h;
   clamp_media_tile_layout(tile.type, col, row, span_w, span_h);
   if (span_w > GRID_COLS - col) span_w = GRID_COLS - col;
   if (span_h > GRID_ROWS - row) span_h = GRID_ROWS - row;
   return true;
 }
 
-static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], uint8_t col, uint8_t row, uint8_t span_w, uint8_t span_h) {
-  for (uint8_t r = row; r < row + span_h; ++r) {
-    for (uint8_t c = col; c < col + span_w; ++c) {
+static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], float col, float row, float span_w, float span_h) {
+  for (uint8_t r = static_cast<uint8_t>(row); r < row + span_h; ++r) {
+    for (uint8_t c = static_cast<uint8_t>(col); c < col + span_w; ++c) {
       if (r < GRID_ROWS && c < GRID_COLS) {
         occupied[r][c] = true;
       }
@@ -1217,7 +1216,10 @@ static lv_obj_t* create_tiles_grid(lv_obj_t* parent) {
   lv_obj_set_style_bg_color(grid, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(grid, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(grid, 0, 0);
-  lv_obj_set_style_pad_all(grid, GRID_PAD_PX, 0);
+  lv_obj_set_style_pad_left(grid, GRID_PAD_LEFT, 0);
+  lv_obj_set_style_pad_right(grid, GRID_PAD_RIGHT, 0);
+  lv_obj_set_style_pad_top(grid, GRID_PAD_TOP, 0);
+  lv_obj_set_style_pad_bottom(grid, GRID_PAD_BOTTOM, 0);
   lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_size(grid, LV_PCT(100), LV_PCT(100));
   lv_obj_set_style_pad_column(grid, GAP, 0);
@@ -1587,10 +1589,10 @@ void tiles_reload_layout(GridType grid_type) {
   const TileGridConfig& config = getGridConfig(grid_type);
   bool occupied[GRID_ROWS][GRID_COLS] = {};
   struct TileLayout {
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     bool valid = false;
   };
   TileLayout layouts[TILES_PER_GRID]{};
@@ -1598,10 +1600,10 @@ void tiles_reload_layout(GridType grid_type) {
   for (uint8_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = config.tiles[i];
     if (tile.type == TILE_EMPTY) continue;
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     if (!get_tile_layout(tile, col, row, span_w, span_h)) continue;
     layouts[i] = {col, row, span_w, span_h, true};
     mark_occupied(occupied, col, row, span_w, span_h);
@@ -2130,10 +2132,10 @@ static void rebuild_tile_at_index(GridType grid_type, uint8_t index) {
   const Tile& tile = config.tiles[index];
   if (tile.type == TILE_EMPTY) return;
 
-  uint8_t col = 0;
-  uint8_t row = 0;
-  uint8_t span_w = 1;
-  uint8_t span_h = 1;
+  float col = 0;
+  float row = 0;
+  float span_w = 1;
+  float span_h = 1;
   if (!get_tile_layout(tile, col, row, span_w, span_h)) return;
 
   if (g_tiles_objs[idx][index]) {

@@ -1,3 +1,4 @@
+import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -59,7 +60,9 @@ LV_FONT_DECLARE(mdi_icons_32); LV_FONT_DECLARE(mdi_icons_40); LV_FONT_DECLARE(md
 class String : public std::string { public: using std::string::string; using std::string::operator=; String()=default; String(const std::string& s):std::string(s){}; void replace(char a,char b){std::replace(begin(),end(),a,b);} int indexOf(char c)const{auto n=find(c);return n==npos?-1:int(n);} };
 String normalizeMdiIconName(const String& name){return name;}
 String getMdiChar(const String& name){if(name=="window-close")return ${JSON.stringify(iconChar('window-close'))};if(name=="clock-end")return ${JSON.stringify(iconChar('clock-end'))};return name=="plus"?${JSON.stringify(iconChar('plus'))}:${JSON.stringify(iconChar('minus'))};}
-struct Config {const char* language="en";}; struct Manager {Config cfg;const Config& getConfig(){return cfg;}} configManager;
+${radiusPolicyHost(root)}
+struct Config {bool tile_borders=true;int tile_radius=tile_radius::kMinimum;const char* language="en";}; struct Manager {Config cfg;const Config& getConfig(){return cfg;}} configManager;
+${surfaceStyleHost(root)}
 namespace i18n {
 struct Profile {const char* decimal_separator;const char* editable_labels[19];};
 const Profile& locale(const char* language){static Profile de{",",{${catalog[0]}}},en{".",{${catalog[1]}}},fr{",",{${catalog[2]}}}; return strcmp(language,"de")==0?de:strcmp(language,"fr")==0?fr:en;}
@@ -125,7 +128,7 @@ void counted_layout(lv_obj_t* obj){++explicit_layouts;lv_obj_update_layout(obj);
 ${fn(popup,'measure_label_text_width')}
 int calc_time_axis(const SensorPopupContext*,String* labels,float* fracs,int){for(int i=0;i<4;++i){labels[i]=i==0?"12 AM":i==1?"6 AM":i==2?"12 PM":"6 PM";fracs[i]=i/3.0f;}return 4;}
 int calc_day7_boundary_axis(float*,int){return 0;}
-${fn(popup,'update_binary_time_axis')}
+${fn(popup,'update_binary_time_axis').replace(/^static\s+/, '')}
 ${fn(popup,'update_y_axis_layout')}
 #undef lv_obj_update_layout
 ${fn(popup,'set_sensor_popup_visible')}

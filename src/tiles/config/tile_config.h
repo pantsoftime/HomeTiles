@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "src/devices/device.h"
+#include "src/tiles/config/tile_geometry.h"
 #include "src/core/config/pin_access.h"
 #include "src/types/tile_type_policy.h"
 
@@ -17,6 +18,22 @@ static constexpr int GRID_PAD = Device::kGridPad;
 static constexpr int GRID_CELL_W = Device::kGridCellW;
 static constexpr int GRID_CELL_H = Device::kGridCellH;
 
+// The fixed tracks rarely fill the screen exactly (1280x800 with 7x5 cells
+// leaves 3 px vertically). The rest is split between both outer margins, the
+// top and left margins taking the smaller half, instead of collecting at the
+// bottom or right edge; opposite margins then differ by at most one pixel.
+static constexpr int GRID_EXTRA_X =
+    static_cast<int>(Device::kScreenWidth) -
+    (GRID_COLS * GRID_CELL_W + (GRID_COLS - 1) * GRID_GAP + 2 * GRID_PAD);
+static constexpr int GRID_EXTRA_Y =
+    static_cast<int>(Device::kScreenHeight) -
+    (GRID_ROWS * GRID_CELL_H + (GRID_ROWS - 1) * GRID_GAP + 2 * GRID_PAD);
+static_assert(GRID_EXTRA_X >= 0 && GRID_EXTRA_Y >= 0, "The tile grid must fit the screen");
+static constexpr int GRID_PAD_LEFT = GRID_PAD + GRID_EXTRA_X / 2;
+static constexpr int GRID_PAD_RIGHT = GRID_PAD + GRID_EXTRA_X - GRID_EXTRA_X / 2;
+static constexpr int GRID_PAD_TOP = GRID_PAD + GRID_EXTRA_Y / 2;
+static constexpr int GRID_PAD_BOTTOM = GRID_PAD + GRID_EXTRA_Y - GRID_EXTRA_Y / 2;
+
 // A media tile renders its (often long) title as a horizontally scrolling band the
 // full width of the tile. On the 8-inch device every flush is PPA-rotated, and a
 // band wider than the safe rotate width jams the single-slot SRM engine (see
@@ -26,7 +43,8 @@ static constexpr int GRID_CELL_H = Device::kGridCellH;
 static constexpr uint8_t MEDIA_TILE_MIN_SPAN = 2;
 static constexpr uint8_t MEDIA_TILE_MAX_SPAN = 3;
 
-static inline void clamp_media_tile_span(TileType type, uint8_t& span_w, uint8_t& span_h) {
+template <typename T>
+static inline void clamp_media_tile_span(TileType type, T& span_w, T& span_h) {
   if (type != TILE_MEDIA) return;
   const uint8_t min_w = GRID_COLS >= MEDIA_TILE_MIN_SPAN
                             ? MEDIA_TILE_MIN_SPAN
@@ -43,9 +61,10 @@ static inline void clamp_media_tile_span(TileType type, uint8_t& span_w, uint8_t
 // A media tile must not be clipped back below its 2x2 minimum at the right or
 // bottom edge. Move its position inwards in that case; the layout of every other
 // tile type stays as it is.
+template <typename P, typename S>
 static inline void clamp_media_tile_layout(TileType type,
-                                           uint8_t& col, uint8_t& row,
-                                           uint8_t& span_w, uint8_t& span_h) {
+                                           P& col, P& row,
+                                           S& span_w, S& span_h) {
   clamp_media_tile_span(type, span_w, span_h);
   if (type != TILE_MEDIA) return;
   if (span_w > GRID_COLS) span_w = GRID_COLS;
@@ -77,10 +96,10 @@ struct Tile {
   // Persisted in the reserved byte V7 already carries.
   uint8_t background_opacity;
 
-  uint8_t col;
-  uint8_t row;
-  uint8_t span_w;
-  uint8_t span_h;
+  float col;
+  float row;
+  float span_w;
+  float span_h;
 
   String sensor_entity;
   String sensor_unit;
@@ -133,6 +152,11 @@ struct Tile {
         key_modifier(0),
         image_slideshow_sec(10) {}
 };
+
+// Clock/Text use the otherwise unused display mode byte: 0 inherits borders, 1 hides them.
+static inline bool tileBorderEnabled(const Tile& tile) {
+  return (tile.type != TILE_CLOCK && tile.type != TILE_TEXT) || tile.sensor_display_mode != 1;
+}
 
 // Climate tile content is packed into sensor_gauge_min. Climate tiles do not
 // use the sensor gauge range, so this preserves the existing V7 storage layout

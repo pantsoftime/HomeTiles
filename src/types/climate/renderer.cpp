@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/climate/renderer.h"
 
 #include <algorithm>
@@ -600,16 +601,14 @@ void layout_climate_slots(
   const uint8_t count = widgets.active_slot_count;
   if (count == 0) return;
 
-  const uint8_t span_w = std::max<uint8_t>(1, tile.span_w);
-  const uint8_t span_h = std::max<uint8_t>(1, tile.span_h);
   const uint8_t columns = climateTileGridColumns(tile);
   const uint8_t logical_rows = climateTileGridRows(tile);
-  const lv_coord_t tile_w =
-      static_cast<lv_coord_t>(
-          span_w * GRID_CELL_W + (span_w - 1) * GRID_GAP);
-  const lv_coord_t tile_h =
-      static_cast<lv_coord_t>(
-          span_h * GRID_CELL_H + (span_h - 1) * GRID_GAP);
+  // The mini-grid follows whole cells; the pixel box is the real card size,
+  // which includes half steps (same as apply_fractional_tile_geometry).
+  const lv_coord_t tile_w = static_cast<lv_coord_t>(tile_geometry::extent(
+      tile.col, std::max(1.0f, tile.span_w), GRID_CELL_W, GRID_GAP));
+  const lv_coord_t tile_h = static_cast<lv_coord_t>(tile_geometry::extent(
+      tile.row, std::max(1.0f, tile.span_h), GRID_CELL_H, GRID_GAP));
   // Climate cards retain the original 20/24 px tile padding. Child
   // coordinates therefore address the padded content box, not the full card.
   const lv_coord_t content_x =
@@ -1066,7 +1065,7 @@ lv_obj_t* create_climate_slot(
   lv_obj_set_style_border_width(root, 0, 0);
   lv_obj_set_style_shadow_width(root, 0, 0);
   // Keep the inner control radius concentric with the active layout's card.
-  lv_obj_set_style_radius(
+  ui_surface_style::apply_radius(
       root, climate_layout::kControlRadius, 0);
   lv_obj_set_style_pad_all(root, 0, 0);
   lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
@@ -1355,7 +1354,7 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_color(
       card, lv_color_hex(brighten_rgb_color(color, 0x10)),
       LV_PART_MAIN | LV_STATE_PRESSED);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(
@@ -1364,7 +1363,7 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
       card, climate_layout::kCardPaddingVertical, 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   const bool icon_disabled = isMdiIconDisabled(tile.icon_name);
   const String configured_icon = normalizeMdiIconName(tile.icon_name);

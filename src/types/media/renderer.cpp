@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/media/renderer.h"
 #include "src/types/media/content_layout.h"
 
@@ -311,7 +312,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
 
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
@@ -319,7 +320,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
 
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   MediaCoverRef* cover_ref = new MediaCoverRef();
   lv_obj_add_event_cb(card, cover_ref_delete_cb, LV_EVENT_DELETE, cover_ref);
@@ -342,7 +343,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
     lv_obj_set_style_border_width(cover_clip, 0, 0);
     lv_obj_set_style_shadow_width(cover_clip, 0, 0);
     lv_obj_set_style_pad_all(cover_clip, 0, 0);
-    lv_obj_set_style_radius(cover_clip, tile_layout::scale(12), 0);
+    ui_surface_style::apply_radius(cover_clip, tile_layout::scale(12), 0);
     lv_obj_set_style_clip_corner(cover_clip, true, 0);
     lv_obj_remove_flag(cover_clip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cover_clip, LV_OBJ_FLAG_CLICKABLE);

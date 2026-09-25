@@ -20,6 +20,7 @@
 // #define DEVICE_GUITION_JC8012P4A1_V2
 // #define DEVICE_GUITION_JC1060P470C
 // #define DEVICE_GUITION_JC1060P470C_V2
+// #define DEVICE_GUITION_JC4880P443_PORTRAIT
 // #define DEVICE_GUITION_ESP32_4848S040
 #endif
 //
@@ -48,6 +49,7 @@
      defined(DEVICE_GUITION_JC8012P4A1_V2) + \
      defined(DEVICE_GUITION_JC1060P470C) + \
      defined(DEVICE_GUITION_JC1060P470C_V2) + \
+     defined(DEVICE_GUITION_JC4880P443_PORTRAIT) + \
      defined(DEVICE_GUITION_ESP32_4848S040)) > 1
 #error "Select only one device target."
 #endif
@@ -67,6 +69,7 @@
     !defined(DEVICE_GUITION_JC8012P4A1_V2) && \
     !defined(DEVICE_GUITION_JC1060P470C) && \
     !defined(DEVICE_GUITION_JC1060P470C_V2) && \
+    !defined(DEVICE_GUITION_JC4880P443_PORTRAIT) && \
     !defined(DEVICE_GUITION_ESP32_4848S040) && \
     defined(HOMETILES_CI_TARGET)
 #error "HOMETILES_CI_TARGET requires one DEVICE_* build flag."
@@ -87,6 +90,7 @@
     !defined(DEVICE_GUITION_JC8012P4A1_V2) && \
     !defined(DEVICE_GUITION_JC1060P470C) && \
     !defined(DEVICE_GUITION_JC1060P470C_V2) && \
+    !defined(DEVICE_GUITION_JC4880P443_PORTRAIT) && \
     !defined(DEVICE_GUITION_ESP32_4848S040) && \
     !defined(HOMETILES_CI_TARGET)
 #define DEVICE_WAVESHARE_4B
@@ -120,6 +124,17 @@
 #define DEVICE_GUITION_JC1060P470C_FAMILY
 #endif
 
+// Built-in camera. The exact JC8012P4A1 V2 profile carries the demo-verified
+// OV02C10 SCCB/CSI wiring; the Waveshare 8-inch ESP32-P4-WIFI6-Touch-LCD
+// front camera (OV5647) and the M5Stack Tab5 camera (SC202CS/SC2356) are
+// enabled only in camera beta builds (HOMETILES_CAMERA_BETA) until hardware
+// validation. V1 and every other board keep the capture path out of their images.
+#if defined(DEVICE_GUITION_JC8012P4A1_V2) || \
+    (defined(DEVICE_WAVESHARE_TOUCH_LCD_8) && defined(HOMETILES_CAMERA_BETA)) || \
+    (defined(DEVICE_M5STACKS_TAB5) && defined(HOMETILES_CAMERA_BETA))
+#define HOMETILES_LOCAL_CAMERA 1
+#endif
+
 // Native ESP-IDF MIPI-DSI profiles share the same two-framebuffer camera
 // presenter. M5GFX Tab5 and Arduino_GFX B4 intentionally keep their library
 // owned display backends.
@@ -131,7 +146,8 @@
     defined(DEVICE_GUITION_JC8012P4A1) || \
     defined(DEVICE_GUITION_JC8012P4A1_V2) || \
     defined(DEVICE_GUITION_JC1060P470C) || \
-    defined(DEVICE_GUITION_JC1060P470C_V2)
+    defined(DEVICE_GUITION_JC1060P470C_V2) || \
+    defined(DEVICE_GUITION_JC4880P443_PORTRAIT)
 #define DEVICE_P4_IDF_DSI
 #endif
 
@@ -152,6 +168,7 @@
 
 #if defined(DEVICE_LAYOUT_TEST_480X480) || \
     defined(DEVICE_WAVESHARE_TOUCH_LCD_4_3) || \
+    defined(DEVICE_GUITION_JC4880P443_PORTRAIT) || \
     defined(DEVICE_GUITION_ESP32_4848S040) || \
     defined(DEVICE_WAVESHARE_S3_TOUCH_LCD_4) || \
     defined(DEVICE_WAVESHARE_S3_TOUCH_LCD_4B)

@@ -1,3 +1,5 @@
+#include "src/tiles/runtime/compact_sensor_layout.h"
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/sensor/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
@@ -36,6 +38,15 @@ void sensor_split_subtitle(const String& combined, String& head, String& tail) {
   tail.trim();
 }
 
+// At half-step heights (1.5, 2.5 rows) a gauge and its value share the extra
+// half row equally. Whole spans give 0 and stay pixel-identical. Used by the
+// render path and by sensor_apply_value_layout(), which re-runs on every update.
+static lv_coord_t sensor_gauge_extra_h(const Tile& tile) {
+  if (tile.span_h < 1) return 0;
+  return tile_geometry::extent(tile.row, tile.span_h, GRID_CELL_H, GRID_GAP) -
+         tile_geometry::extent(tile.row, std::floor(tile.span_h), GRID_CELL_H, GRID_GAP);
+}
+
 void sensor_apply_value_layout(lv_obj_t* value_label,
                                const Tile& tile,
                                bool multiline,
@@ -43,6 +54,12 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
                                bool graph_enabled,
                                bool has_caption) {
   if (!value_label) return;
+
+  // Compact half-height tiles are laid out once, at render time, by
+  // compact_sensor_layout::apply(): a fixed single left-aligned 20 px row beside
+  // the title. This helper re-runs on every value update, so touching them here
+  // would re-centre the value on the first update. Leave them alone.
+  if (tile_geometry::compact(tile.type, tile.span_w, tile.span_h)) return;
 
   // In caption mode the two halves live in separate labels, so the value label
   // itself is single-line and stays centred.
@@ -61,8 +78,10 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
   value_y_offset = tile_layout::scale_i16(value_y_offset);
 
   if (gauge_enabled) {
+    const lv_coord_t gauge_extra_h = sensor_gauge_extra_h(tile);
     lv_obj_align(value_label, LV_ALIGN_BOTTOM_MID, 0,
-                 tile_layout::scale(12) + value_y_offset);
+                 tile_layout::scale(12) + value_y_offset -
+                     (gauge_extra_h - gauge_extra_h / 2));
   } else if (graph_enabled) {
     // Value above graph: center vertically in upper area
     lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
@@ -101,26 +120,7 @@ lv_coord_t sensor_subtitle_y(const Tile& tile) {
 }
 
 static const lv_font_t* get_sensor_value_font(const Tile& tile) {
-  switch (tile.sensor_value_font) {
-    case 1:
-      return tile_layout::content_font_20();
-    case 2:
-      return tile_layout::content_font_24();
-    case 3:
-      return tile_layout::content_font_32();
-    case 4:
-      return tile_layout::content_font_40();
-    case 5:
-      return tile_layout::mono_font_20();
-    case 6:
-      return tile_layout::mono_font_24();
-    case 7:
-      return tile_layout::mono_bold_font_20();
-    case 8:
-      return tile_layout::mono_bold_font_24();
-    default:
-      return FONT_VALUE;
-  }
+  return tile_layout::value_font_for_choice(tile.sensor_value_font, FONT_VALUE);
 }
 
 struct SensorEventData {
@@ -149,7 +149,7 @@ lv_obj_t* render_sensor_tile(lv_obj_t* parent, int col, int row, const Tile& til
     return nullptr;
   }
 
-  const uint8_t display_mode = tile.sensor_display_mode;  // 0=none, 1=gauge, 2=graph
+  const uint8_t display_mode = tile.span_h == 0.5f ? 0 : tile.sensor_display_mode;  // 0=none, 1=gauge, 2=graph
   const bool gauge_enabled = (display_mode == 1);
   const bool graph_enabled = (display_mode == 2);
   int32_t gauge_min = tile.sensor_gauge_min;
@@ -178,7 +178,7 @@ lv_obj_set_style_bg_grad_color(card, lv_color_hex(pressed_color), LV_PART_MAIN |
 lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
 
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   // 20px each side left the value label about 110px on a 4-wide grid, which is
@@ -193,7 +193,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
 
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   // Optional right-aligned icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;
@@ -234,6 +234,11 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     }
   }
 
+  // At half-step heights the arc and its value stay together: they share the
+  // extra half row equally. Whole spans give 0 and stay pixel-identical.
+  const lv_coord_t gauge_extra_h = sensor_gauge_extra_h(tile);
+  const lv_coord_t gauge_shift = gauge_extra_h / 2;
+
   lv_obj_t* gauge = nullptr;
   if (gauge_enabled) {
     // Get gauge appearance from tile settings (with defaults)
@@ -254,7 +259,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     gauge = lv_arc_create(card);
     if (gauge) {
       lv_obj_set_size(gauge, gauge_size, gauge_size);
-      lv_obj_align(gauge, LV_ALIGN_TOP_MID, 0, y_offset);
+      lv_obj_align(gauge, LV_ALIGN_TOP_MID, 0, y_offset + gauge_shift);
       lv_obj_remove_flag(gauge, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_remove_flag(gauge, LV_OBJ_FLAG_SCROLLABLE);
       lv_obj_set_style_bg_opa(gauge, LV_OPA_TRANSP, LV_PART_MAIN);
@@ -350,12 +355,18 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
                             caption);
   lv_label_set_text(v, "--");
 
+  const bool compact =
+      tile_geometry::compact(tile.type, tile.span_w, tile.span_h) && display_mode == 0;
+
   // Caption label for the small second line. Created up front (empty) whenever
   // the tile could ever show one, because the decision depends on the value,
   // which has usually not arrived yet when the tile is first built.
   lv_obj_t* subtitle = nullptr;
+  //
+  // A compact half-height tile has no room for a second line: its value is one
+  // fixed 20 px row next to the title (compact_sensor_layout).
   if ((sensor_tile_caption_mode(tile) || sensor_tile_has_caption_entity(tile)) &&
-      !gauge_enabled && !graph_enabled) {
+      !gauge_enabled && !graph_enabled && !compact) {
     subtitle = lv_label_create(card);
     if (subtitle) {
       set_label_style(subtitle, lv_color_white(), tile_layout::content_font_20());
@@ -366,6 +377,10 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
       lv_obj_align(subtitle, LV_ALIGN_CENTER, 0, sensor_subtitle_y(tile));
       lv_label_set_text(subtitle, "");
     }
+  }
+
+  if (compact) {
+    compact_sensor_layout::apply(card, icon_lbl, title_label, v, tile);
   }
 
   // Store for later updates.

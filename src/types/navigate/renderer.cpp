@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/navigate/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
@@ -47,7 +48,7 @@ static const lv_font_t* get_navigate_value_font(const Tile& tile) {
 lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index,
                                GridType grid_type) {
   lv_obj_t* btn = lv_button_create(parent);
-  lv_obj_set_style_radius(btn, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(btn, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(btn, 0, 0);
 
   // Without an explicit color, all navigation types use the same neutral
@@ -82,7 +83,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(btn);
 
-  set_tile_grid_cell(btn, col, row, tile.span_w, tile.span_h);
+  place_tile_card(btn, col, row, tile);
 
   // Optional icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;

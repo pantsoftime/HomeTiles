@@ -114,7 +114,8 @@ Used for:
 - `src/devices/waveshare_touch_lcd_7`
 - `src/devices/waveshare_touch_lcd_8`
 - `src/devices/waveshare_touch_lcd_10_1`
-- build profiles `waveshare_7`, `waveshare_8`, and `waveshare_10_1`
+- build profiles `waveshare_7`, `waveshare_8`, `waveshare_10_1`, and
+  `waveshare_10_1_rev3`
 
 Important:
 - The 8-inch profile is hardware-confirmed. The 7-inch and 10.1-inch profiles
@@ -128,7 +129,10 @@ Important:
   initialization and timing.
 - Leave `Partition Scheme` on the normal 32MB ESP32-P4 setting.
 - The actual partition layout still comes from the shared repo `partitions.csv`.
-- The `Chip Variant` must be set to `Before v3.00` for this hardware.
+- The `Chip Variant` must be set to `Before v3.00` for this hardware, except
+  for 10.1-inch boards with ESP32-P4 v3.1 or newer: use `waveshare_10_1_rev3`
+  with `v3.00 or newer`. Check the revision with `esptool chip-id` first. The
+  v3 build is experimental and contributor-tested on v3.2 only.
 
 Arduino IDE:
 - Board: `ESP32P4 Dev Module`
@@ -250,8 +254,12 @@ Important:
   `4/10/30`. The original target remains at 60MHz and `4/8/20`.
 - V1 and V2 factory/OTA images are deliberately incompatible and have separate
   embedded device keys.
-- Board, flash, PSRAM, partition, upload, touch, SDMMC and USB settings are the
+- Board, flash, PSRAM, partition, upload, touch and SDMMC settings are the
   same as the Guition JC8012P4A1 V1 section above.
+- USB: the V2 USB-C port is the ESP32-P4 USB-Serial-JTAG, so HomeTiles logs
+  (`Serial`) must go there: USB CDC On Boot `Enabled`, USB Mode
+  `Hardware CDC and JTAG`, like the Tab5 and JC4880P443. With the V1 settings
+  the browser log viewer shows only ESP-IDF system errors.
 - Physical release and OTA validation is tracked in
   [issue #18](https://github.com/GalusPeres/HomeTiles/issues/18).
 
@@ -329,6 +337,53 @@ Arduino IDE:
 - Upload Mode: `UART0 / Hardware CDC`
 - Upload Speed: `921600`
 - USB Mode: `USB-OTG (TinyUSB)`
+
+## Guition JC4880P443
+
+Used for:
+- `src/devices/guition_jc4880p443_portrait`
+- build profile `guition_jc4880p443_portrait`
+
+Important:
+- This target is only for the exact `JC4880P443C_I_W` variant
+  (JC-ESP32P4-M3 module: ESP32-P4 host + ESP32-C6 Wi-Fi co-processor). It is
+  not interchangeable with the Waveshare Touch LCD 4.3 profile even though
+  both use a 480x800 ST7701 panel.
+- This profile is hardware-tested on the exact `JC4880P443C_I_W` board
+  (display, touch, rotation, camera, sleep/wake, Wi-Fi, MQTT, tiles,
+  microSD and Web OTA).
+- ESP32-P4 with `16MB` flash and `32MB` PSRAM.
+- Native `480x800` ST7701S MIPI-DSI panel (2 lanes at 500 Mbps, 34 MHz DPI
+  clock, vsync timing 2/8/166), rendered as a `480x800` portrait dashboard
+  (`4x6` grid).
+- LCD reset is GPIO 5 (active-low); backlight is active-high on GPIO 23
+  using LEDC PWM. MIPI-DSI PHY power uses P4 LDO channel 3 at 2500 mV.
+- Touch is GT911 on SDA 7 / SCL 8 without interrupt or reset pins. Both
+  GT911 addresses are probed at 400 kHz first with a 100 kHz fallback.
+- SDMMC slot 0 uses GPIO39-44 with TF_VCC from on-chip LDO channel 4.
+- Use the repository's `partitions.csv`; HomeTiles needs two 6.5MB OTA slots.
+
+Arduino IDE:
+- Board: `ESP32P4 Dev Module`
+- USB CDC On Boot: `Enabled`
+- Chip Variant: `Before v3.00`
+- Core Debug Level: `None`
+- USB DFU On Boot: `Disabled`
+- Erase All Flash Before Sketch Upload: `Disabled`
+- Flash Frequency: `80MHz`
+- Flash Mode: `QIO`
+- Flash Size: `16MB (128Mb)`
+- JTAG Adapter: `Disabled`
+- USB Firmware MSC On Boot: `Disabled`
+- Partition Scheme: `Custom`
+- PSRAM: `Enabled`
+- Upload Mode: `UART0 / Hardware CDC`
+- Upload Speed: `921600`
+- USB Mode: `Hardware CDC and JTAG`
+
+The sketch console (`Serial`) runs on the USB-Serial/JTAG flashing port. The
+second USB-C connector does not enumerate a data device, so all diagnostics
+must be read from the flashing port.
 
 ## GUITION ESP32-4848S040
 
