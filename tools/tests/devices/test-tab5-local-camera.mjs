@@ -145,7 +145,10 @@ assert.match(cameraSelect,
   /#if defined\(DEVICE_M5STACKS_TAB5\)\n#define HOMETILES_CAMERA_SENSOR_SC202CS 1\n#define HOMETILES_LOCAL_CAMERA_BOARD "src\/devices\/m5stacks_tab5\/local_camera_board\.h"/);
 assert.match(deviceSelect, /\(defined\(DEVICE_M5STACKS_TAB5\) && defined\(HOMETILES_CAMERA_BETA\)\)\n#define HOMETILES_LOCAL_CAMERA 1/);
 assert.match(deviceHeader, /#if defined\(HOMETILES_LOCAL_CAMERA\)\ninline constexpr bool kBuiltinCamera = true;\n#else\ninline constexpr bool kBuiltinCamera = false;\n#endif/);
-assert.match(deviceHeader, /Device::Capabilities\{false, false, false, false, false, false, kBuiltinCamera\}/);
+// Fork: has_battery (first field) is true on the Tab5 -- the fork restores
+// M5.Power battery telemetry that upstream stubs out. The camera flag keeps
+// upstream's position, which is what this test is really about.
+assert.match(deviceHeader, /Device::Capabilities\{true, false, false, false, false, false, kBuiltinCamera\}/);
 assert.match(version, /#if defined\(DEVICE_M5STACKS_TAB5\) && \\\n    defined\(HOMETILES_CAMERA_BETA\)\n#undef FW_VERSION/);
 
 const cc = ['clang', 'gcc'].find(candidate => spawnSync(candidate, ['--version']).status === 0);

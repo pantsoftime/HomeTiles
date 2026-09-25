@@ -5,6 +5,7 @@
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/ui/ui_manager.h"
+#include "src/core/power/battery_state.h"
 #include <Arduino.h>
 
 struct NavigateEventData {
@@ -43,6 +44,11 @@ static const lv_font_t* get_navigate_value_font(const Tile& tile) {
     default:
       return tile_layout::content_font_28();
   }
+}
+
+bool navigate_settings_shows_battery(const Tile& tile, GridType grid_type) {
+  return tile.type == TILE_SETTINGS && grid_type != GridType::SCREENSAVER &&
+         batteryStateSupportsMeasurement();
 }
 
 lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index,
@@ -97,8 +103,13 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   // key_code/key_modifier ab, sensor_entity ist daher frei und wird hier fuer
   // eine mitlaufende Sensor-Anzeige genutzt (z.B. ein Ordner, der zusaetzlich
   // eine Anzahl oder einen Messwert aus seinem Inhalt zeigt).
-  bool has_value = tile.sensor_entity.length() > 0 &&
-                   grid_type != GridType::SCREENSAVER;
+  //
+  // A Settings tile on a battery-measuring device takes the same value slot for
+  // its battery caption, so it inherits the folder layout unchanged.
+  const bool has_battery = navigate_settings_shows_battery(tile, grid_type);
+  bool has_value = (tile.sensor_entity.length() > 0 &&
+                    grid_type != GridType::SCREENSAVER) ||
+                   has_battery;
 
   if (has_icon) {
     icon_lbl = lv_label_create(btn);
@@ -130,11 +141,24 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   if (has_value) {
     lv_obj_t* v = lv_label_create(btn);
     if (v) {
-      set_label_style(v, lv_color_white(), get_navigate_value_font(tile));
+      // The battery caption is a secondary readout, so it uses the smaller 24 px
+      // choice rather than the folder default. The Settings save handler forces
+      // sensor_value_font to 0, so a per-tile font choice could not survive anyway.
+      set_label_style(v, lv_color_white(),
+                      has_battery ? tile_layout::content_font_24()
+                                  : get_navigate_value_font(tile));
       lv_label_set_long_mode(v, LV_LABEL_LONG_CLIP);
       lv_obj_set_width(v, LV_PCT(100));
       lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
-      lv_label_set_text(v, "--");
+      // Seed the caption from local battery state: it is measured on this device,
+      // so there is nothing to wait for, and a grid rebuild must not blank it until
+      // the next percentage change. Matches update_sensor_tile_value()'s "87 %".
+      char seed[16] = "--";
+      if (has_battery && batteryStateHasDisplayPercent()) {
+        snprintf(seed, sizeof(seed), "%ld %%",
+                 static_cast<long>(batteryStateDisplayPercent()));
+      }
+      lv_label_set_text(v, seed);
       lv_obj_align(v, LV_ALIGN_CENTER, 0,
                    tile_layout::scale(has_icon ? 2 : -12));
 

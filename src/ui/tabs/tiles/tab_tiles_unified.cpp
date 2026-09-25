@@ -17,12 +17,15 @@
 #include "src/network/bridge/ha_bridge_config.h"
 #include "src/types/cover/renderer.h"
 #include "src/types/binary_sensor/renderer.h"
+#include "src/types/navigate/renderer.h"
+#include "src/network/bridge/device_entities.h"
 #include "src/types/energy/energy_data.h"
 #include "src/web/server/web_admin.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include <misc/cache/instance/lv_image_cache.h>
 #include <Arduino.h>
 #include <cstring>
+#include <strings.h>
 #include <esp_heap_caps.h>
 #include <new>
 
@@ -2312,6 +2315,15 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
         queue_sensor_popup_value(entity_id, value, unit.length() ? unit.c_str() : nullptr, tile.sensor_decimals);
         popup_queued = true;
       }
+    }
+    // Fork: the Settings-tile battery caption has no sensor_entity of its own --
+    // it follows the device's internal battery entity. Value only: a Settings
+    // tile opens Settings, so there is no sensor popup to feed.
+    if (navigate_settings_shows_battery(tile, grid_type) &&
+        strcasecmp(entity_id, kEntityInternalBatterySoc) == 0) {
+      queue_sensor_tile_update(grid_type, i, value, "%");
+      Serial.printf("[%s] Settings battery@%u queued: %s %%\n",
+                    getGridName(grid_type), i, value);
     }
     if (tile.type == TILE_SWITCH && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       switch_indices |= uint64_t{1} << i;

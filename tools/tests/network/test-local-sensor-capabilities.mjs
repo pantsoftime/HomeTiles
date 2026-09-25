@@ -9,11 +9,32 @@ const mqtt = read('src/network/mqtt/mqtt_handlers.cpp');
 const bridge = read('src/network/bridge/ha_bridge_config.cpp');
 const battery = read('src/core/power/battery_state.cpp');
 assert.match(battery, /batteryStateSupportsMeasurement\(\)\s*\{ return false;/);
+assert.match(battery, /#if defined\(DEVICE_M5STACKS_TAB5\)/,
+  'Real battery telemetry must stay guarded by the exact device profile');
 assert.doesNotMatch(mqtt, /__has_include\(<OneWire.h>\)/,
   'Installing a library must not enable unverified GPIO probing');
 assert.equal((mqtt.match(/sync_external_temp_entity\(/g) || []).length, 1,
   'The legacy synthetic sensor must not run on connect or in the periodic service');
-assert.match(mqtt, /!batteryStateSupportsMeasurement\(\) \|\| batteryStateIsBatteryMissing\(\)/);
+const batterySync = mqtt.slice(
+  mqtt.indexOf('static void sync_internal_battery_entity()'),
+  mqtt.indexOf('static const char* kSleepOptionLabels'));
+assert.ok(batterySync.length > 0, 'sync_internal_battery_entity() must exist');
+assert.match(batterySync, /if \(!batteryStateSupportsMeasurement\(\)\) \{\s*return;/,
+  'Unsupported profiles must not register the internal battery entity');
+// The missing branch may update the device's own caption, but must return
+// before anything reaches Home Assistant.
+const missingStart = batterySync.indexOf('if (batteryStateIsBatteryMissing()) {');
+assert.ok(missingStart >= 0, 'sync must test for a missing battery');
+const missingBlock = batterySync.slice(missingStart,
+  batterySync.indexOf('\n  }\n', missingStart) + 4);
+assert.match(missingBlock, /return;/, 'the missing branch must return');
+assert.doesNotMatch(missingBlock, /haBridgeConfig\.|mqttEnqueuePublish/,
+  'A missing battery must not publish a synthetic value');
+assert.ok(
+  batterySync.indexOf('const int soc = readBatterySocPercent();') <
+    batterySync.indexOf('batteryStateIsBatteryMissing()'),
+  'The battery must be polled before the missing flag is tested, otherwise a '
+  + 'latched missing state can never clear once a battery is inserted');
 const snapshot = mqtt.slice(mqtt.indexOf('void mqttPublishHomeSnapshot()'), mqtt.indexOf('void mqttPublishDeviceSettings()'));
 assert.match(snapshot, /if \(batteryStateSupportsMeasurement\(\)\)/);
 assert.match(snapshot, /TopicKey::SENSOR_SOC\), "", true/,

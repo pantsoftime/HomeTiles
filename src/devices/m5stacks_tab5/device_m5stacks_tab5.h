@@ -31,7 +31,10 @@ inline constexpr Device::Profile kProfile{
     Device::RotationStepMode::FlipOnly,
     0,
     2,
-    Device::Capabilities{false, false, false, false, false, false, kBuiltinCamera},
+    // has_battery (first): Tab5 carries an NP-F battery read through M5.Power.
+    // has_builtin_camera (last): upstream appended it for the camera beta, so
+    // the positions of the earlier fields are unchanged.
+    Device::Capabilities{true, false, false, false, false, false, kBuiltinCamera},
     kHardwareIoProfile,
 };
 
