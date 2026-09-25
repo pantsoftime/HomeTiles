@@ -2629,7 +2629,10 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
     lv_obj_t* value_row =
         widgets.temp_label ? lv_obj_get_parent(widgets.temp_label) : nullptr;
     if (value_row) {
-      lv_obj_align(value_row, LV_ALIGN_TOP_MID, 0,
+      // Centre-relative, matching the renderer: upstream centres the
+      // no-forecast value row in the real card so a half-step taller card
+      // moves it down. 28 -> 14 is the sensor tile's own caption lift.
+      lv_obj_align(value_row, LV_ALIGN_CENTER, 0,
                    widgets.value_row_base_y -
                        (has_humidity ? tile_layout::scale(14) : 0));
     }

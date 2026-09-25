@@ -67,4 +67,23 @@ const update = between(runtime, 'void update_sensor_tile_value(', '\n}\n');
 assert.match(update, /sensor_apply_value_layout\(/,
   'if the update path stops re-applying the layout, revisit whether the compact guard is still needed');
 
+// --- 3. Fork code that read locals upstream's geometry rework removed ---------
+// Both merged without a textual conflict and broke every profile's compile.
+// Climate: span_w/span_h locals are gone; the tile's own float spans remain.
+const climate = read('src/types/climate/renderer.cpp');
+const reserve = between(climate, 'const lv_coord_t caption_reserve =', ';');
+assert.match(reserve, /tile\.span_w == 1 && tile\.span_h == 1/,
+  'the climate caption reserve must read the tile spans; the span_w/span_h locals no longer exist');
+
+// Weather: value_row_y moved into the forecast-only branch, and the
+// no-forecast value row is now centred in the real card. The humidity lift must
+// be centre-relative in both the renderer and the update path, or the value row
+// jumps back to a top-anchored position on the first update.
+const weather = read('src/types/weather/renderer.cpp');
+assert.match(weather, /widgets\.value_row_base_y = tile_layout::scale\(28\);/,
+  'the renderer must store the centre offset of the no-forecast value row');
+const weatherUpdate = between(runtime, 'if (widgets.humidity_label) {', 'if (widgets.icon_label) {');
+assert.match(weatherUpdate, /lv_obj_align\(value_row, LV_ALIGN_CENTER, 0,\s*widgets\.value_row_base_y/,
+  'the humidity lift must re-align from the centre, like the renderer');
+
 console.log('Compact-tile fork integration regressions passed.');

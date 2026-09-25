@@ -73,6 +73,7 @@ struct WeatherTileWidgets {
   // same amount a sensor tile's headline does once a caption appears, so the
   // two tile types line up side by side; without the stored base there would
   // be nothing to lift from (or fall back to when humidity goes away).
+  // A centre-relative offset: the no-forecast value row is LV_ALIGN_CENTER.
   lv_coord_t value_row_base_y = 0;
   lv_obj_t* condition_label = nullptr;
   lv_obj_t* condition_sep_label = nullptr;
