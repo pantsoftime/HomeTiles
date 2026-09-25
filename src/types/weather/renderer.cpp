@@ -243,7 +243,9 @@ lv_obj_t* render_weather_tile(lv_obj_t* parent, int col, int row, const Tile& ti
     widgets.icon_label = icon_label;
     widgets.temp_label = temp_label;
     widgets.humidity_label = humidity_label;
-    widgets.value_row_base_y = value_row_y;
+    // Only read when humidity_label exists, i.e. the no-forecast form, whose
+    // value row upstream now centres in the real card at +28.
+    widgets.value_row_base_y = tile_layout::scale(28);
     widgets.condition_label = condition_label;
     widgets.condition_sep_label = sep_label;
     widgets.location_label = location_label;
