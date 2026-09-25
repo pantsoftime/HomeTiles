@@ -624,7 +624,7 @@ void layout_climate_slots(
   // visible value -- the value_label is hidden whenever slots exist, which is
   // every size including 1x1.
   const lv_coord_t caption_reserve =
-      (tile.key_macro.length() > 0 && span_w == 1 && span_h == 1)
+      (tile.key_macro.length() > 0 && tile.span_w == 1 && tile.span_h == 1)
           ? climate_layout::kCaptionReserve
           : 0;
   const lv_coord_t grid_bottom =
