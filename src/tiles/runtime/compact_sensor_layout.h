@@ -31,7 +31,11 @@ inline void apply_content(lv_obj_t* card, lv_obj_t* icon, lv_obj_t* title, lv_ob
   const int margin = inset();
   const int height = header_height();
   const int diameter = height - margin * 2;
-  const int text_x = height + margin;
+  // Fork: without an icon the title and value take the icon column as well,
+  // starting at the same 8 px the compact Clock pads with (it never shows an
+  // icon). Reserving the column regardless left almost half the tile blank:
+  // on the Tab5 the text had 81 of 168 px. Set a tile's icon to "none" to use it.
+  const int text_x = icon ? height + margin : margin * 2;
   if (icon) {
     lv_obj_t* disc = lv_obj_create(card);
     lv_obj_remove_style_all(disc);

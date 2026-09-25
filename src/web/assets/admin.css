@@ -2262,6 +2262,12 @@
   transform:none; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   height:auto; min-height:0; display:block; line-height:1;
 }
+.tile.sensor-compact:not(:has(> .tile-icon)) > .tile-title,
+.tile.sensor-compact:not(:has(> .tile-icon)) > .tile-value {
+  /* Fork: no icon -> the text takes the icon column too, matching
+     compact_sensor_layout::apply_content() on the device. */
+  left:calc(2 * var(--compact-inset));
+}
 .tile.sensor-compact > .tile-title {
   top:max(0px, calc((var(--compact-h) - var(--compact-title-line) - var(--compact-value-line) - var(--compact-text-gap)) / 2));
   font-size:var(--compact-title-font); line-height:var(--compact-title-line);

@@ -86,4 +86,17 @@ const weatherUpdate = between(runtime, 'if (widgets.humidity_label) {', 'if (wid
 assert.match(weatherUpdate, /lv_obj_align\(value_row, LV_ALIGN_CENTER, 0,\s*widgets\.value_row_base_y/,
   'the humidity lift must re-align from the centre, like the renderer');
 
+// --- 4. Fork: a compact tile without an icon uses the icon column -----------
+// Upstream reserved the icon column whether or not an icon existed; on the Tab5
+// that left the title and value 81 of 168 px. With the icon set to "none" the
+// text now starts where the compact Clock pads (8 px). Device and Web preview
+// must agree (AGENTS.md section 4), so both halves are pinned together.
+const compactLayout = read('src/tiles/runtime/compact_sensor_layout.h');
+assert.match(compactLayout, /const int text_x = icon \? height \+ margin : margin \* 2;/,
+  'without an icon the compact text must start at the 8 px Clock padding, not after an empty disc');
+const css = read('src/web/assets/admin.css');
+assert.match(css,
+  /\.tile\.sensor-compact:not\(:has\(> \.tile-icon\)\) > \.tile-title,\s*\.tile\.sensor-compact:not\(:has\(> \.tile-icon\)\) > \.tile-value \{[^}]*left:calc\(2 \* var\(--compact-inset\)\);/,
+  'the Web preview must shift icon-less compact text exactly like the device');
+
 console.log('Compact-tile fork integration regressions passed.');
