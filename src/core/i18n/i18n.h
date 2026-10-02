@@ -147,6 +147,7 @@ struct Strings {
   const char* sensor_unit;
   const char* sensor_decimals;
   const char* sensor_value_size;
+  const char* sensor_value_size_default;
   const char* sensor_display_mode;
   const char* sensor_display_none;
   const char* sensor_display_gauge;
@@ -187,6 +188,8 @@ struct Strings {
   const char* js_settings_tile_fixed;
   const char* js_back_tile_fixed;
   const char* js_tile_cannot_delete;
+  const char* js_paste_empty_only;
+  const char* js_paste_no_space;
   const char* js_folder_cannot_delete;
   const char* js_delete_folder_confirm;
   const char* js_folder_deleted;
@@ -279,7 +282,67 @@ struct Strings {
   const char* alignment_center;
   const char* alignment_right;
   const char* screensaver_tile_shadow;
+  const char* tile_radius;
+  // Global display setting: strength of every icon disc (icon_glow.h).
+  const char* icon_glow_strength;
+  const char* tile_fractional_type_hint;
   const char* screensaver_tile_border;
+  // Web Admin: global display settings row below the grid preview.
+  const char* global_settings_heading;
+  const char* icon_discs;
+  const char* default_tile_color;
+  // Tile color choice: global tile color, own color or a tint from the icon.
+  const char* tile_color_mode_global;
+  const char* tile_color_mode_custom;
+  const char* tile_color_mode_from_icon;
+  // Web Admin tile editor: per-tile icon disc override.
+  const char* icon_disc_label;
+  const char* icon_disc_global;
+  const char* icon_disc_on;
+  const char* icon_disc_off;
+  const char* icon_glow;
+  // Web Admin tile editor: per-tile icon color, color bar for numeric states
+  // ("by value"), state colors for text states ("by state") and the On/Off
+  // colors of Binary sensors (Sensor family, Binary sensor, Energy).
+  const char* tile_icon_color;
+  const char* tile_icon_color_by_value;
+  const char* tile_icon_color_bar_off;
+  const char* tile_icon_color_smooth;
+  const char* tile_icon_color_steps;
+  const char* tile_icon_color_min;
+  const char* tile_icon_color_max;
+  const char* tile_icon_color_preset_cold_warm;
+  const char* tile_icon_color_preset_traffic;
+  const char* tile_icon_color_preset_battery;
+  const char* tile_icon_color_preset_humidity;
+  const char* tile_icon_color_preset_single;
+  const char* tile_icon_color_bar_hint;
+  const char* tile_icon_color_by_state;
+  const char* tile_icon_color_state;
+  const char* tile_icon_color_contains;
+  const char* tile_icon_color_add_state;
+  const char* tile_icon_color_remove;
+  const char* tile_icon_color_state_hint;
+  const char* tile_icon_color_state_on;
+  const char* tile_icon_color_state_off;
+  // Icon-and-title tiles: the source entity of their icon color.
+  const char* tile_icon_color_source;
+  const char* tile_icon_color_source_none;
+  const char* tile_icon_color_source_auto;
+  const char* tile_icon_color_source_rules;
+  const char* tile_icon_color_source_hint;
+  // The rule layer of every tile: source, targets and tile tint strength.
+  const char* tile_rules;
+  const char* tile_rules_own_entity;
+  const char* tile_rules_other_entity;
+  const char* tile_rules_color_icon;
+  const char* tile_rules_tint_tile;
+  const char* tile_rules_strength;
+  const char* tile_rules_priority_hint;
+  const char* tile_rules_tile_follows_icon;
+  // Tile Settings group captions: what belongs to the icon, what to the tile.
+  const char* tile_group_icon;
+  const char* tile_group_tile;
   const char* screensaver_background_opacity;
   const char* screensaver_hint;
   const char* screensaver_storage_hint;
@@ -461,6 +524,55 @@ struct Strings {
   const char* pin_popup_incorrect;
   const char* pin_popup_unlock_format;
   const char* settings_tile_parking;
+  // Built-in camera opt-in (Web Admin Settings, camera profiles only).
+  const char* local_camera_section;
+  const char* local_camera_enable;
+  const char* local_camera_note;
+  const char* local_camera_status_label;
+  const char* local_camera_status_disabled;
+  const char* local_camera_status_probing;
+  const char* local_camera_status_ready;
+  const char* local_camera_status_not_found;
+  const char* local_camera_status_error;
+  // Live-stream mode select; the numeric mode names stay untranslated.
+  const char* local_camera_stream_mode;
+  const char* local_camera_stream_mode_auto;
+  // Mirrors snapshots and the live stream horizontally.
+  const char* local_camera_mirror;
+  // User image controls; the slider numbers stay untranslated.
+  const char* local_camera_image_section;
+  const char* local_camera_brightness;
+  const char* local_camera_contrast;
+  const char* local_camera_saturation;
+  const char* local_camera_red;
+  const char* local_camera_blue;
+  const char* local_camera_image_reset;
+  // On-display camera pill: title while capturing and the tap hint.
+  const char* local_camera_indicator_active;
+  const char* local_camera_indicator_end;
+  // Web Admin: indicator style checkboxes and their note (the sub-block
+  // heading, marked experimental, is local_camera_indicator_section).
+  const char* local_camera_indicator_line;
+  const char* local_camera_indicator_pill;
+  const char* local_camera_indicator_note;
+  // Custom stream mode: select entry and its two sliders (numbers untranslated).
+  const char* local_camera_stream_mode_custom;
+  const char* local_camera_custom_fps;
+  const char* local_camera_custom_quality;
+  // Heading of the indicator sub-block (marked experimental).
+  const char* local_camera_indicator_section;
+  // Heading of the live stream sub-block (mode, Custom values).
+  const char* local_camera_stream_section;
+  // Image control: upper limit of the sensor plus digital gain (percent).
+  const char* local_camera_gain;
+  // Collapsed Web Admin block with the fine-tuning controls (rotation,
+  // mirror, red/blue swap, image controls).
+  const char* local_camera_advanced;
+  // Clockwise rotation select; the degree values stay untranslated.
+  const char* local_camera_rotation;
+  // Red/blue swap checkbox and its note (applies from the next start).
+  const char* local_camera_rb_swap;
+  const char* local_camera_rb_swap_note;
 
 };
 
@@ -482,6 +594,8 @@ struct LocaleProfile {
   const char* climate_entity;
   const char* climate_target_temperature;
   const char* climate_target_humidity;
+  // Caption above the target humidity control in a Climate mini tile.
+  const char* climate_humidity_caption;
   const char* climate_heating_target;
   const char* climate_cooling_target;
   // heating, preheating, cooling, drying, fan, defrosting, idle, off,
@@ -571,6 +685,7 @@ const char* climate_tile_type_label(const char* language_code);
 const char* climate_entity_label(const char* language_code);
 const char* climate_target_temperature_label(const char* language_code);
 const char* climate_target_humidity_label(const char* language_code);
+const char* climate_humidity_caption_label(const char* language_code);
 const char* climate_heating_target_label(const char* language_code);
 const char* climate_cooling_target_label(const char* language_code);
 const char* climate_target_heat_label(const char* language_code);

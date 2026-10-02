@@ -1,9 +1,13 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/camera/renderer.h"
 
 #include "src/core/config/config_manager.h"
 #include "src/core/i18n/i18n.h"
 #include "src/network/bridge/ha_bridge_config.h"
 #include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/tile_icon_source.h"
+#include "src/tiles/runtime/compact_sensor_layout.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/ui/popups/camera/camera_popup.h"
@@ -43,7 +47,12 @@ static void camera_tile_event_cb(lv_event_t* event) {
   init.entity_id = data->entity_id;
   init.title = data->title;
   init.icon_name = data->icon_name;
-  init.bg_color = data->bg_color;
+  init.bg_color = tile_icon_source::popup_background(static_cast<lv_obj_t*>(lv_event_get_current_target(event)), data->bg_color);
+  // The header icon takes the color the tile icon shows right now (fixed or
+  // from its rules).
+  lv_obj_t* icon = tile_icon_source::card_icon(static_cast<lv_obj_t*>(lv_event_get_current_target(event)));
+  init.icon_color =
+      icon ? lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFF : 0xFFFFFF;
   show_camera_popup(init);
 }
 
@@ -64,7 +73,7 @@ lv_obj_t* render_camera_tile(lv_obj_t* parent,
 
   lv_obj_t* card = lv_button_create(parent);
   if (!card) return nullptr;
-  const uint32_t card_color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  const uint32_t card_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(card, lv_color_hex(card_color),
                             LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE,
@@ -73,12 +82,12 @@ lv_obj_t* render_camera_tile(lv_obj_t* parent,
                             lv_color_hex(brighten_rgb_color(card_color, 0x10)),
                             LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   String icon_name = tile.icon_name;
   const bool icon_disabled = isMdiIconDisabled(icon_name);
@@ -94,6 +103,9 @@ lv_obj_t* render_camera_tile(lv_obj_t* parent,
   if (!title.length()) title = friendly_camera_name(tile.sensor_entity);
   if (!title.length()) title = camera_text().camera_tile_type;
 
+  // A half-height Camera uses the half-height Sensor header: the icon in the
+  // concentric corner disc and the title beside it.
+  const bool compact = tile_geometry::compact_icon_title(tile.type, tile.span_w, tile.span_h);
   lv_obj_t* icon = nullptr;
   String icon_char;
   if (icon_name.length() && FONT_MDI_ICONS != nullptr) {
@@ -103,14 +115,20 @@ lv_obj_t* render_camera_tile(lv_obj_t* parent,
     icon = lv_label_create(card);
     set_label_style(icon, lv_color_white(), FONT_MDI_ICONS);
     lv_label_set_text(icon, icon_char.c_str());
-    lv_obj_align(icon, LV_ALIGN_CENTER, 0, tile_layout::scale_i16(-20));
+    tile_icon_source::apply_initial(icon, tile);
+    if (!compact) {
+      lv_obj_align(icon, LV_ALIGN_CENTER, 0, tile_layout::scale_i16(-20));
+      tile_icon_disc::add_round(card, icon);
+    }
   }
 
   lv_obj_t* title_label = lv_label_create(card);
   set_label_style(title_label, lv_color_white(),
                   tile_layout::header_title_font());
   hometiles_title::tile(title_label, title.c_str(), false);
-  if (icon) {
+  if (compact) {
+    compact_sensor_layout::apply(card, icon, title_label, nullptr, tile);
+  } else if (icon) {
     lv_obj_align(title_label, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
   } else {
     lv_obj_center(title_label);

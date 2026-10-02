@@ -1,6 +1,7 @@
 #include "src/types/value/value_control.h"
 #include "src/web/server/web_admin.h"
 #include "src/web/server/web_admin_utils.h"
+#include "src/web/server/render/tile_icon_colors_html.h"
 #include <WiFi.h>
 #include <math.h>
 #include <stdlib.h>
@@ -23,8 +24,12 @@
 #include "src/devices/device.h"
 #include "src/types/clock/clock_format.h"
 #include "src/types/binary_sensor/renderer.h"
+#include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
 #include "src/types/energy/energy_data.h"
 #include "src/ui/screensaver/screensaver_config.h"
+#include "src/video/local_camera/local_camera.h"
+#include "src/video/local_camera/local_camera_stream_contract.h"
 #include <cstring>
 
 namespace {
@@ -101,6 +106,304 @@ static String buildGlobalDateFormatOptionsHtml(uint8_t selected_format, const i1
 
 }  // namespace
 
+// One image-control slider: translated label, range, current value. The
+// number is rendered untranslated; data-unit adds "%" for percent controls.
+static void appendLocalCameraImageSlider(String& html, const char* key,
+                                         const char* label, int min_value,
+                                         int max_value, int value,
+                                         const char* unit) {
+  html += R"html(
+                <label class="local-camera-slider" for="local_camera_)html";
+  html += key;
+  html += R"html("><span>)html";
+  appendHtmlEscaped(html, label);
+  html += R"html(</span><input type="range" id="local_camera_)html";
+  html += key;
+  html += R"html(" data-image-key=")html";
+  html += key;
+  html += R"html(" data-unit=")html";
+  html += unit;
+  html += R"html(" min=")html";
+  html += String(min_value);
+  html += R"html(" max=")html";
+  html += String(max_value);
+  html += R"html(" step="1" value=")html";
+  html += String(value);
+  html += R"html(" data-saved=")html";
+  html += String(value);
+  html += R"html(" oninput="localCameraImageInput(this)" onchange="localCameraImageChange(this)"><output id="local_camera_)html";
+  html += key;
+  html += R"html(_value">)html";
+  html += String(value);
+  html += unit;
+  html += R"html(</output></label>)html";
+}
+
+// One Custom stream mode slider (frames per second or JPEG quality), laid
+// out like the image sliders; saved through /api/local-camera on release.
+static void appendLocalCameraCustomSlider(String& html, const char* key,
+                                          const char* label, int min_value,
+                                          int max_value, int value) {
+  html += R"html(
+                <label class="local-camera-slider" for="local_camera_custom_)html";
+  html += key;
+  html += R"html("><span>)html";
+  appendHtmlEscaped(html, label);
+  html += R"html(</span><input type="range" id="local_camera_custom_)html";
+  html += key;
+  html += R"html(" data-custom-key=")html";
+  html += key;
+  html += R"html(" min=")html";
+  html += String(min_value);
+  html += R"html(" max=")html";
+  html += String(max_value);
+  html += R"html(" step="1" value=")html";
+  html += String(value);
+  html += R"html(" data-saved=")html";
+  html += String(value);
+  html += R"html(" oninput="localCameraCustomInput(this)" onchange="localCameraCustomChange(this)"><output id="local_camera_custom_)html";
+  html += key;
+  html += R"html(_value">)html";
+  html += String(value);
+  html += R"html(</output></label>)html";
+}
+
+static const char* localCameraStateText(const char* state,
+                                        const i18n::Strings& tr) {
+  if (!state) return tr.local_camera_status_error;
+  if (strcmp(state, "disabled") == 0) return tr.local_camera_status_disabled;
+  if (strcmp(state, "probing") == 0) return tr.local_camera_status_probing;
+  if (strcmp(state, "ready") == 0) return tr.local_camera_status_ready;
+  if (strcmp(state, "not_found") == 0) return tr.local_camera_status_not_found;
+  return tr.local_camera_status_error;
+}
+
+// Built-in camera opt-in. Rendered only on the exact camera profile; the
+// toggle and the live-stream mode save immediately through /api/local-camera
+// and are not part of the /mqtt settings form (no name attributes). All state
+// texts come from the central translations and travel as data attributes for
+// the status line; stream mode names are untranslated technical values.
+static void appendLocalCameraSettingsHtml(String& html, const i18n::Strings& tr) {
+  if (!local_camera::supported() || !Device::kCapabilities.has_builtin_camera) {
+    return;
+  }
+  const char* state = local_camera::stateName();
+  html += R"html(
+          <div class="settings-section" id="local_camera_section">
+            <div class="section-title">)html";
+  appendHtmlEscaped(html, tr.local_camera_section);
+  html += R"html(</div>
+            <div class="settings-grid">
+              <div class="settings-full">
+                <label class="settings-checkbox">
+                  <input type="checkbox" id="local_camera_enabled" onchange="saveLocalCameraEnabled(this.checked)")html";
+  if (local_camera::enabled()) html += " checked";
+  html += R"html(>
+                  <span>)html";
+  appendHtmlEscaped(html, tr.local_camera_enable);
+  html += R"html(</span>
+                </label>
+                <div class="settings-note">)html";
+  appendHtmlEscaped(html, tr.local_camera_note);
+  html += R"html(</div>
+                <div id="local_camera_status" class="settings-note" data-state=")html";
+  html += state;
+  html += R"html(" data-label=")html";
+  appendHtmlEscaped(html, tr.local_camera_status_label);
+  html += R"html(" data-state-disabled=")html";
+  appendHtmlEscaped(html, tr.local_camera_status_disabled);
+  html += R"html(" data-state-probing=")html";
+  appendHtmlEscaped(html, tr.local_camera_status_probing);
+  html += R"html(" data-state-ready=")html";
+  appendHtmlEscaped(html, tr.local_camera_status_ready);
+  html += R"html(" data-state-not-found=")html";
+  appendHtmlEscaped(html, tr.local_camera_status_not_found);
+  html += R"html(" data-state-error=")html";
+  appendHtmlEscaped(html, tr.local_camera_status_error);
+  html += R"html(">)html";
+  appendHtmlEscaped(html, tr.local_camera_status_label);
+  html += ": ";
+  appendHtmlEscaped(html, localCameraStateText(state, tr));
+  html += R"html(</div>
+              </div>
+              <div class="local-camera-group" id="local_camera_stream">
+                <div class="network-settings-heading">)html";
+  // Two columns: the live stream (mode, Custom sliders) on the left, the
+  // experimental indicator on the right, the collapsed Advanced block below
+  // over the full width. Narrow screens stack them (.settings-grid).
+  appendHtmlEscaped(html, tr.local_camera_stream_section);
+  html += R"html(</div>
+                <div>
+                <label for="local_camera_stream_mode">)html";
+  appendHtmlEscaped(html, tr.local_camera_stream_mode);
+  html += R"html(:</label>
+                <select id="local_camera_stream_mode" onchange="saveLocalCameraStreamMode(this.value)">)html";
+  const uint8_t selected_mode = local_camera::streamMode();
+  html += R"html(
+                  <option value="0")html";
+  if (selected_mode == local_camera_stream::kModeAuto) html += " selected";
+  html += ">";
+  appendHtmlEscaped(html, tr.local_camera_stream_mode_auto);
+  html += "</option>";
+  for (const local_camera_stream::ModeEntry& mode : local_camera_stream::kModes) {
+    char label[48];
+    if (!local_camera_stream::formatModeLabel(label, sizeof(label), mode,
+                                              local_camera::imageWidth(),
+                                              local_camera::imageHeight())) {
+      continue;
+    }
+    html += R"html(
+                  <option value=")html";
+    html += String(static_cast<unsigned>(mode.id));
+    html += "\"";
+    if (mode.id == selected_mode) html += " selected";
+    html += ">";
+    html += label;
+    html += "</option>";
+  }
+  html += R"html(
+                  <option value=")html";
+  html += String(static_cast<unsigned>(local_camera_stream::kModeCustom));
+  html += "\"";
+  if (selected_mode == local_camera_stream::kModeCustom) html += " selected";
+  html += ">";
+  appendHtmlEscaped(html, tr.local_camera_stream_mode_custom);
+  html += R"html(</option>
+                </select>
+                </div>
+                <div class="local-camera-custom" id="local_camera_custom" data-mode=")html";
+  // Custom mode: frames per second and JPEG quality, shown only while the
+  // Custom mode is selected; the resolution stays the full image.
+  html += String(static_cast<unsigned>(local_camera_stream::kModeCustom));
+  html += "\"";
+  if (selected_mode != local_camera_stream::kModeCustom) html += " hidden";
+  html += ">";
+  const local_camera_stream::CustomMode custom = local_camera::customMode();
+  appendLocalCameraCustomSlider(html, "fps", tr.local_camera_custom_fps,
+                                local_camera_stream::kCustomMinFps,
+                                local_camera_stream::kCustomMaxFps, custom.fps);
+  appendLocalCameraCustomSlider(html, "quality", tr.local_camera_custom_quality,
+                                local_camera_stream::kCustomMinQuality,
+                                local_camera_stream::kMaxQuality, custom.quality);
+  html += R"html(
+                </div>
+              </div>
+              <div class="local-camera-group local-camera-indicator" id="local_camera_indicator">
+                <div class="network-settings-heading">)html";
+  // Indicator style (experimental): the line checkbox switches the whole
+  // indicator, the pill checkbox only applies while the line is shown.
+  appendHtmlEscaped(html, tr.local_camera_indicator_section);
+  html += R"html(</div>
+                  <label class="settings-checkbox">
+                    <input type="checkbox" id="local_camera_indicator_line" onchange="saveLocalCameraIndicator()")html";
+  const local_camera::IndicatorStyle indicator = local_camera::indicatorStyle();
+  if (indicator != local_camera::IndicatorStyle::None) html += " checked";
+  html += R"html(>
+                    <span>)html";
+  appendHtmlEscaped(html, tr.local_camera_indicator_line);
+  html += R"html(</span>
+                  </label>
+                  <label class="settings-checkbox">
+                    <input type="checkbox" id="local_camera_indicator_pill" onchange="saveLocalCameraIndicator()")html";
+  if (indicator != local_camera::IndicatorStyle::Line) html += " checked";
+  if (indicator == local_camera::IndicatorStyle::None) html += " disabled";
+  html += R"html(>
+                    <span>)html";
+  appendHtmlEscaped(html, tr.local_camera_indicator_pill);
+  html += R"html(</span>
+                  </label>
+                <div class="settings-note">)html";
+  appendHtmlEscaped(html, tr.local_camera_indicator_note);
+  html += R"html(</div>
+              </div>
+              <details class="settings-full local-camera-advanced" id="local_camera_advanced">
+                <summary class="network-settings-heading">)html";
+  // Fine-tuning controls, collapsed by default: rotation and mirror (left),
+  // red/blue swap (right), the image controls below. Every control keeps
+  // saving immediately through /api/local-camera.
+  appendHtmlEscaped(html, tr.local_camera_advanced);
+  html += R"html(</summary>
+                <div class="settings-grid">
+              <div class="local-camera-group" id="local_camera_orientation">
+                <div>
+                <label for="local_camera_rotation">)html";
+  appendHtmlEscaped(html, tr.local_camera_rotation);
+  html += R"html(:</label>
+                <select id="local_camera_rotation" onchange="saveLocalCameraRotation(this.value)">)html";
+  const uint8_t rotation = local_camera::rotation();
+  for (uint8_t turns = 0; turns <= local_camera_contract::kRotationMax; ++turns) {
+    html += R"html(
+                  <option value=")html";
+    html += String(static_cast<unsigned>(turns));
+    html += "\"";
+    if (turns == rotation) html += " selected";
+    html += ">";
+    // Clockwise degrees: untranslated numbers.
+    html += String(static_cast<unsigned>(turns) * 90u);
+    html += "\xC2\xB0</option>";
+  }
+  html += R"html(
+                </select>
+                </div>
+                <label class="settings-checkbox">
+                  <input type="checkbox" id="local_camera_mirror" onchange="saveLocalCameraMirror(this.checked)")html";
+  if (local_camera::mirror()) html += " checked";
+  html += R"html(>
+                  <span>)html";
+  appendHtmlEscaped(html, tr.local_camera_mirror);
+  html += R"html(</span>
+                </label>
+              </div>
+              <div class="local-camera-group" id="local_camera_color">
+                <label class="settings-checkbox">
+                  <input type="checkbox" id="local_camera_rb_swap" onchange="saveLocalCameraRbSwap(this.checked)")html";
+  if (local_camera::redBlueSwap()) html += " checked";
+  html += R"html(>
+                  <span>)html";
+  appendHtmlEscaped(html, tr.local_camera_rb_swap);
+  html += R"html(</span>
+                </label>
+                <div class="settings-note">)html";
+  appendHtmlEscaped(html, tr.local_camera_rb_swap_note);
+  html += R"html(</div>
+              </div>
+              <div class="settings-full local-camera-image" id="local_camera_image">
+                <div class="network-settings-heading">)html";
+  appendHtmlEscaped(html, tr.local_camera_image_section);
+  html += R"html(</div>)html";
+  // Live controls: saved through /api/local-camera while dragging (debounced)
+  // and on release; the camera applies them with the next frame.
+  const local_camera_contract::ImageSettings image = local_camera::imageSettings();
+  using local_camera_contract::kImageAdjustMax;
+  using local_camera_contract::kImageAdjustMin;
+  appendLocalCameraImageSlider(html, "brightness", tr.local_camera_brightness,
+                               kImageAdjustMin, kImageAdjustMax, image.brightness, "");
+  appendLocalCameraImageSlider(html, "contrast", tr.local_camera_contrast,
+                               kImageAdjustMin, kImageAdjustMax, image.contrast, "");
+  appendLocalCameraImageSlider(html, "saturation", tr.local_camera_saturation,
+                               local_camera_contract::kSaturationMin,
+                               local_camera_contract::kSaturationMax, image.saturation, "%");
+  appendLocalCameraImageSlider(html, "red", tr.local_camera_red,
+                               kImageAdjustMin, kImageAdjustMax, image.red, "%");
+  appendLocalCameraImageSlider(html, "blue", tr.local_camera_blue,
+                               kImageAdjustMin, kImageAdjustMax, image.blue, "%");
+  appendLocalCameraImageSlider(html, "gain", tr.local_camera_gain,
+                               local_camera_contract::kGainLimitMin,
+                               local_camera_contract::kGainLimitMax, image.gain, "%");
+  html += R"html(
+                <div class="settings-actions local-camera-image-actions">
+                  <button type="button" class="btn btn-secondary" id="local_camera_image_reset" onclick="resetLocalCameraImage()">)html";
+  appendHtmlEscaped(html, tr.local_camera_image_reset);
+  html += R"html(</button>
+                </div>
+              </div>
+                </div>
+              </details>
+            </div>
+          </div>
+)html";
+}
+
 // Helper function to generate tile tab HTML (unified for all folders)
 static void appendTileTabHTML(
     String& html,
@@ -175,10 +478,10 @@ static void appendTileTabHTML(
     String tileStyle = "";
     const TileTypeDescriptor* type_desc = get_tile_type_descriptor(tile.type);
     const char* type_css = type_desc ? type_desc->css_class : nullptr;
-    uint8_t col = (tile.col < GRID_COLS) ? tile.col : 0;
-    uint8_t row = (tile.row < GRID_ROWS) ? tile.row : 0;
-    uint8_t span_w = (tile.span_w < 1) ? 1 : tile.span_w;
-    uint8_t span_h = (tile.span_h < 1) ? 1 : tile.span_h;
+    float col = (tile.col < GRID_COLS) ? tile.col : 0;
+    float row = (tile.row < GRID_ROWS) ? tile.row : 0;
+    float span_w = (tile.span_w < 0.5f) ? 1 : tile.span_w;
+    float span_h = (tile.span_h < 0.5f) ? 1 : tile.span_h;
     clamp_media_tile_layout(tile.type, col, row, span_w, span_h);
     if (screensaver_mode && GRID_ROWS > 1 && row < GRID_ROWS - 2) {
       row = GRID_ROWS - 2;
@@ -186,6 +489,7 @@ static void appendTileTabHTML(
     if (span_w > GRID_COLS - col) span_w = GRID_COLS - col;
     if (span_h > GRID_ROWS - row) span_h = GRID_ROWS - row;
 
+    if (!tileBorderEnabled(tile)) cssClass += " tile-border-hidden";
     if (type_css && type_css[0]) {
       cssClass += " ";
       cssClass += type_css;
@@ -193,7 +497,18 @@ static void appendTileTabHTML(
       cssClass += " empty";
     }
 
-    if (tile.type != TILE_EMPTY) {
+    if (tile.type != TILE_EMPTY &&
+        tileBgColorFollowsDefault(tile.bg_color) && tile_type_follows_default_tile_color(tile.type)) {
+      // Tiles without their own color follow the global default tile color
+      // through one CSS variable, so the preview repaints them live.
+      if (screensaver_mode) {
+        tileStyle = "background:color-mix(in srgb,var(--tile-default-bg) ";
+        tileStyle += String(tile.background_opacity * 100.0f / 255.0f, 2);
+        tileStyle += "%,transparent)";
+      } else {
+        tileStyle = "background:var(--tile-default-bg)";
+      }
+    } else if (tile.type != TILE_EMPTY) {
       uint32_t bg_color = tileBgColorIsSet(tile)
                               ? tileBgColorRgb(tile)
                               : (type_desc ? type_desc->default_bg_color : 0);
@@ -224,20 +539,39 @@ static void appendTileTabHTML(
       tileStyle += "display:none;";
     }
 
+    if (tile_geometry::fraction_bits(col, row, span_w, span_h)) {
+      cssClass += " fractional-tile";
+      tileStyle += ";--tile-col:" + String(col) + ";--tile-row:" + String(row) +
+                   ";--tile-w:" + String(span_w) + ";--tile-h:" + String(span_h) +
+                   ";grid-column:auto;grid-row:auto";
+    }
+    if (tile_geometry::compact(tile.type, span_w, span_h) &&
+        (tile.type == TILE_BINARY_SENSOR || span_h == 0.5f || tile.sensor_display_mode == 0)) {
+      cssClass += " sensor-compact";
+      if (span_h == 0.5f) cssClass += " sensor-half";
+    }
+    if (tile_geometry::compact_clock(tile.type, span_w, span_h)) cssClass += " clock-compact";
+    if (tile_geometry::compact_icon_title(tile.type, span_w, span_h)) {
+      cssClass += " sensor-compact sensor-half compact-title-only";
+    }
     html += "<div class=\"";
     html += cssClass;
     html += "\" data-index=\"";
     html += String(i);
     html += "\" data-col=\"";
-    html += String(static_cast<unsigned>(col));
+    html += String(col);
     html += "\" data-row=\"";
-    html += String(static_cast<unsigned>(row));
+    html += String(row);
     html += "\" data-span-w=\"";
-    html += String(static_cast<unsigned>(span_w));
+    html += String(span_w);
     html += "\" data-span-h=\"";
-    html += String(static_cast<unsigned>(span_h));
+    html += String(span_h);
     html += "\" data-type=\"";
     html += String(static_cast<unsigned>(tile.type));
+    html += "\" data-icon-disc=\"";
+    html += String(tile.icon_disc_mode);
+    html += "\" data-icon-glow=\"";
+    html += tile.icon_glow ? "1" : "0";
     if (tile.type == TILE_FOLDER) {
       html += "\" data-navigate-target=\"";
       html += String(getNavigateTargetId(tile));
@@ -282,13 +616,26 @@ static void appendTileTabHTML(
       if (binary_sensor_preview) {
         iconName = binary_sensor_resolve_icon(tile, binary_sensor_state);
       }
+      // Scene tiles without an icon use their scene entity's icon, as on the device.
+      if (tile.type == TILE_SCENE && !iconName.length() &&
+          !isMdiIconDisabled(tile.icon_name) && tile.scene_alias.length()) {
+        const String scene_entity = haBridgeConfig.findSceneEntity(tile.scene_alias);
+        if (scene_entity.length()) {
+          iconName = normalizeMdiIconName(haBridgeConfig.findEntityIcon(scene_entity));
+        }
+      }
 
       bool hasIcon = iconName.length() > 0;
 
       if (hasIcon) {
         html += "<i class=\"mdi mdi-";
         appendHtmlEscaped(html, iconName);
-        html += " tile-icon\"";
+        html += " tile-icon";
+        if (binary_sensor_preview && tile.icon_glow &&
+            tile_icon_disc::icon_color_tints(binary_sensor_visual_color(binary_sensor_state))) {
+          html += " tile-icon-tinted";
+        }
+        html += "\"";
         if (binary_sensor_preview) {
           char color_hex[8];
           snprintf(color_hex, sizeof(color_hex), "#%06X",
@@ -352,7 +699,12 @@ static void appendTileTabHTML(
       html += "</div>";
     }
     if (binary_sensor_preview) {
-      html += "<div class=\"tile-value tile-binary-sensor-value\" id=\"";
+      html += "<div class=\"tile-value tile-binary-sensor-value";
+      if (tile.sensor_value_font >= 1 && tile.sensor_value_font <= 4) {
+        html += " sensor-value-size-";
+        html += tile.sensor_value_font == 1 ? "20" : tile.sensor_value_font == 2 ? "24" : tile.sensor_value_font == 3 ? "32" : "40";
+      }
+      html += "\" id=\"";
       html += tab_id;
       html += "-tile-";
       html += String(i);
@@ -418,9 +770,9 @@ static void appendTileTabHTML(
     if (hidden_icon.startsWith("mdi:")) hidden_icon.remove(0, 4);
     else if (hidden_icon.startsWith("mdi-")) hidden_icon.remove(0, 4);
     const uint32_t hidden_color =
-        snapshot.valid && snapshot.bg_color != 0
+        snapshot.valid && !tileBgColorFollowsDefault(snapshot.bg_color)
             ? (snapshot.bg_color & TILE_BG_COLOR_RGB_MASK)
-            : 0x2A2A2A;
+            : tileDefaultBgColor();
     char hidden_color_hex[8];
     snprintf(hidden_color_hex, sizeof(hidden_color_hex), "#%06X",
              static_cast<unsigned>(hidden_color));
@@ -461,26 +813,95 @@ static void appendTileTabHTML(
     html += "</div></div>";
   }
   html += R"html(          <div class="folder-footer">
-            <div class="folder-footer-options">
 )html";
-  if (screensaver_mode) {
-    html += R"html(              <label class="inline-checkbox"><input id="screensaverTileBorder" type="checkbox"> )html";
-  } else {
-    html += R"html(              <label class="inline-checkbox"><input class="normal-tile-border-toggle" type="checkbox" onchange="saveNormalTileBorders(this.checked)" )html";
-    if (configManager.getConfig().tile_borders) html += "checked";
+  const String radius_value = String(configManager.getConfig().tile_radius);
+  auto append_radius_input = [&](const String& id) {
+    html += "<input class=\"global-tile-radius\"";
+    if (id.length()) html += " id=\"" + id + "\"";
+    html += " type=\"range\" min=\"";
+    html += String(tile_radius::kMinimum);
+    html += "\" max=\"";
+    html += String(tile_radius::kMaximum);
+    html += "\" step=\"1\" value=\"";
+    html += radius_value;
+    html += "\" oninput=\"previewTileRadiusLive(this.value)\" onchange=\"saveTileRadius(this.value)\"><output class=\"global-tile-radius-value\">";
+    html += radius_value;
+    html += "</output>";
+  };
+  if (!screensaver_mode) {
+    // Global display settings in the Tile Settings style: two compact
+    // columns, checkboxes like Glow, fields with a small label above them
+    // like Column/Row, and the Color field with its reset button.
+    const DeviceConfig& display = configManager.getConfig();
+    const String borders_id = tab_id + "_global_tile_borders";
+    const String discs_id = tab_id + "_global_icon_discs";
+    const String radius_id = tab_id + "_global_tile_radius";
+    const String color_id = tab_id + "_global_tile_color";
+    const String glow_id = tab_id + "_global_icon_glow";
+    const String glow_value = String(icon_glow::clamp(display.icon_glow));
+    html += "<section class=\"global-settings-panel\"><h3>";
+    appendHtmlEscaped(html, tr.global_settings_heading);
+    html += "</h3><div class=\"global-settings-grid\"><label class=\"inline-checkbox\">"
+            "<input class=\"normal-tile-border-toggle\" id=\"" +
+            borders_id + "\" type=\"checkbox\" onchange=\"saveNormalTileBorders(this.checked)\"";
+    if (display.tile_borders) html += " checked";
     html += "> ";
-  }
-  html += tr.screensaver_tile_border;
-  html += R"html(</label>
+    appendHtmlEscaped(html, tr.screensaver_tile_border);
+    html += "</label><label class=\"inline-checkbox\"><input class=\"global-icon-disc-toggle\" id=\"" +
+            discs_id + "\" type=\"checkbox\" onchange=\"saveIconDiscs(this.checked)\"";
+    if (display.icon_discs) html += " checked";
+    html += "> ";
+    appendHtmlEscaped(html, tr.icon_discs);
+    html += "</label><div class=\"global-settings-field\"><label for=\"" + radius_id + "\">";
+    appendHtmlEscaped(html, tr.tile_radius);
+    html += "</label><div class=\"global-radius-field\">";
+    append_radius_input(radius_id);
+    html += "</div></div><div class=\"global-settings-field\"><label for=\"" + glow_id + "\">";
+    appendHtmlEscaped(html, tr.icon_glow_strength);
+    html += "</label><div class=\"global-radius-field\"><input class=\"global-icon-glow\" id=\"" + glow_id +
+            "\" type=\"range\" min=\"" + String(icon_glow::kMinimum) + "\" max=\"" +
+            String(icon_glow::kMaximum) + "\" step=\"" + String(icon_glow::kStep) + "\" value=\"" + glow_value +
+            "\" oninput=\"previewIconGlowLive(this.value)\" onchange=\"saveIconGlow(this.value)\">"
+            "<output class=\"global-icon-glow-value\">" + glow_value + " %</output>"
+            "<button type=\"button\" class=\"tile-color-reset-btn global-icon-glow-reset\" title=\"Reset\" "
+            "onclick=\"saveIconGlow(" + String(icon_glow::kDefault) + ")\"><i class=\"mdi mdi-restore\"></i></button>"
+            "</div></div>";
+    html += "<div class=\"global-settings-field\"><label for=\"" + color_id + "\">";
+    appendHtmlEscaped(html, tr.default_tile_color);
+    char default_color_hex[8];
+    snprintf(default_color_hex, sizeof(default_color_hex), "#%06X",
+             static_cast<unsigned>(tileDefaultBgColor()));
+    char factory_color_hex[8];
+    snprintf(factory_color_hex, sizeof(factory_color_hex), "#%06X",
+             static_cast<unsigned>(tile_color::kDefault));
+    html += "</label><div class=\"tile-color-row\"><input class=\"global-tile-color\" id=\"" + color_id +
+            "\" type=\"color\" value=\"";
+    html += default_color_hex;
+    html += "\" oninput=\"previewDefaultTileColor(this.value)\" "
+            "onchange=\"saveDefaultTileColor(this.value)\">"
+            "<button type=\"button\" class=\"tile-color-reset-btn\" title=\"Reset\" "
+            "onclick=\"saveDefaultTileColor('";
+    html += factory_color_hex;
+    html += "')\"><i class=\"mdi mdi-restore\"></i></button></div></div></div></section>\n";
+    html += R"html(            <p class="hint">)html";
+  } else {
+    html += R"html(            <div class="folder-footer-options">
+              <label class="inline-checkbox"><input id="screensaverTileBorder" type="checkbox"> )html";
+    html += tr.screensaver_tile_border;
+    html += R"html(</label>
 )html";
-  if (screensaver_mode) {
+    html += "<label class=\"tile-radius-control\"><span>";
+    appendHtmlEscaped(html, tr.tile_radius);
+    html += "</span>";
+    append_radius_input(String());
+    html += "</label>";
     html += R"html(              <label class="inline-checkbox"><input id="screensaverTileShadow" type="checkbox"> )html";
     html += tr.screensaver_tile_shadow;
     html += R"html(</label>
 )html";
-  }
-  html += R"html(            </div>
+    html += R"html(            </div>
             <p class="hint">)html";
+  }
   if (screensaver_mode) {
     html += tr.screensaver_hint;
   } else {
@@ -672,6 +1093,9 @@ static void appendTileTabHTML(
   html += tr.admin_tile_title_placeholder;
   html += R"html("></textarea>
 
+            <div class="tile-settings-group">)html";
+  appendHtmlEscaped(html, tr.tile_group_icon);
+  html += R"html(</div>
             <label>)html";
   html += tr.admin_icon_label;
   html += R"html(</label>
@@ -685,8 +1109,31 @@ static void appendTileTabHTML(
   html += tr.admin_icon_list;
   html += R"html(</a>
             </div>
+)html";
+  append_tile_icon_color_fixed_html(html, tab_id);
+  html += R"html(            <div class="tile-icon-disc-fields" id=")html";
+  html += tab_id;
+  html += R"html(_tile_icon_disc_fields">
+              <label class="inline-checkbox" id=")html";
+  html += tab_id;
+  html += R"html(_tile_icon_disc_row"><input type="checkbox" id=")html";
+  html += tab_id;
+  html += R"html(_tile_icon_disc" checked> )html";
+  appendHtmlEscaped(html, tr.icon_disc_label);
+  html += R"html(</label>
+              <label class="inline-checkbox" id=")html";
+  html += tab_id;
+  html += R"html(_tile_icon_glow_row"><input type="checkbox" id=")html";
+  html += tab_id;
+  html += R"html(_tile_icon_glow" checked> )html";
+  appendHtmlEscaped(html, tr.icon_glow);
+  html += R"html(</label>
+            </div>
 
-            <div class="tile-color-label-row)html";
+            <div class="tile-settings-group">)html";
+  appendHtmlEscaped(html, tr.tile_group_tile);
+  html += R"html(</div>
+            <div class="tile-color-label-row no-reset)html";
   if (screensaver_mode) html += " has-opacity";
   html += R"html("><span>)html";
   html += tr.admin_color;
@@ -694,12 +1141,41 @@ static void appendTileTabHTML(
   if (screensaver_mode) {
     html += R"html(<span>)html";
     html += tr.screensaver_background_opacity;
-    html += R"html(</span><span aria-hidden="true"></span>)html";
+    html += R"html(</span>)html";
   }
   html += R"html(</div>
-            <div class="tile-color-row)html";
+            <div class="icon-color-segmented tile-color-modes" role="group" id=")html";
+  html += tab_id;
+  html += R"html(_tile_color_modes">)html";
+  // Tile color is one choice: the global tile color, an own color, or a tint
+  // that follows the icon color (only for tiles with icon colors).
+  const struct {
+    const char* mode;
+    const char* label;
+  } tile_color_modes[] = {{"global", tr.tile_color_mode_global},
+                          {"custom", tr.tile_color_mode_custom},
+                          {"icon", tr.tile_color_mode_from_icon}};
+  for (const auto& entry : tile_color_modes) {
+    html += R"html(<button type="button" id=")html";
+    html += tab_id;
+    html += "_tile_color_mode_";
+    html += entry.mode;
+    html += R"html(" data-tile-color-mode=")html";
+    html += entry.mode;
+    html += R"html(" onclick="setTileColorMode(')html";
+    html += tab_id;
+    html += "', '";
+    html += entry.mode;
+    html += R"html(')">)html";
+    appendHtmlEscaped(html, entry.label);
+    html += "</button>";
+  }
+  html += R"html(</div>
+            <div class="tile-color-row no-reset)html";
   if (screensaver_mode) html += " has-opacity";
-  html += R"html(">
+  html += R"html(" id=")html";
+  html += tab_id;
+  html += R"html(_tile_color_row">
             <input type="color" id=")html";
   html += tab_id;
   html += R"html(_tile_color" value="#2A2A2A">
@@ -708,10 +1184,10 @@ static void appendTileTabHTML(
     html += R"html(              <input type="range" id="screensaver_tile_opacity" min="0" max="255" step="1" value="0">
 )html";
   }
-  html += R"html(              <button type="button" class="tile-color-reset-btn" title="Reset" onclick="resetTileColor(')html";
-  html += tab_id;
-  html += R"html(')"><i class="mdi mdi-restore"></i></button>
-            </div>
+  html += R"html(            </div>
+)html";
+  append_tile_color_from_icon_html(html, tab_id);
+  html += R"html(
 
             <div class="tile-layout">
               <div class="layout-field">
@@ -722,7 +1198,7 @@ static void appendTileTabHTML(
   html += tab_id;
   html += R"html(_tile_col" min="1" max=")html";
   html += String(GRID_COLS);
-  html += R"html(" step="1" value="1">
+  html += R"html(" step="0.5" value="1">
               </div>
               <div class="layout-field">
                 <label>)html";
@@ -734,7 +1210,7 @@ static void appendTileTabHTML(
   html += String(screensaver_mode && GRID_ROWS > 1 ? GRID_ROWS - 1 : 1);
   html += R"html(" max=")html";
   html += String(GRID_ROWS);
-  html += R"html(" step="1" value="1">
+  html += R"html(" step="0.5" value="1">
               </div>
               <div class="layout-field">
                 <label>)html";
@@ -744,7 +1220,7 @@ static void appendTileTabHTML(
   html += tab_id;
   html += R"html(_tile_span_w" min="1" max=")html";
   html += String(GRID_COLS);
-  html += R"html(" step="1" value="1">
+  html += R"html(" step="0.5" value="1">
               </div>
               <div class="layout-field">
                 <label>)html";
@@ -754,12 +1230,15 @@ static void appendTileTabHTML(
   html += tab_id;
   html += R"html(_tile_span_h" min="1" max=")html";
   html += String(GRID_ROWS);
-  html += R"html(" step="1" value="1">
+  html += R"html(" step="0.5" value="1">
               </div>
             </div>
 
 )html";
 
+  html += "<p class=\"settings-note\" hidden id=\"" + tab_id + "_tile_size_note\">";
+  appendHtmlEscaped(html, tr.tile_fractional_type_hint);
+  html += "</p>";
             TileTypeWebContext type_ctx;
             type_ctx.tab_id = &tab_id;
             type_ctx.sensor_options = &sensorOptions;
@@ -1022,6 +1501,9 @@ String WebAdminServer::getAdminPage() {
   html.reserve(192 * 1024);
   html += "<!DOCTYPE html>\n<html lang=\"";
   html += tr.html_lang;
+  // The global icon disc option is a root class, so every preview grid,
+  // including lazily inserted folders, follows it without re-rendering.
+  if (!configManager.getConfig().icon_discs) html += "\" class=\"icon-discs-off";
   html += R"html(">
 <head>
   <meta charset="utf-8">
@@ -1422,6 +1904,9 @@ String WebAdminServer::getAdminPage() {
             </div>
           </div>
 
+)html";
+  appendLocalCameraSettingsHtml(html, tr);
+  html += R"html(
           <div class="settings-section">
             <div class="section-title">)html";
   html += tr.admin_settings_screenshot;
@@ -1777,6 +2262,11 @@ String WebAdminServer::getStatusJSON() {
   json += ",\"nvs_namespace_count\":" + String(stats_ok ? stats.namespace_count : -1);
   json += ",\"nvs_tab5_tiles_used\":" + String(tiles_used);
   json += ",\"nvs_tab5_config_used\":" + String(config_used);
+  // Camera profile only; every other profile keeps its previous API.
+  if (local_camera::supported() && Device::kCapabilities.has_builtin_camera) {
+    json += ",\"local_camera\":";
+    local_camera::appendStatusJson(json);
+  }
   json += "}";
   return json;
 }

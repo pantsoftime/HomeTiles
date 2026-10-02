@@ -54,10 +54,10 @@ void append_navigate_fields_html(String& html,
                 <option value="2">24</option>
                 <option value="3">32</option>
                 <option value="4">40</option>
-                <option value="5">20 Mono</option>
-                <option value="6">24 Mono</option>
-                <option value="7">20 Mono Bold</option>
-                <option value="8">24 Mono Bold</option>
+                <option value="200">20 Mono</option>
+                <option value="201">24 Mono</option>
+                <option value="202">20 Mono Bold</option>
+                <option value="203">24 Mono Bold</option>
               </select>
               <label class="folder-pin-toggle">
                 <input type="checkbox" id=")html";
@@ -99,6 +99,23 @@ void append_navigate_fields_html(String& html,
               <span class="settings-note folder-pin-status" id=")html";
   html += tab_id;
   html += R"html(_folder_pin_status"></span>
+            </div>
+)html";
+}
+
+// Back tile: the Clock/Text per-tile border checkbox.
+void append_back_fields_html(String& html, const String& tab_id) {
+  const auto& tr = i18n::strings(configManager.getConfig().language);
+  html += R"html(
+            <!-- Back Fields -->
+            <div id=")html";
+  html += tab_id;
+  html += R"html(_back_fields" class="type-fields">
+              <label class="inline-checkbox"><input type="checkbox" id=")html";
+  html += tab_id;
+  html += R"html(_back_tile_border" checked>)html";
+  html += tr.screensaver_tile_border;
+  html += R"html(</label>
             </div>
 )html";
 }

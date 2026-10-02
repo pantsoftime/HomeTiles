@@ -5,6 +5,9 @@ function normalizeTextValueFont(value) {
   }
 
   function loadTextFields(tab, data) {
+    loadIconColorFields(tab, data);
+    const border = document.getElementById(tab + '_text_tile_border');
+    if (border) border.checked = data?.tile_border !== undefined ? !['0','false'].includes(String(data.tile_border)) : Number(data?.sensor_display_mode) !== 1;
     const prefix = tab;
     const textEl = document.getElementById(prefix + '_text_value');
     const fontEl = document.getElementById(prefix + '_text_value_font');
@@ -30,12 +33,17 @@ function normalizeTextValueFont(value) {
   }
 
   function saveTextFields(tab, formData) {
+    saveIconColorFields(tab, formData);
+    formData.append('tile_border', document.getElementById(tab + '_text_tile_border')?.checked === false ? '0' : '1');
     const prefix = tab;
     formData.append('text_value', document.getElementById(prefix + '_text_value')?.value || '');
     formData.append('text_value_font', document.getElementById(prefix + '_text_value_font')?.value || '0');
   }
 
   function resetTextFields(tab) {
+    resetIconColorFields(tab);
+    const border = document.getElementById(tab + '_text_tile_border');
+    if (border) border.checked = true;
     const prefix = tab;
     const textEl = document.getElementById(prefix + '_text_value');
     if (textEl) textEl.value = '';

@@ -95,6 +95,9 @@ static lv_obj_t *wifi_list_view = nullptr;
 static lv_obj_t *wifi_entry_view = nullptr;
 static lv_obj_t *wifi_conn_status_label = nullptr;
 static lv_obj_t *wifi_scan_status_label = nullptr;
+// Holds the scan status, network list and manual row; takes the free height
+// above the footer so a long list scrolls instead of pushing it down.
+static lv_obj_t *wifi_list_block = nullptr;
 static lv_obj_t *wifi_list_container = nullptr;
 static lv_obj_t *wifi_manual_row = nullptr;
 static lv_obj_t *wifi_manual_gap = nullptr;
@@ -154,7 +157,7 @@ static const i18n::Strings& tr() {
 #if LV_USE_QRCODE
 static void style_qr_code(lv_obj_t* qr) {
   if (!qr) return;
-  lv_obj_set_style_radius(qr, popup_layout::scale(14), 0);
+  ui_surface_style::apply_radius(qr, popup_layout::scale(14), 0);
   lv_obj_set_style_clip_corner(qr, true, 0);
   lv_obj_set_style_border_width(qr, 0, 0);
   lv_obj_set_style_bg_color(qr, lv_color_white(), 0);
@@ -566,7 +569,7 @@ static void create_settings_back_button(lv_obj_t *parent) {
   lv_obj_t *btn = lv_button_create(parent);
   // Keep the navigation controls visually aligned with the regular tiles.
   // The 480x480 layout is a strict 2/3 scale of the 720x720 geometry.
-  lv_obj_set_style_radius(btn, popup_layout::scale480(22), 0);
+  ui_surface_style::apply_radius(btn, popup_layout::scale480(22), 0);
   lv_obj_set_style_border_width(btn, 0, 0);
   lv_obj_set_style_shadow_width(btn, 0, 0);
   lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
@@ -725,7 +728,7 @@ static lv_obj_t *create_settings_card(lv_obj_t *parent, uint8_t col, uint8_t row
   lv_obj_set_style_border_opa(card, LV_OPA_TRANSP, 0);
   lv_obj_set_style_outline_opa(card, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_opa(card, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_radius(card, popup_layout::scale(22), 0);
+  ui_surface_style::apply_radius(card, popup_layout::kCardRadius, 0);
   lv_obj_set_style_pad_hor(card, popup_layout::scale(12), 0);
   lv_obj_set_style_pad_ver(card, popup_layout::scale(10), 0);
   lv_obj_set_style_pad_row(card, popup_layout::scale(4), 0);
@@ -815,7 +818,7 @@ static void style_popup_textarea(lv_obj_t* ta) {
   lv_obj_set_style_text_font(ta, popup_layout::font20(), 0);
   lv_obj_set_style_bg_color(ta, lv_color_hex(0x1E1E1E), 0);
   lv_obj_set_style_text_color(ta, lv_color_white(), 0);
-  lv_obj_set_style_radius(ta, popup_layout::scale(10), 0);
+  ui_surface_style::apply_radius(ta, popup_layout::scale(10), 0);
   lv_obj_set_style_border_color(ta, lv_color_hex(0x555555), 0);
   lv_obj_set_style_border_width(ta, 1, 0);
   lv_obj_set_style_border_opa(ta, LV_OPA_COVER, 0);
@@ -849,7 +852,7 @@ static lv_obj_t* create_popup_button(lv_obj_t* parent, const char* text, uint32_
   lv_obj_set_style_border_opa(btn, LV_OPA_TRANSP, 0);
   lv_obj_set_style_outline_opa(btn, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_opa(btn, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_radius(btn, popup_layout::scale(20), 0);
+  ui_surface_style::apply_radius(btn, popup_layout::scale(20), 0);
   lv_obj_set_style_pad_all(btn, 0, 0);
   if (cb) lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
   lv_obj_t* label = lv_label_create(btn);
@@ -994,6 +997,7 @@ static void reset_popup_refs() {
   wifi_entry_view = nullptr;
   wifi_conn_status_label = nullptr;
   wifi_scan_status_label = nullptr;
+  wifi_list_block = nullptr;
   wifi_list_container = nullptr;
   wifi_manual_row = nullptr;
   wifi_manual_gap = nullptr;
@@ -1138,7 +1142,7 @@ static lv_obj_t* wifi_create_row(lv_obj_t* parent, const char* name_text, bool s
   lv_obj_set_style_border_opa(row, LV_OPA_TRANSP, 0);
   lv_obj_set_style_outline_opa(row, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_opa(row, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_radius(row, popup_layout::scale(20), 0);
+  ui_surface_style::apply_radius(row, popup_layout::scale(20), 0);
   lv_obj_set_style_pad_hor(row, popup_layout::scale(20), 0);
   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1319,28 +1323,21 @@ static void wifi_update_conn_status_label() {
     else lv_obj_add_flag(wifi_disconnect_btn, LV_OBJ_FLAG_HIDDEN);
   }
 
-  if (wifi_list_spacer) {
-    lv_obj_clear_flag(wifi_list_spacer, LV_OBJ_FLAG_HIDDEN);
-  }
   if (wifi_info_box) lv_obj_clear_flag(wifi_info_box, LV_OBJ_FLAG_HIDDEN);
 
   // In AP mode, replace the unused scan/network list with the large
   // credentials/QR information box. Scans are disabled during portal
-  // operation; see wifi_start_scan.
+  // operation; see wifi_start_scan. Only one of the two flex-grow items
+  // is visible, so they never split the free height.
   const bool ap = ap_mode_active;
-  if (wifi_list_container) {
-    if (ap) lv_obj_add_flag(wifi_list_container, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_clear_flag(wifi_list_container, LV_OBJ_FLAG_HIDDEN);
+  if (wifi_list_block) {
+    if (ap) lv_obj_add_flag(wifi_list_block, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(wifi_list_block, LV_OBJ_FLAG_HIDDEN);
   }
-  if (wifi_manual_gap) {
-    if (ap) lv_obj_add_flag(wifi_manual_gap, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_clear_flag(wifi_manual_gap, LV_OBJ_FLAG_HIDDEN);
+  if (wifi_list_spacer) {
+    if (ap) lv_obj_clear_flag(wifi_list_spacer, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(wifi_list_spacer, LV_OBJ_FLAG_HIDDEN);
   }
-  if (wifi_manual_row) {
-    if (ap) lv_obj_add_flag(wifi_manual_row, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_clear_flag(wifi_manual_row, LV_OBJ_FLAG_HIDDEN);
-  }
-  if (ap && wifi_scan_status_label) lv_obj_add_flag(wifi_scan_status_label, LV_OBJ_FLAG_HIDDEN);
 
   if (ap) {
     // Use a heading and aligned SSID/password/IP rows instead of inline
@@ -1362,7 +1359,11 @@ static void wifi_update_conn_status_label() {
     }
 #if LV_USE_QRCODE
     if (wifi_ap_qr) {
-      if (!wifi_ap_qr_sized) {
+      // lv_qrcode_set_size clears the canvas, so redraw after every sizing.
+      // Comparing object pointers is not enough: a reopened popup's QR code
+      // can reuse the freed address of the previous one.
+      const bool qr_resized = !wifi_ap_qr_sized;
+      if (qr_resized) {
         // Measure once per popup; the main loop calls here on every AP-mode pass.
         // Lay out with the QR code hidden so the flex-grow spacer measures its
         // remaining space, minus the information box's pad_row and a small gap.
@@ -1374,8 +1375,9 @@ static void wifi_update_conn_status_label() {
         }
         const int max_w = lv_obj_get_content_width(lv_obj_get_parent(wifi_ap_qr));
         if (target > max_w) target = max_w;
-        if (target < popup_layout::scale(240)) {
-          target = popup_layout::scale(240);
+        // A low floor keeps the footer, including the Ethernet row, on screen.
+        if (target < popup_layout::scale(120)) {
+          target = popup_layout::scale(120);
         }
         lv_qrcode_set_size(wifi_ap_qr, target);
         wifi_ap_qr_sized = true;
@@ -1383,12 +1385,10 @@ static void wifi_update_conn_status_label() {
       // Phone cameras can use this code to connect directly to the hotspot.
       static char qr_buf[128];
       static char last_qr_buf[128] = {};
-      static lv_obj_t* last_qr_obj = nullptr;
       snprintf(qr_buf, sizeof(qr_buf), "WIFI:T:WPA;S:%s;P:%s;;",
                webConfigApSsid(), webConfigApPassword());
-      if (last_qr_obj != wifi_ap_qr || strcmp(last_qr_buf, qr_buf) != 0) {
+      if (qr_resized || strcmp(last_qr_buf, qr_buf) != 0) {
         lv_qrcode_update(wifi_ap_qr, qr_buf, strlen(qr_buf));
-        last_qr_obj = wifi_ap_qr;
         strncpy(last_qr_buf, qr_buf, sizeof(last_qr_buf) - 1);
         last_qr_buf[sizeof(last_qr_buf) - 1] = '\0';
       }
@@ -2067,7 +2067,7 @@ static lv_obj_t* wifi_create_entry_row(lv_obj_t* parent, const char* label_text,
   lv_obj_set_height(ta, LV_SIZE_CONTENT);
   lv_obj_set_style_pad_ver(ta, popup_layout::scale(20), 0);
   lv_obj_set_style_pad_left(ta, popup_layout::scale(20), 0);
-  lv_obj_set_style_radius(ta, popup_layout::scale(18), 0);
+  ui_surface_style::apply_radius(ta, popup_layout::scale(18), 0);
   lv_obj_set_style_text_font(ta, popup_layout::font28(), 0);
   // lv_textarea scrolls internally; suppress the scrollbar at the field edge.
   lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
@@ -2091,20 +2091,31 @@ static void build_wifi_popup(lv_obj_t* parent) {
                         LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_row(wifi_list_view, popup_layout::scale(10), 0);
 
-  wifi_scan_status_label = lv_label_create(wifi_list_view);
+  wifi_list_block = lv_obj_create(wifi_list_view);
+  style_plain_container(wifi_list_block);
+  lv_obj_set_width(wifi_list_block, LV_PCT(100));
+  lv_obj_set_flex_grow(wifi_list_block, 1);
+  lv_obj_set_flex_flow(wifi_list_block, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(wifi_list_block, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(wifi_list_block, popup_layout::scale(10), 0);
+
+  wifi_scan_status_label = lv_label_create(wifi_list_block);
   lv_label_set_text(wifi_scan_status_label, tr().wifi_scan_searching);
   lv_obj_set_style_text_font(wifi_scan_status_label,
                              popup_layout::font20(), 0);
   lv_obj_set_style_text_color(wifi_scan_status_label, lv_color_hex(0xA0A0A0), 0);
 
-  // Size the list to its content, capped just below half the view before
-  // scrolling. Manual entry then sits directly below the results instead
-  // of sticking to the bottom edge.
-  wifi_list_container = lv_obj_create(wifi_list_view);
+  // Grow into the free height, but never beyond the content (LVGL flex
+  // clamps grow items to max_height, and LV_SIZE_CONTENT resolves to the
+  // rows' height). Short lists keep Manual directly below; long lists
+  // scroll inside the free space instead of pushing the footer down.
+  wifi_list_container = lv_obj_create(wifi_list_block);
   style_plain_container(wifi_list_container);
   lv_obj_set_width(wifi_list_container, LV_PCT(100));
   lv_obj_set_height(wifi_list_container, LV_SIZE_CONTENT);
-  lv_obj_set_style_max_height(wifi_list_container, LV_PCT(44), 0);
+  lv_obj_set_flex_grow(wifi_list_container, 1);
+  lv_obj_set_style_max_height(wifi_list_container, LV_SIZE_CONTENT, 0);
   lv_obj_add_flag(wifi_list_container, LV_OBJ_FLAG_SCROLLABLE);
   // Retain touch scrolling; hide only the scrollbar.
   lv_obj_set_scrollbar_mode(wifi_list_container, LV_SCROLLBAR_MODE_OFF);
@@ -2113,13 +2124,13 @@ static void build_wifi_popup(lv_obj_t* parent) {
 
   // Keep outside the scroll container, fixed below the list and separated
   // by a gap. Rescans need not recreate it with the results.
-  wifi_manual_gap = lv_obj_create(wifi_list_view);
+  wifi_manual_gap = lv_obj_create(wifi_list_block);
   style_plain_container(wifi_manual_gap);
   lv_obj_clear_flag(wifi_manual_gap, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_width(wifi_manual_gap, LV_PCT(100));
   lv_obj_set_height(wifi_manual_gap, popup_layout::scale(6));
 
-  wifi_manual_row = wifi_create_row(wifi_list_view, tr().wifi_manual_entry, false, false);
+  wifi_manual_row = wifi_create_row(wifi_list_block, tr().wifi_manual_entry, false, false);
   lv_obj_add_event_cb(wifi_manual_row, on_wifi_manual_clicked, LV_EVENT_CLICKED, nullptr);
   lv_obj_t* manual_chevron = lv_label_create(wifi_manual_row);
   lv_label_set_text(manual_chevron, getMdiChar("chevron-right").c_str());
@@ -2127,9 +2138,9 @@ static void build_wifi_popup(lv_obj_t* parent) {
   popup_layout::applyIconScale(manual_chevron);
   lv_obj_set_style_text_color(manual_chevron, lv_color_hex(0x888888), 0);
 
-  // The spacer pushes the information box/AP button to the bottom.
-  // In AP mode, wifi_update_conn_status_label uses its height to size
-  // the QR code.
+  // Only visible in AP mode, where it replaces wifi_list_block and pushes
+  // the information box/AP button to the bottom;
+  // wifi_update_conn_status_label uses its height to size the QR code.
   wifi_list_spacer = create_flex_spacer(wifi_list_view);
 
   // Distinct information card for connection status; AP mode also includes
@@ -2140,7 +2151,7 @@ static void build_wifi_popup(lv_obj_t* parent) {
   lv_obj_set_height(wifi_info_box, LV_SIZE_CONTENT);
   lv_obj_set_style_bg_color(wifi_info_box, lv_color_hex(0x333333), 0);
   lv_obj_set_style_bg_opa(wifi_info_box, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(wifi_info_box, popup_layout::scale(20), 0);
+  ui_surface_style::apply_radius(wifi_info_box, popup_layout::scale(20), 0);
   lv_obj_set_style_pad_all(wifi_info_box, popup_layout::scale(18), 0);
   lv_obj_set_style_pad_row(wifi_info_box, popup_layout::scale(16), 0);
   lv_obj_set_flex_flow(wifi_info_box, LV_FLEX_FLOW_COLUMN);
@@ -2408,7 +2419,7 @@ static lv_obj_t* create_locale_dropdown_row(lv_obj_t* form, const char* label_te
   lv_obj_set_height(dd, LV_SIZE_CONTENT);
   lv_obj_set_style_pad_ver(dd, popup_layout::scale(18), 0);
   lv_obj_set_style_pad_left(dd, popup_layout::scale(20), 0);
-  lv_obj_set_style_radius(dd, popup_layout::scale(18), 0);
+  ui_surface_style::apply_radius(dd, popup_layout::scale(18), 0);
   lv_obj_set_style_text_font(dd, popup_layout::font28(), LV_PART_MAIN);
   lv_obj_set_style_text_font(dd, &ui_symbols_24, LV_PART_INDICATOR);
   style_locale_dropdown_list(lv_dropdown_get_list(dd));
@@ -2726,11 +2737,11 @@ static void build_system_popup(lv_obj_t* parent) {
                   popup_layout::scale(18));
   lv_obj_set_style_bg_color(system_progress_bar, lv_color_hex(0x1E1E1E), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(system_progress_bar, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_radius(system_progress_bar,
+  ui_surface_style::apply_radius(system_progress_bar,
                           popup_layout::scale(9), LV_PART_MAIN);
   lv_obj_set_style_bg_color(system_progress_bar, lv_color_hex(0x43A047), LV_PART_INDICATOR);
   lv_obj_set_style_bg_opa(system_progress_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-  lv_obj_set_style_radius(system_progress_bar,
+  ui_surface_style::apply_radius(system_progress_bar,
                           popup_layout::scale(9), LV_PART_INDICATOR);
   lv_bar_set_range(system_progress_bar, 0, 100);
   lv_obj_add_flag(system_progress_bar, LV_OBJ_FLAG_HIDDEN);
@@ -2881,7 +2892,7 @@ static void open_settings_popup(SettingsPopupKind kind) {
   lv_obj_set_style_pad_all(settings_popup_overlay, Device::kGridPad, 0);
   lv_obj_add_flag(settings_popup_overlay, LV_OBJ_FLAG_FLOATING);
   lv_obj_set_size(settings_popup_card, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_style_radius(settings_popup_card, popup_layout::scale(22), 0);
+  ui_surface_style::apply_radius(settings_popup_card, popup_layout::kCardRadius, 0);
   lv_obj_set_style_shadow_opa(settings_popup_card, LV_OPA_TRANSP, 0);
   lv_obj_set_style_clip_corner(settings_popup_card, false, 0);
   lv_obj_set_style_pad_all(settings_popup_card, kPopupCardPad, 0);
@@ -2939,7 +2950,7 @@ static lv_obj_t* create_settings_menu_tile(lv_obj_t* parent, uint8_t col, uint8_
   lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_grid_cell(tile, LV_GRID_ALIGN_STRETCH, col, 3, LV_GRID_ALIGN_STRETCH, row, 1);
   style_settings_button(tile, 0x2A2A2A);
-  lv_obj_set_style_radius(tile, popup_layout::scale480(22), 0);
+  ui_surface_style::apply_radius(tile, popup_layout::scale480(22), 0);
   lv_obj_set_style_border_opa(tile, LV_OPA_TRANSP, 0);
   lv_obj_set_style_outline_opa(tile, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_opa(tile, LV_OPA_TRANSP, 0);
@@ -3116,7 +3127,10 @@ void build_settings_tab(lv_obj_t *tab, hotspot_callback_t hotspot_cb) {
   lv_obj_set_style_bg_color(tab, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(tab, LV_OPA_COVER, 0);
   lv_obj_set_style_border_opa(tab, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_pad_all(tab, GRID_PAD, 0);
+  lv_obj_set_style_pad_left(tab, GRID_PAD_LEFT, 0);
+  lv_obj_set_style_pad_right(tab, GRID_PAD_RIGHT, 0);
+  lv_obj_set_style_pad_top(tab, GRID_PAD_TOP, 0);
+  lv_obj_set_style_pad_bottom(tab, GRID_PAD_BOTTOM, 0);
 
   // 4x4 Grid
   static lv_coord_t col_dsc[GRID_COLS + 1];

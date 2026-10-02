@@ -1,3 +1,8 @@
+#include "src/tiles/runtime/compact_sensor_layout.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/tile_icon_source.h"
+#include "src/tiles/runtime/tile_icon_color_rules.h"
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/binary_sensor/renderer.h"
 
 #include <ArduinoJson.h>
@@ -157,6 +162,13 @@ String state_label(const BinarySensorState& state) {
       String(state.device_class));
 }
 
+// Per-tile icon colors apply to real on/off states only; color rules match
+// the raw state (on/off) and its translated label.
+bool rule_state_known(const BinarySensorState& state) {
+  return state.valid && state.available &&
+         (state.value == BinarySensorValue::On || state.value == BinarySensorValue::Off);
+}
+
 bool has_explicit_icon_setting(const Tile& tile) {
   String setting = tile.icon_name;
   setting.trim();
@@ -185,7 +197,8 @@ BinarySensorPopupInit popup_init(GridType grid_type, uint8_t index) {
   init.last_changed = state.has_last_changed ? state.last_changed : 0;
   init.available = state.valid ? state.available : true;
   init.icon_override = has_explicit_icon_setting(*tile);
-  init.bg_color = tileBgColorOrDefault(*tile, 0x2A2A2A);
+  init.bg_color = tileBgColorOrDefault(*tile, tileDefaultBgColor());
+  init.icon_colors = tile->icon_colors;
   return init;
 }
 
@@ -198,23 +211,24 @@ void apply_state(GridType grid_type, uint8_t index,
 
   widgets.last_payload_hash = payload_hash;
   tile_renderer_get_binary_sensor_states(grid_type)[index] = state;
+  const String label = state_label(state);
   if (widgets.state_label) {
-    const String label = state_label(state);
     lv_label_set_text(widgets.state_label, label.c_str());
   }
   if (widgets.icon_label) {
-    lv_obj_set_style_text_color(
-        widgets.icon_label,
-        lv_color_hex(binary_sensor_visual_color(state)), 0);
+    const Tile* tile = tile_renderer_get_tile_config(grid_type, index);
+    tile_icon_color_rules::apply(
+        widgets.icon_label, tile ? tile->icon_colors.c_str() : nullptr,
+        rule_state_known(state), binary_sensor_state_name(state.value),
+        label.c_str(), lv_color_hex(binary_sensor_visual_color(state)));
     if (widgets.dynamic_icon) {
-      const Tile* tile = tile_renderer_get_tile_config(grid_type, index);
       if (tile) {
         const String icon = binary_sensor_resolve_icon(*tile, state);
         if (icon.length()) {
           lv_label_set_text(widgets.icon_label, getMdiChar(icon).c_str());
-          lv_obj_clear_flag(widgets.icon_label, LV_OBJ_FLAG_HIDDEN);
+          tile_icon_disc::set_icon_hidden(widgets.icon_label, false);
         } else {
-          lv_obj_add_flag(widgets.icon_label, LV_OBJ_FLAG_HIDDEN);
+          tile_icon_disc::set_icon_hidden(widgets.icon_label, true);
         }
       }
     }
@@ -468,7 +482,7 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
   if (!parent || index >= TILES_PER_GRID) return nullptr;
 
   lv_obj_t* card = lv_button_create(parent);
-  const uint32_t color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  const uint32_t color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(
       card, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_color(
@@ -484,13 +498,13 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
       card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(card, 0, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
   lv_obj_set_style_pad_ver(card, tile_layout::scale_480(24), 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   BinarySensorTileWidgets& widgets =
       tile_renderer_get_binary_sensor_widgets(grid_type)[index];
@@ -513,11 +527,16 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
   const String icon =
       binary_sensor_resolve_icon(tile, state, &widgets.dynamic_icon);
   widgets.dynamic_icon = icon_visible && widgets.dynamic_icon;
+  const String initial_label = state_label(state);
   if (icon_visible && icon.length() && FONT_MDI_ICONS) {
+    // The same icon color rule as every later state update
+    // (tile_icon_color_rules::apply): own rules only color the icon while
+    // "Color icon" is set.
+    const uint32_t icon_color = tile_icon_colors::state_icon_color(
+        tile.icon_colors.c_str(), rule_state_known(state), binary_sensor_state_name(state.value),
+        initial_label.c_str(), binary_sensor_visual_color(state));
     widgets.icon_label = lv_label_create(card);
-    set_label_style(widgets.icon_label,
-                    lv_color_hex(binary_sensor_visual_color(state)),
-                    FONT_MDI_ICONS);
+    set_label_style(widgets.icon_label, lv_color_hex(icon_color), FONT_MDI_ICONS);
     lv_label_set_text(widgets.icon_label, getMdiChar(icon).c_str());
     lv_obj_align(widgets.icon_label, LV_ALIGN_TOP_LEFT,
                  tile_layout::scale_480(-8),
@@ -538,14 +557,19 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
 
   widgets.state_label = lv_label_create(card);
   set_label_style(widgets.state_label, lv_color_white(),
-                  tile_layout::header_title_font());
+                  tile_layout::value_font_for_choice(tile.sensor_value_font, tile_layout::header_title_font()));
   lv_label_set_long_mode(widgets.state_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(widgets.state_label, LV_PCT(100));
   lv_obj_set_style_text_align(widgets.state_label, LV_TEXT_ALIGN_CENTER, 0);
-  const String initial_label = state_label(state);
   lv_label_set_text(widgets.state_label, initial_label.c_str());
   lv_obj_align(widgets.state_label, LV_ALIGN_CENTER, 0,
                tile_layout::scale(28));
+
+  if (tile_geometry::compact(tile.type, tile.span_w, tile.span_h)) {
+    compact_sensor_layout::apply(card, widgets.icon_label, widgets.title_label, widgets.state_label, tile);
+  } else {
+    tile_icon_disc::add_round(card, widgets.icon_label);
+  }
 
   if (grid_type != GridType::SCREENSAVER && tile.sensor_entity.length()) {
     BinarySensorEventData* data =
@@ -567,6 +591,14 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
           if (!data) return;
           BinarySensorPopupInit init = popup_init(data->grid_type, data->index);
           if (!init.entity_id.length()) return;
+          init.bg_color = tile_icon_source::popup_background(static_cast<lv_obj_t*>(lv_event_get_current_target(event)), init.bg_color);
+          lv_color_t forced;
+          if (tile_icon_disc::forced_color(
+                  tile_icon_source::card_icon(static_cast<lv_obj_t*>(lv_event_get_current_target(event))),
+                  forced)) {
+            init.forced_icon = true;
+            init.forced_icon_color = lv_color_to_u32(forced) & 0xFFFFFF;
+          }
           finish_press_before_popup(event);
           show_binary_sensor_popup(init);
         },

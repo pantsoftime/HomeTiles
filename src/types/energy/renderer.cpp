@@ -1,3 +1,7 @@
+#include "src/tiles/runtime/compact_sensor_layout.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/tile_icon_source.h"
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/energy/renderer.h"
 
 #include <Arduino.h>
@@ -7,6 +11,7 @@
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/types/energy/energy_data.h"
+#include "src/tiles/config/tile_icon_colors.h"
 #include "src/ui/popups/energy/energy_popup.h"
 
 namespace {
@@ -19,6 +24,8 @@ struct EnergyEventData {
   String unit;
   uint8_t decimals = 1;
   uint32_t bg_color = 0;
+  // Per-tile icon colors for the popup header icon.
+  String icon_colors;
 };
 
 const lv_font_t* get_energy_value_font(const Tile& tile) {
@@ -31,6 +38,8 @@ const lv_font_t* get_energy_value_font(const Tile& tile) {
       return tile_layout::content_font_32();
     case 4:
       return tile_layout::content_font_40();
+    case 5:
+      return tile_layout::content_font_28();
     default:
       return FONT_VALUE;
   }
@@ -64,7 +73,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
     return nullptr;
   }
 
-  uint32_t card_color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  uint32_t card_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -75,7 +84,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
 
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
@@ -83,7 +92,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
 
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   lv_obj_t* icon_lbl = nullptr;
   String icon_name = tile.icon_name;
@@ -111,8 +120,9 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
     title_text = haBridgeConfig.findSensorName(tile.sensor_entity);
   }
 
+  lv_obj_t* title_label = nullptr;
   if (title_text.length() > 0) {
-    lv_obj_t* title_label = lv_label_create(card);
+    title_label = lv_label_create(card);
     if (title_label) {
       set_label_style(title_label, lv_color_hex(0xFFFFFF),
                       tile_layout::header_title_font());
@@ -144,6 +154,12 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   lv_obj_align(value_label, LV_ALIGN_CENTER, 0,
                tile_layout::scale(28) + value_y_offset);
 
+  if (tile_geometry::compact(tile.type, tile.span_w, tile.span_h)) {
+    compact_sensor_layout::apply(card, icon_lbl, title_label, value_label, tile);
+  } else {
+    tile_icon_disc::add_round(card, icon_lbl);
+  }
+
   SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
   if (target && index < TILES_PER_GRID) {
     // Fork change: reset the record rather than naming fields. This fork adds
@@ -154,6 +170,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
     // values this list set explicitly (gauge_min 0, gauge_max 100).
     target[index] = SensorTileWidgets{};
     target[index].value_label = value_label;
+    target[index].icon_label = icon_lbl;
   }
 
   if (tile.sensor_entity.length() && grid_type != GridType::SCREENSAVER) {
@@ -169,6 +186,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
     data->unit = tile.sensor_unit;
     data->decimals = tile.sensor_decimals == 0xFF ? static_cast<uint8_t>(1) : tile.sensor_decimals;
     data->bg_color = card_color;
+    data->icon_colors = tile.icon_colors;
 
     const lv_event_code_t popup_event =
         (getTilePopupOpenMode(tile) == TILE_POPUP_OPEN_SHORT_PRESS)
@@ -199,7 +217,12 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
           }
           init.unit = unit;
           init.decimals = data->decimals;
-          init.bg_color = data->bg_color;
+          init.bg_color = tile_icon_source::popup_background(static_cast<lv_obj_t*>(lv_event_get_current_target(e)), data->bg_color);
+          // The header icon shows the color the tile icon shows right now
+          // (fixed, own-state colors or rules).
+          if (lv_obj_t* icon = tile_icon_source::card_icon(static_cast<lv_obj_t*>(lv_event_get_current_target(e)))) {
+            init.icon_color = lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFF;
+          }
 
           finish_press_before_popup(e);
           show_energy_popup(init);

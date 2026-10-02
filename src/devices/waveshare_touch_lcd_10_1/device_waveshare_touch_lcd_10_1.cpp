@@ -823,10 +823,15 @@ bool init_display() {
   esp_lcd_dsi_bus_config_t bus_cfg = {};
   bus_cfg.bus_id = 0;
   bus_cfg.num_data_lanes = kPanelLaneCount;
-  // The Arduino board must be selected as "Before v3.00" for this hardware.
-  // That ESP32-P4 path accepts PLL_F20M/RC_FAST/PLL_F25M only; XTAL/default
-  // aborts in the low-level MIPI DSI clock-source switch.
+#if CONFIG_ESP_REV_MIN_FULL >= 300
+  // ESP32-P4 v3.x builds ("v3.00 or newer") accept XTAL/APLL/CPLL/SPLL/MPLL
+  // only; PLL_F20M aborts in the low-level MIPI DSI clock-source switch.
+  bus_cfg.phy_clk_src = MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT;
+#else
+  // Pre-v3 builds ("Before v3.00") accept PLL_F20M/RC_FAST/PLL_F25M only;
+  // XTAL/default aborts in the low-level MIPI DSI clock-source switch.
   bus_cfg.phy_clk_src = MIPI_DSI_PHY_PLLREF_CLK_SRC_PLL_F20M;
+#endif
   bus_cfg.lane_bit_rate_mbps = static_cast<float>(display_cfg.lane_bit_rate);
   Serial.printf("[Device/WaveshareTouchLCD10] DSI bus init start lane=%u Mbps\n",
                 static_cast<unsigned>(display_cfg.lane_bit_rate));
@@ -1317,6 +1322,10 @@ void DeviceWaveshareTouchLCD10::prepareForRestart() {
   ledc_stop(LEDC_LOW_SPEED_MODE, kBacklightChannel, kBacklightActiveLow ? 1u : 0u);
   gpio_set_direction(kBacklightPin, GPIO_MODE_OUTPUT);
   gpio_set_level(kBacklightPin, kBacklightActiveLow ? 1 : 0);
+}
+
+i2c_master_bus_handle_t DeviceWaveshareTouchLCD10::sharedI2cBus() {
+  return g_i2c_ready ? g_i2c.bus : nullptr;
 }
 
 bool DeviceWaveshareTouchLCD10::initSDCard() {

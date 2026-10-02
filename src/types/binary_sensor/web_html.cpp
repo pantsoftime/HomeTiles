@@ -31,6 +31,16 @@ void append_binary_sensor_fields_html(
   }
   html += "</select>";
 
+  html += "<label>";
+  html += tr.sensor_value_size;
+  html += "</label><select id=\"";
+  html += tab_id;
+  html += "_binary_sensor_value_font\"><option value=\"0\">";
+  html += tr.sensor_value_size_default;
+  html += "</option><option value=\"1\">20</option><option value=\"2\">24</option>";
+  html += "<option value=\"3\">32</option><option value=\"4\">40</option>";
+  html += "<option value=\"5\" hidden disabled>28</option></select>";
+
   if (tab_id != "screensaver") {
     html += "<label>";
     html += tr.popup_open;

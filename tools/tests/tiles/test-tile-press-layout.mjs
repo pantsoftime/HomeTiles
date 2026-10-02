@@ -1,3 +1,4 @@
+import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,9 +26,11 @@ fs.writeFileSync(source, String.raw`
 #include <cassert>
 #include <cstdio>
 #include <vector>
-struct TestConfig { bool tile_borders = false; };
+${radiusPolicyHost(root)}
+#include "src/core/config/icon_glow.h"
+struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = false; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; };
 struct TestConfigManager { TestConfig config; const TestConfig& getConfig() const { return config; } } configManager;
-${surface}
+${surfaceStyleHost(root)}
 ${helper}
 static int style_changes = 0;
 static void count_style(lv_event_t*) { ++style_changes; }

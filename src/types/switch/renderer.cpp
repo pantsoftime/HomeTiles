@@ -1,6 +1,9 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/switch/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/network/mqtt/mqtt_handlers.h"
 #include "src/network/bridge/ha_bridge_config.h"
@@ -118,11 +121,11 @@ static bool is_switch_widget_tile(const Tile& tile) {
 lv_obj_t* render_switch_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index, GridType grid_type) {
   const bool use_switch_widget = is_switch_widget_tile(tile);
   lv_obj_t* container = use_switch_widget ? lv_obj_create(parent) : lv_button_create(parent);
-  lv_obj_set_style_radius(container, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(container, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(container, 0, 0);
 
-  // Use the configured color; default to 0x353535 when color is 0.
-  uint32_t tile_color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  // Use the configured color, else the global default tile color.
+  uint32_t tile_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(container, lv_color_hex(tile_color), LV_PART_MAIN | LV_STATE_DEFAULT);
 lv_obj_set_style_bg_grad_color(container, lv_color_hex(tile_color), LV_PART_MAIN | LV_STATE_DEFAULT);
 lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -145,7 +148,7 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
   lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
   if (!use_switch_widget) disable_pressed_button_animation(container);
 
-  set_tile_grid_cell(container, col, row, tile.span_w, tile.span_h);
+  place_tile_card(container, col, row, tile);
 
   // Optional icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;
@@ -208,6 +211,8 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
       }
     }
   }
+  // After the title exists, so the disc can lift a corner header.
+  if (icon_lbl) tile_icon_disc::add_round(container, icon_lbl);
 
   lv_obj_t* switch_obj = nullptr;
   if (use_switch_widget) {
@@ -278,6 +283,12 @@ lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STAT
             SwitchEventData* data = static_cast<SwitchEventData*>(lv_event_get_user_data(e));
             if (!data) return;
             LightPopupInit init = build_light_popup_init(data);
+            // For now the popup keeps the global tile color and does not follow
+            // the tile: following a light color dragged in the popup restyled it
+            // on every step (tile_icon_source::forget_popup_source). Icon and
+            // circle still match the tile.
+            init.bg_color = tileDefaultBgColor();
+            tile_icon_source::forget_popup_source(static_cast<lv_obj_t*>(lv_event_get_current_target(e)));
             finish_press_before_popup(e);
             show_light_popup(init);
           },

@@ -57,6 +57,10 @@ SwitchState* tile_renderer_get_switch_states(GridType grid_type);
 ClimateTileWidgets* tile_renderer_get_climate_widgets(GridType grid_type);
 ClimateState* tile_renderer_get_climate_states(GridType grid_type);
 const Tile* tile_renderer_get_tile_config(GridType grid_type, uint8_t index);
+// While a hidden folder grid is built into the TAB0 widget arrays, state
+// updates must read that folder's tiles, not the visible folder's (per-tile
+// icon colors, switch and binary settings). nullptr restores the active grid.
+void tile_renderer_set_build_grid(const TileGridConfig* grid);
 
 bool is_light_entity_id(const String& entity_id);
 void update_switch_tile_state(GridType grid_type, uint8_t grid_index, const char* payload);
@@ -99,4 +103,23 @@ static inline void finish_press_before_popup(lv_event_t* event) {
   }
   lv_display_t* display = lv_display_get_default();
   if (display) lv_timer_ready(lv_display_get_refr_timer(display));
+}
+
+// Fractional tiles share the existing grid's pitch and padding. Whole tiles keep
+// their LVGL grid placement unchanged.
+inline void apply_fractional_tile_geometry(lv_obj_t* obj, const Tile& tile) {
+  if (!obj || !tile_geometry::fraction_bits(tile.col, tile.row, tile.span_w, tile.span_h)) return;
+  lv_obj_add_flag(obj, LV_OBJ_FLAG_IGNORE_LAYOUT);
+  lv_obj_set_pos(obj, tile_geometry::edge(tile.col, GRID_CELL_W, GRID_GAP),
+                tile_geometry::edge(tile.row, GRID_CELL_H, GRID_GAP));
+  lv_obj_set_size(obj, tile_geometry::extent(tile.col, tile.span_w, GRID_CELL_W, GRID_GAP),
+                 tile_geometry::extent(tile.row, tile.span_h, GRID_CELL_H, GRID_GAP));
+}
+
+// Places a tile card. Half-step geometry is applied immediately: once a
+// renderer runs lv_obj_update_layout(), the grid has stretched the card to whole
+// cells and LVGL keeps that layout-driven size, ignoring a later set_size.
+inline void place_tile_card(lv_obj_t* obj, int col, int row, const Tile& tile) {
+  set_tile_grid_cell(obj, col, row, tile.span_w, tile.span_h);
+  apply_fractional_tile_geometry(obj, tile);
 }

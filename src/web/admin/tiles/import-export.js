@@ -261,14 +261,15 @@
     // bottom rows and packs it into the target grid.
     const firstTargetRow = Math.max(0, GRID_ROWS - 2);
     const firstSourceRow = sourceRows > 1 ? sourceRows - 2 : 0;
-    const occupied = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(false));
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
     const prepared = [];
     for (const entry of sourceEntries) {
       if (prepared.length >= tileCount) throw new Error('Screensaver grid does not fit target device');
       const tile = entry.tile;
       const mediaTile = Number(tile.type) === MEDIA_TILE_TYPE;
-      let spanW = Math.max(1, Number(tile.span_w || 1));
-      let spanH = Math.max(1, Number(tile.span_h || 1));
+      const half = value => Math.round(Number(value || 1) * 2) / 2;
+      let spanW = Math.max(1, half(tile.span_w));
+      let spanH = Math.max(supportsHalfSize(tile.type) ? 0.5 : 1, half(tile.span_h));
       if (mediaTile) {
         spanW = Math.max(MEDIA_TILE_MIN_SPAN, spanW);
         spanH = Math.max(MEDIA_TILE_MIN_SPAN, spanH);
@@ -276,7 +277,7 @@
       spanW = Math.min(spanW, GRID_COLS, mediaTile ? MEDIA_TILE_MAX_SPAN : GRID_COLS);
       spanH = Math.min(spanH, 2, mediaTile ? MEDIA_TILE_MAX_SPAN : 2);
 
-      const sourceSpanW = Math.max(1, Number(tile.span_w || 1));
+      const sourceSpanW = Math.max(1, half(tile.span_w));
       const sourceColRange = Math.max(0, sourceCols - sourceSpanW);
       const targetColRange = Math.max(0, GRID_COLS - spanW);
       const relativeCol = sourceColRange > 0
@@ -287,11 +288,11 @@
       const desiredRow = Math.min(GRID_ROWS - spanH, firstTargetRow + sourceRowOffset);
 
       let best = null;
-      for (let row = firstTargetRow; row <= GRID_ROWS - spanH; row++) {
-        for (let col = 0; col <= GRID_COLS - spanW; col++) {
+      for (let row = firstTargetRow; row <= GRID_ROWS - spanH; row += 0.5) {
+        for (let col = 0; col <= GRID_COLS - spanW; col += 0.5) {
           let free = true;
-          for (let y = row; y < row + spanH && free; y++) {
-            for (let x = col; x < col + spanW; x++) {
+          for (let y = row * 2; y < (row + spanH) * 2 && free; y++) {
+            for (let x = col * 2; x < (col + spanW) * 2; x++) {
               if (occupied[y][x]) { free = false; break; }
             }
           }
@@ -301,8 +302,8 @@
         }
       }
       if (!best) throw new Error('Screensaver grid does not fit target device');
-      for (let y = best.row; y < best.row + spanH; y++) {
-        for (let x = best.col; x < best.col + spanW; x++) occupied[y][x] = true;
+      for (let y = best.row * 2; y < (best.row + spanH) * 2; y++) {
+        for (let x = best.col * 2; x < (best.col + spanW) * 2; x++) occupied[y][x] = true;
       }
       prepared.push({
         targetIndex: prepared.length,
@@ -444,13 +445,19 @@
     fd.append('type', safeType);
     fd.append('title', tile.title || '');
     fd.append('icon_name', tile.icon_name || '');
+    if (tile.icon_disc !== undefined && tile.icon_disc !== null) {
+      fd.append('icon_disc', tile.icon_disc);
+    }
+    if (tile.icon_glow !== undefined && tile.icon_glow !== null) {
+      fd.append('icon_glow', ['0', 'false'].includes(String(tile.icon_glow)) ? '0' : '1');
+    }
     const parsedBgColor = parseBgColorValue(tile.bg_color);
     if (parsedBgColor !== 0 || (typeof tile.bg_color === 'string' && tile.bg_color.trim().startsWith('#'))) {
       fd.append('bg_color', parsedBgColor);
     } else {
       fd.append('bg_color_default', '1');
     }
-    const layout = normalizeTileLayout(tile, index, tabByFolder[folderId] || '');
+    const layout = normalizeTileLayout({ ...tile, type: safeType }, index, tabByFolder[folderId] || '');
     fd.append('col', layout.col);
     fd.append('row', layout.row);
     fd.append('span_w', layout.span_w);
@@ -458,6 +465,9 @@
     if (tile.background_opacity !== undefined && tile.background_opacity !== null) {
       fd.append('background_opacity', tile.background_opacity);
     }
+    // Per-tile icon colors (Sensor family, Binary sensor, Energy); older
+    // exports without the field import without icon colors.
+    if (typeof tile.icon_colors === 'string') fd.append('icon_colors', tile.icon_colors);
 
     if ([21, 22, 23].includes(safeType)) fd.append('sensor_value_font', tile.sensor_value_font ?? 2);
     if (safeType === 1) {
@@ -505,6 +515,7 @@
       fd.append(kind + '_entity', tile.sensor_entity || tile[kind + '_entity'] || '');
       fd.append('popup_open_mode', tile.popup_open_mode ?? 1);
     } else if (safeType === 20) {
+      fd.append('sensor_value_font', tile.sensor_value_font ?? 0);
       fd.append(
         'binary_sensor_entity',
         tile.sensor_entity || tile.binary_sensor_entity || '');
@@ -532,10 +543,14 @@
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
+    } else if (safeType === 8) {
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
     } else if (safeType === 10) {
       fd.append('text_value', tile.text_value || tile.scene_alias || tile.key_macro || '');
       fd.append('text_value_font', tile.text_value_font || tile.sensor_value_font || '0');
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
     } else if (safeType === 9) {
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
       fd.append('clock_show_time', ((Number(tile.sensor_decimals || 1) & 1) !== 0) ? '1' : '0');
       fd.append('clock_show_date', ((Number(tile.sensor_decimals || 1) & 2) !== 0) ? '1' : '0');
       fd.append('key_code', tile.key_code || 40);

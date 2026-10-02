@@ -142,11 +142,42 @@ Deliberately not changed: the icon-refresh pass in `tab_tiles_unified.cpp` still
 skips folder tiles, so a folder keeps the icon you chose instead of inheriting
 the Home Assistant entity icon.
 
+### Monospace value fonts (numbered 200-203)
+
+Sensor and folder tiles offer JetBrains Mono 20/24 and Mono Bold 20/24 next to
+upstream's sizes. Their stored `sensor_value_font` numbers are **200-203**
+(`src/tiles/config/sensor_value_font_fork.h`), far above upstream's choices.
+
+They used to be 5-8. Upstream v0.7.0 gave 5 to its 28 px size, so v0.7.01
+renumbered them: 6-8 are read forward on load (`clampSensorValueFont`, and the
+sensor save handler for older exports), while a stored 5 now means 28 -- it was
+"20 Mono", which no panel used. A `static_assert(SENSOR_VALUE_FONT_MAX < 6)` in
+`tile_config.h` fails the build the day upstream claims 6; re-save every mono
+tile on every panel before dropping the legacy mapping. Upstream's editor hides
+every value-size option it does not list, so `syncCompactValueFontOptions()` in
+`src/web/admin/tiles/layout.js` carries the mono numbers for full-size tiles.
+
+### Half-height tiles (since v0.7.01)
+
+- A half-height Folder or Settings tile shows neither the folder live value nor
+  the battery caption -- there is no room for the line -- and still clears its
+  slot in the sensor widget table, because a folder's `sensor_entity` updates
+  are routed to its index regardless.
+- A half-height Sensor, Binary Sensor or Energy tile whose icon is `none` uses
+  the icon column for its text and centres it in a symmetric 8 px box
+  (`compact_sensor_layout::apply_content()`, mirrored by an `admin.css` rule).
+  Upstream reserves the column even without an icon.
+
+Guarded by `tools/tests/tiles/test-compact-tile-fork-integration.mjs`.
+
 ## Regenerating the WebUI assets
 
-`src/web/assets/admin.{js,css}` are sources; the firmware embeds the gzipped
-`src/web/generated/*.inc` blobs, and CI fails the build if they are stale
-(`node tools/generate-web-assets.mjs --check`).
+`src/web/assets/admin.css` is a source. Since v0.7.0 `src/web/assets/admin.js`
+is **generated**: edit the modules under `src/web/admin/` (and
+`src/types/*/admin*.js`, listed in `src/web/admin/bundle.json`), never the bundle
+-- `generate-web-assets.mjs` rebuilds it and an edit there is silently lost. The
+firmware embeds the gzipped `src/web/generated/*.inc` blobs, and CI fails the
+build if they are stale (`node tools/generate-web-assets.mjs --check`).
 
 **Regenerate with Node 24**, the version CI uses. The generator pins the gzip
 level and zeroes the mtime and OS marker, but zlib's output still differs

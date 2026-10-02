@@ -44,6 +44,7 @@
 #include "src/ui/screensaver/image_screensaver.h"
 #include "src/ui/screensaver/screensaver_config.h"
 #include "src/io/hardware_io.h"
+#include "src/video/local_camera/local_camera.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/tiles/runtime/tile_update_service.h"
@@ -892,6 +893,9 @@ void setup() {
   }
   mqttTopics.begin(ts);
   Serial.println("[Setup] MQTT Topics OK");
+  // Built-in camera opt-in (exact camera profiles only). The sensor probe
+  // runs on its own worker and needs the touch-owned I2C bus from Device init.
+  local_camera::begin();
   Serial.flush();
 
   if (has_config) {
@@ -1052,6 +1056,9 @@ void loop() {
       Serial.flush();
     }
     yield();
+    // This branch returns before the normal loop's process_popup_open();
+    // without it, a popup opened during AP mode never gets its content.
+    process_popup_open();
     sync_popup_shell();
     lv_timer_handler();
     yield();
@@ -1160,6 +1167,7 @@ void loop() {
       mqttServicePostConnect();
     viewNavigationService();
       mqtt_process_inbound_queue();
+      local_camera::service();
       // Keep live tile state current during sleep. The paused refresh timer
       // prevents drawing to the sleeping display, so wake needs no catch-up.
       // Graph history remains on the active request/response path below.
@@ -1329,6 +1337,7 @@ void loop() {
     // subscriptions/discovery and incoming handlers that touch flash or LVGL.
     mqttServicePostConnect();
     viewNavigationService();
+    local_camera::service();
     // Keep S3 input service bounded when Home Assistant echoes a live slider
     // command or sends a retained-state burst. Eight messages per UI cycle
     // still drains far more than normal traffic without starving the next

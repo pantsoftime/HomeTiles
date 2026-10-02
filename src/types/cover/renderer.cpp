@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/cover/renderer.h"
 
 #include <ArduinoJson.h>
@@ -7,6 +8,8 @@
 #include "src/core/i18n/i18n.h"
 #include "src/network/bridge/ha_bridge_config.h"
 #include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/ui/popups/cover/cover_popup.h"
@@ -281,8 +284,8 @@ void apply_state(GridType grid_type, uint8_t index, const char* payload) {
     lv_label_set_text(widget.value_label, value.c_str());
   }
   if (widget.icon_label) {
-    lv_obj_set_style_text_color(
-        widget.icon_label, lv_color_hex(cover_icon_color(state)), 0);
+    tile_icon_disc::set_icon_color(
+        widget.icon_label, lv_color_hex(cover_icon_color(state)));
     if (widget.dynamic_icon) {
       lv_label_set_text(
           widget.icon_label, getMdiChar(fallback_icon(state)).c_str());
@@ -321,7 +324,7 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
                             const Tile& tile, uint8_t index,
                             GridType grid_type) {
   lv_obj_t* card = lv_button_create(parent);
-  const uint32_t color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  const uint32_t color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(
       card, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_color(
@@ -337,13 +340,13 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
       card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(card, 0, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
   lv_obj_set_style_pad_ver(card, tile_layout::scale_480(24), 0);
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   CoverTileWidgets& widget =
       tile_renderer_get_cover_widgets(grid_type)[index];
@@ -377,6 +380,8 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
                  tile_layout::scale_480(4),
                  tile_layout::scale_480(4));
   }
+  // After the title exists, so the disc can lift the whole header.
+  if (widget.icon_label) tile_icon_disc::add_round(card, widget.icon_label);
 
   // Same value block as a Sensor tile, but with the HA Cover state and
   // position on two lines (for example "Open\n40%").
@@ -411,8 +416,14 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
           CoverEventData* data = static_cast<CoverEventData*>(
               lv_event_get_user_data(event));
           if (!data) return;
+          const Tile* tile =
+              tile_renderer_get_tile_config(data->grid_type, data->index);
           CoverPopupInit init = popup_init(data->grid_type, data->index);
-          if (!init.entity_id.length()) return;
+          if (!tile || !init.entity_id.length()) return;
+          // For now the popup keeps the global tile color and does not follow the
+          // tile (tile_icon_source::forget_popup_source); icon and circle match it.
+          init.bg_color = tileDefaultBgColor();
+          tile_icon_source::forget_popup_source(static_cast<lv_obj_t*>(lv_event_get_current_target(event)));
           finish_press_before_popup(event);
           show_cover_popup(init);
         },
@@ -444,6 +455,8 @@ void queue_cover_tile_update(GridType grid_type, uint8_t grid_index,
   }
   const uint8_t next = (g_queue_head + 1) % kQueueSize;
   if (next == g_queue_tail) {
+    g_queue[g_queue_tail].payload = static_cast<const char*>(nullptr);
+    g_queue[g_queue_tail].valid = false;
     g_queue_tail = (g_queue_tail + 1) % kQueueSize;
     Serial.println("[Queue] Cover full, oldest update replaced");
   }
@@ -466,6 +479,18 @@ void process_cover_update_queue(uint8_t max_updates) {
       update.valid = false;
       ++processed;
     }
+    update.payload = static_cast<const char*>(nullptr);
     g_queue_tail = (g_queue_tail + 1) % kQueueSize;
   }
+}
+
+bool cover_payload_icon_color(const char* payload, uint32_t& rgb, bool* active) {
+  if (!payload || !*payload) return false;
+  const CoverState state = parse_cover_payload(payload);
+  if (!state.valid || !state.available) return false;
+  rgb = cover_icon_color(state);
+  // Active exactly when cover_icon_color() shows the active color.
+  if (active) *active = strcmp(state.state, "unknown") != 0 && strcmp(state.state, "unavailable") != 0 &&
+                        strcmp(state.state, "closed") != 0;
+  return true;
 }

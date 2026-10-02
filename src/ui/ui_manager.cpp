@@ -22,6 +22,7 @@
 #include "src/network/transport/network_transport.h"
 #include "src/fonts/ui_fonts.h"
 #include "src/ui/popups/popup_layout.h"
+#include "src/ui/shared/camera_indicator.h"
 
 #include <time.h>
 #include <string.h>
@@ -147,6 +148,8 @@ void UIManager::buildUI(scene_publish_cb_t scene_cb, hotspot_start_cb_t hotspot_
 
   access_gesture_eligible = false;
   mqttPublishDeviceSettings();
+  // Red frame in the outer margin while the built-in camera captures.
+  camera_indicator::init();
 
   Serial.println("[UI] UI built");
 }
@@ -358,6 +361,8 @@ void UIManager::switchToTab(uint8_t index) {
 
   if (partial_settings_switch) {
     lv_display_enable_invalidation(disp, true);
+    // Hides the camera pill now; hiding invalidates its area for this refresh.
+    camera_indicator::refreshNow();
 
     const uint32_t switch_started_ms = millis();
 #if defined(DEVICE_ESP32_S3_RGB_480)
@@ -372,6 +377,10 @@ void UIManager::switchToTab(uint8_t index) {
     BoardHAL::displayFillScreen(0x0000);
     const uint32_t cleared_ms = millis();
 
+    // The cleared framebuffer also lost the camera stripe on the top layer.
+    // LVGL draws the dirty areas in this order: the stripe first, so its
+    // faded ends do not appear only after the Settings controls.
+    camera_indicator::invalidateVisible();
     const uint32_t child_count = lv_obj_get_child_count(tab_panels[index]);
     for (uint32_t i = 0; i < child_count; ++i) {
       lv_obj_t* child = lv_obj_get_child(tab_panels[index], static_cast<int32_t>(i));
@@ -399,6 +408,8 @@ void UIManager::switchToTab(uint8_t index) {
     return;
   }
 
+  // The camera pill comes back together with the tile grid, not a poll later.
+  camera_indicator::refreshNow();
   lv_obj_invalidate(lv_scr_act());
   if (disp) {
     lv_refr_now(disp);
@@ -446,7 +457,7 @@ void UIManager::requestSettingsAccess(const String& title,
 
 void UIManager::requestFolderAccess(uint16_t folder_id, const String& title,
                                     const String& icon_name,
-                                    uint32_t bg_color) {
+                                    uint32_t bg_color, uint32_t icon_color) {
   if (!tileConfig.isFolderPinEnabled(folder_id)) {
     switchToFolder(folder_id);
     return;
@@ -461,6 +472,7 @@ void UIManager::requestFolderAccess(uint16_t folder_id, const String& title,
   init.title = make_unlock_title(tr.pin_popup_unlock_format, source_title);
   init.icon_name = icon_name.length() ? icon_name : String("folder");
   init.bg_color = bg_color;
+  init.icon_color = icon_color;
   init.hide_on_success = false;
   init.verify = verify_pending_access;
   init.success = complete_pending_access;
@@ -659,9 +671,9 @@ void UIManager::processSettingsGestureMotion(lv_indev_t* input,
   const bool use_snapshot = config.settings_tile_hidden && snapshot.valid;
   const uint32_t bg_color =
       use_snapshot
-          ? (snapshot_color != 0
-                 ? (snapshot_color & TILE_BG_COLOR_RGB_MASK)
-                 : 0x2A2A2A)
+          ? (tileBgColorFollowsDefault(snapshot_color)
+                 ? tileDefaultBgColor()
+                 : (snapshot_color & TILE_BG_COLOR_RGB_MASK))
           : settings_gesture_bg_color;
   const String title = use_snapshot ? String(snapshot.title)
                                     : settings_gesture_title;

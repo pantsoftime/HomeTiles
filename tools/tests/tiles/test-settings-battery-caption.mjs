@@ -54,7 +54,7 @@ assert.match(battery, /batteryStateSupportsMeasurement\(\)\s*\{ return false;/,
 // --- Renderer: layout, font and seed -------------------------------------------
 const render = between(renderer, 'lv_obj_t* render_navigate_tile(', '\n}\n');
 assert.match(render, /const bool has_battery = navigate_settings_shows_battery\(tile, grid_type\);/);
-assert.match(render, /bool has_value = \(tile\.sensor_entity\.length\(\) > 0 &&\s*grid_type != GridType::SCREENSAVER\) \|\|\s*has_battery;/,
+assert.match(render, /bool has_value = !compact &&\s*\(\(tile\.sensor_entity\.length\(\) > 0 &&\s*grid_type != GridType::SCREENSAVER\) \|\|\s*has_battery\);/,
   'the caption must take the folder value slot so it inherits that layout');
 assert.match(render, /has_battery \? tile_layout::content_font_24\(\)/,
   'the caption is a secondary readout and uses the smaller 24 px font');

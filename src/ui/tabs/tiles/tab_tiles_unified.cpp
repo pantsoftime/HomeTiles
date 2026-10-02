@@ -7,6 +7,7 @@
 #include "src/tiles/config/tile_config.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
 #include "src/ui/popups/light/light_popup.h"
 #include "src/ui/popups/sensor/sensor_popup.h"
 #include "src/ui/popups/binary_sensor/binary_sensor_popup.h"
@@ -22,8 +23,10 @@
 #include "src/types/energy/energy_data.h"
 #include "src/web/server/web_admin.h"
 #include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include <misc/cache/instance/lv_image_cache.h>
 #include <Arduino.h>
+#include <atomic>
 #include <cstring>
 #include <strings.h>
 #include <esp_heap_caps.h>
@@ -32,7 +35,6 @@
 // Layout constants
 static const int GAP = GRID_GAP;
 static const int OUTER = 0;
-static const int GRID_PAD_PX = GRID_PAD;
 
 // Global state shared by all three grids
 static lv_obj_t* g_tiles_grids[3] = {nullptr};           // [TAB0, TAB1, TAB2]
@@ -272,8 +274,8 @@ static void schedule_navigation_preload(
 
   struct NavigationCandidate {
     uint16_t folder_id = kInvalidFolderId;
-    uint8_t row = 0;
-    uint8_t col = 0;
+    float row = 0;
+    float col = 0;
     uint8_t config_index = 0;
   };
   NavigationCandidate candidates[TILES_PER_GRID]{};
@@ -689,21 +691,21 @@ static const char* getGridName(GridType type) {
   return "TilesFolder";
 }
 
-static bool get_tile_layout(const Tile& tile, uint8_t& col, uint8_t& row, uint8_t& span_w, uint8_t& span_h) {
+static bool get_tile_layout(const Tile& tile, float& col, float& row, float& span_w, float& span_h) {
   if (tile.col >= GRID_COLS || tile.row >= GRID_ROWS) return false;
   col = tile.col;
   row = tile.row;
-  span_w = tile.span_w < 1 ? 1 : tile.span_w;
-  span_h = tile.span_h < 1 ? 1 : tile.span_h;
+  span_w = tile.span_w < 0.5f ? 1 : tile.span_w;
+  span_h = tile.span_h < 0.5f ? 1 : tile.span_h;
   clamp_media_tile_layout(tile.type, col, row, span_w, span_h);
   if (span_w > GRID_COLS - col) span_w = GRID_COLS - col;
   if (span_h > GRID_ROWS - row) span_h = GRID_ROWS - row;
   return true;
 }
 
-static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], uint8_t col, uint8_t row, uint8_t span_w, uint8_t span_h) {
-  for (uint8_t r = row; r < row + span_h; ++r) {
-    for (uint8_t c = col; c < col + span_w; ++c) {
+static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], float col, float row, float span_w, float span_h) {
+  for (uint8_t r = static_cast<uint8_t>(row); r < row + span_h; ++r) {
+    for (uint8_t c = static_cast<uint8_t>(col); c < col + span_w; ++c) {
       if (r < GRID_ROWS && c < GRID_COLS) {
         occupied[r][c] = true;
       }
@@ -1082,6 +1084,12 @@ static void build_folder_cache_entry(FolderCacheEntry& entry, GridType grid_type
   }
   lv_obj_add_flag(entry.grid, LV_OBJ_FLAG_HIDDEN);
 
+  // The hidden folder's widgets sit in the TAB0 arrays now, so its state
+  // updates must resolve their tiles from this grid. Before, a preloaded
+  // folder took the icon colors of the visible folder's tile at the same
+  // index, and Binary sensors kept that color after the switch because the
+  // unchanged payload is skipped there.
+  tile_renderer_set_build_grid(&config);
   render_tile_grid(entry.grid, config, grid_type, g_tiles_scene_cbs[idx], entry.tile_objs);
 
   // Warm hidden folder caches with lightweight states only. Media payloads can
@@ -1093,6 +1101,7 @@ static void build_folder_cache_entry(FolderCacheEntry& entry, GridType grid_type
   process_cover_update_queue();
   process_binary_sensor_update_queue();
   process_weather_update_queue();
+  tile_renderer_set_build_grid(nullptr);
   lv_obj_update_layout(entry.grid);
 
   tile_renderer_snapshot_tab0(&entry.widgets);
@@ -1220,7 +1229,10 @@ static lv_obj_t* create_tiles_grid(lv_obj_t* parent) {
   lv_obj_set_style_bg_color(grid, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(grid, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(grid, 0, 0);
-  lv_obj_set_style_pad_all(grid, GRID_PAD_PX, 0);
+  lv_obj_set_style_pad_left(grid, GRID_PAD_LEFT, 0);
+  lv_obj_set_style_pad_right(grid, GRID_PAD_RIGHT, 0);
+  lv_obj_set_style_pad_top(grid, GRID_PAD_TOP, 0);
+  lv_obj_set_style_pad_bottom(grid, GRID_PAD_BOTTOM, 0);
   lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_size(grid, LV_PCT(100), LV_PCT(100));
   lv_obj_set_style_pad_column(grid, GAP, 0);
@@ -1237,6 +1249,42 @@ static lv_obj_t* create_tiles_grid(lv_obj_t* parent) {
   lv_obj_set_layout(grid, LV_LAYOUT_GRID);
   lv_obj_set_grid_dsc_array(grid, col_dsc, row_dsc);
   return grid;
+}
+
+// Tiles of the visible grid whose rule entity (tile_icon_source.h) changed;
+// the loop task reapplies their rules from the entity cache. MQTT dispatch
+// only sets bits here and never touches LVGL.
+static std::atomic<uint64_t> g_icon_source_pending{0};
+
+// True when the tile's enabled rules take their color from `entity_id` (its
+// own entity or another one). The record is read in place, so MQTT dispatch
+// allocates nothing.
+static bool tile_icon_source_matches(const Tile& tile, const char* entity_id) {
+  if (!tileTypeHasIconColors(tile.type) || !tile.icon_colors.length()) return false;
+  const tile_icon_colors::Source layer = tile_icon_colors::source_of(tile.icon_colors.c_str());
+  if (layer.mode == tile_icon_colors::SourceMode::None || !layer.enabled) return false;
+  if (layer.self) return tile.sensor_entity.equalsIgnoreCase(entity_id);
+  return strlen(entity_id) == layer.entity_len && strncasecmp(layer.entity, entity_id, layer.entity_len) == 0;
+}
+
+void tiles_request_rule_refresh(GridType grid_type, uint8_t index) {
+  if (grid_type == GridType::TAB0 && index < TILES_PER_GRID) {
+    g_icon_source_pending.fetch_or(uint64_t{1} << index);
+  }
+}
+
+void process_icon_source_updates() {
+  uint64_t pending = g_icon_source_pending.exchange(0);
+  if (!pending) return;
+  const uint8_t idx = static_cast<uint8_t>(GridType::TAB0);
+  if (!g_tiles_loaded[idx]) return;
+  const TileGridConfig& config = getGridConfig(GridType::TAB0);
+  for (uint8_t i = 0; i < TILES_PER_GRID && pending; ++i) {
+    const uint64_t bit = uint64_t{1} << i;
+    if (!(pending & bit)) continue;
+    pending &= ~bit;
+    tile_icon_source::refresh_card(g_tiles_objs[idx][i], config.tiles[i]);
+  }
 }
 
 // Hidden cache builds omit Media until its widgets become visible.
@@ -1271,8 +1319,18 @@ static inline void enqueue_cached_tile_state(GridType grid_type, const Tile& til
 }
 
 static void apply_cached_states(GridType grid_type, const TileGridConfig& config, bool include_media) {
+  uint64_t icon_sources = 0;
   for (uint8_t i = 0; i < TILES_PER_GRID; ++i) {
     enqueue_cached_tile_state(grid_type, config.tiles[i], i, include_media);
+    if (tileTypeHasIconColors(config.tiles[i].type) && config.tiles[i].icon_colors.length()) {
+      icon_sources |= uint64_t{1} << i;
+    }
+  }
+  // Visible grids (the only callers that include Media) reapply the rules
+  // from the latest states; hidden cache builds take them from the cache
+  // while rendering (render_tile).
+  if (include_media && grid_type == GridType::TAB0 && icon_sources) {
+    g_icon_source_pending.fetch_or(icon_sources);
   }
 }
 
@@ -1590,10 +1648,10 @@ void tiles_reload_layout(GridType grid_type) {
   const TileGridConfig& config = getGridConfig(grid_type);
   bool occupied[GRID_ROWS][GRID_COLS] = {};
   struct TileLayout {
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     bool valid = false;
   };
   TileLayout layouts[TILES_PER_GRID]{};
@@ -1601,10 +1659,10 @@ void tiles_reload_layout(GridType grid_type) {
   for (uint8_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = config.tiles[i];
     if (tile.type == TILE_EMPTY) continue;
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     if (!get_tile_layout(tile, col, row, span_w, span_h)) continue;
     layouts[i] = {col, row, span_w, span_h, true};
     mark_occupied(occupied, col, row, span_w, span_h);
@@ -2133,10 +2191,10 @@ static void rebuild_tile_at_index(GridType grid_type, uint8_t index) {
   const Tile& tile = config.tiles[index];
   if (tile.type == TILE_EMPTY) return;
 
-  uint8_t col = 0;
-  uint8_t row = 0;
-  uint8_t span_w = 1;
-  uint8_t span_h = 1;
+  float col = 0;
+  float row = 0;
+  float span_w = 1;
+  float span_h = 1;
   if (!get_tile_layout(tile, col, row, span_w, span_h)) return;
 
   if (g_tiles_objs[idx][index]) {
@@ -2233,18 +2291,19 @@ static void tiles_refresh_icons_for_grid(GridType grid_type) {
       continue;
     }
 
+    // A tile icon may sit on a disc: hide and show both together.
     if (icon_disabled || !icon_name.length()) {
-      lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_HIDDEN);
+      tile_icon_disc::set_icon_hidden(icon_lbl, true);
       continue;
     }
 
     if (!iconChar.length()) {
-      lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_HIDDEN);
+      tile_icon_disc::set_icon_hidden(icon_lbl, true);
       continue;
     }
 
     lv_label_set_text(icon_lbl, iconChar.c_str());
-    lv_obj_clear_flag(icon_lbl, LV_OBJ_FLAG_HIDDEN);
+    tile_icon_disc::set_icon_hidden(icon_lbl, false);
     lv_obj_invalidate(icon_lbl);
   }
 }
@@ -2279,6 +2338,7 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
   bool popup_queued = false;
   uint64_t switch_indices = 0;
   uint64_t binary_sensor_indices = 0;
+  uint64_t icon_source_indices = 0;
   bool binary_popup_queued = false;
 
   // A caption entity belongs to a tile but is not the tile's own entity, so it
@@ -2326,6 +2386,9 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
     if (tile.type == TILE_SWITCH && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       switch_indices |= uint64_t{1} << i;
     }
+    if (tile_icon_source_matches(tile, entity_id)) {
+      icon_source_indices |= uint64_t{1} << i;
+    }
     if (tile.type == TILE_MEDIA && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       queue_media_tile_update(grid_type, i, value);
       Serial.printf("[%s] Media %s@%u queued\n", getGridName(grid_type), entity_id, i);
@@ -2366,6 +2429,9 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
   if (binary_sensor_indices != 0) {
     queue_binary_sensor_tile_updates(
         grid_type, binary_sensor_indices, value);
+  }
+  if (icon_source_indices != 0 && grid_type == GridType::TAB0) {
+    g_icon_source_pending.fetch_or(icon_source_indices);
   }
 }
 

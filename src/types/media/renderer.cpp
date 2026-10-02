@@ -1,3 +1,5 @@
+#include "src/ui/shared/ui_surface_style.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/types/media/renderer.h"
 #include "src/types/media/content_layout.h"
 
@@ -9,6 +11,7 @@
 #include "src/network/mqtt/mqtt_handlers.h"
 #include "src/devices/device_select.h"
 #include "src/tiles/icons/mdi_icons.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/ui/popups/media/media_popup.h"
@@ -167,7 +170,10 @@ static void show_media_popup_event_cb(lv_event_t* e) {
   init.title = data->title;
   init.icon_name = data->icon_name;
   init.icon_char = media_label_text(widgets.icon_label);
-  init.bg_color = data->bg_color;
+  init.bg_color = tile_icon_source::popup_background(widgets.icon_label, data->bg_color);
+  if (widgets.icon_label) {
+    init.icon_color = lv_color_to_u32(lv_obj_get_style_text_color(widgets.icon_label, LV_PART_MAIN)) & 0xFFFFFF;
+  }
   init.media_title = media_label_text(widgets.media_title_label);
   init.media_subtitle = media_label_text(widgets.media_subtitle_label);
   init.is_playing = media_widget_is_playing(widgets);
@@ -300,7 +306,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
   lv_obj_t* card = lv_button_create(parent);
   if (!card) return nullptr;
 
-  uint32_t card_color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  uint32_t card_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -311,7 +317,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
 
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(20), 0);
@@ -319,7 +325,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
 
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   MediaCoverRef* cover_ref = new MediaCoverRef();
   lv_obj_add_event_cb(card, cover_ref_delete_cb, LV_EVENT_DELETE, cover_ref);
@@ -342,7 +348,7 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
     lv_obj_set_style_border_width(cover_clip, 0, 0);
     lv_obj_set_style_shadow_width(cover_clip, 0, 0);
     lv_obj_set_style_pad_all(cover_clip, 0, 0);
-    lv_obj_set_style_radius(cover_clip, tile_layout::scale(12), 0);
+    ui_surface_style::apply_radius(cover_clip, tile_layout::scale(12), 0);
     lv_obj_set_style_clip_corner(cover_clip, true, 0);
     lv_obj_remove_flag(cover_clip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cover_clip, LV_OBJ_FLAG_CLICKABLE);
@@ -414,6 +420,8 @@ lv_obj_t* render_media_tile(lv_obj_t* parent,
                  tile_layout::scale_480(4));
     enable_event_bubble(title_label);
   }
+  // After the title exists, so the disc can lift the whole header.
+  if (icon_label) tile_icon_disc::add_round(card, icon_label);
 
 #if defined(DEVICE_WAVESHARE_4B)
   const lv_font_t* media_font = (tile.span_w > 1 || tile.span_h > 1) ? &ui_font_28 : &ui_font_24;

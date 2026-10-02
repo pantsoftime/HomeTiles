@@ -26,6 +26,9 @@ static void caption_append_unit(String& text, const String& unit);
 #include "src/types/types_registry.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/tile_icon_color_rules.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/core/config/config_manager.h"
 #include "src/core/display/dma2d_arbiter.h"
 #include "src/core/i18n/i18n.h"
@@ -306,11 +309,18 @@ ClimateState* tile_renderer_get_climate_states(GridType grid_type) {
   return g_tab0_climate_states;
 }
 
+static const TileGridConfig* g_build_grid = nullptr;
+
+void tile_renderer_set_build_grid(const TileGridConfig* grid) {
+  g_build_grid = grid;
+}
+
 const Tile* tile_renderer_get_tile_config(GridType grid_type, uint8_t index) {
   if (index >= TILES_PER_GRID) return nullptr;
   if (grid_type == GridType::SCREENSAVER) {
     return screensaverConfig.tile(index);
   }
+  if (g_build_grid) return &g_build_grid->tiles[index];
   return &tileConfig.getActiveGrid().tiles[index];
 }
 
@@ -324,6 +334,7 @@ static void clear_sensor_widgets(GridType grid_type) {
   else if (grid_type == GridType::TAB2) target = g_tab2_sensors;
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     target[i].value_label = nullptr;
+    target[i].icon_label = nullptr;
     target[i].unit_label = nullptr;
     target[i].gauge = nullptr;
     target[i].gauge_min = 0;
@@ -570,6 +581,7 @@ static const lv_font_t* get_sensor_value_font(const Tile& tile) {
     case 2: return tile_layout::content_font_24();
     case 3: return tile_layout::content_font_32();
     case 4: return tile_layout::content_font_40();
+    case 5: return tile_layout::content_font_28();
     default: return FONT_VALUE;
   }
 }
@@ -1715,6 +1727,26 @@ static bool switch_state_has_update(const SwitchState& state) {
          state.supports_brightness || state.supports_temperature;
 }
 
+// The Switch tile's icon color for a state: the light color (or the Kelvin
+// color of CCT-only lights, else amber) while on, grey while off or
+// unavailable.
+static uint32_t switch_state_icon_color(const SwitchState& state) {
+  if (!state.available || (state.has_state && !state.is_on)) return 0xB0B0B0;
+  if (state.supports_temperature && !state.supports_color && state.has_color_temp) {
+    return lv_color_to_u32(light_color_from_temperature_kelvin(state.color_temp_kelvin)) & 0xFFFFFF;
+  }
+  return state.has_color ? state.color : 0xFFD54F;
+}
+
+bool switch_payload_icon_color(const char* payload, uint32_t& rgb, bool* active) {
+  if (!payload || !*payload) return false;
+  const SwitchState state = parse_switch_payload(payload);
+  if (!state.available || !state.has_state) return false;
+  rgb = switch_state_icon_color(state);
+  if (active) *active = state.is_on;
+  return true;
+}
+
 static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
                                     SwitchState state) {
   if (grid_index >= TILES_PER_GRID) return;
@@ -1789,26 +1821,15 @@ static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
   SwitchTileWidgets& widgets = target[grid_index];
   if (!widgets.icon_label && !widgets.title_label && !widgets.switch_obj) return;
 
-  static const uint32_t kIconOn = 0xFFD54F;
   static const uint32_t kIconOff = 0xB0B0B0;
   static const uint32_t kIconNeutral = 0xFFFFFF;
   static const uint32_t kSwitchOff = 0xFFFFFF;
   static const uint32_t kSwitchOn = 0x3B82F6;
 
   const bool control_unavailable = !state.available;
-  uint32_t icon_color = kIconOff;
-  if (!control_unavailable && (!state.has_state || state.is_on)) {
-    if (state.supports_temperature && !state.supports_color && state.has_color_temp) {
-      // CCT-only lights have no true RGB capability. Their tiles use the same
-      // Kelvin color as the popup instead of the fixed yellow default used
-      // for simple on/off lights.
-      icon_color = lv_color_to_u32(
-                       light_color_from_temperature_kelvin(state.color_temp_kelvin)) &
-                   0xFFFFFF;
-    } else {
-      icon_color = state.has_color ? state.color : kIconOn;
-    }
-  }
+  // CCT-only lights use the same Kelvin color as the popup instead of the
+  // fixed yellow default used for simple on/off lights.
+  const uint32_t icon_color = switch_state_icon_color(state);
 
   uint32_t label_color =
       control_unavailable
@@ -1816,7 +1837,7 @@ static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
           : (use_switch_widget ? kIconNeutral : icon_color);
   lv_color_t lv_color = lv_color_hex(label_color);
   if (widgets.icon_label) {
-    lv_obj_set_style_text_color(widgets.icon_label, lv_color, 0);
+    tile_icon_disc::set_icon_color(widgets.icon_label, lv_color);
   } else if (widgets.title_label) {
     lv_obj_set_style_text_color(widgets.title_label, lv_color, 0);
   }
@@ -1832,7 +1853,7 @@ static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
       lv_obj_remove_state(widgets.switch_obj, LV_STATE_CHECKED);
       lv_obj_clear_state(widgets.switch_obj, LV_STATE_DISABLED);
     }
-    uint32_t tile_color = tileBgColorOrDefault(tile, 0x353535);
+    uint32_t tile_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
     lv_obj_set_style_bg_color(widgets.switch_obj, lv_color_hex(tile_color), LV_PART_KNOB);
     lv_obj_set_style_bg_color(
         widgets.switch_obj,
@@ -1912,6 +1933,9 @@ static void enqueue_switch_update(GridType grid_type, uint64_t grid_indices,
     if ((g_switch_overflow_count++ % 10) == 0) {
       Serial.println("[Queue] Full; replacing the oldest switch update");
     }
+    g_switch_queue[g_switch_tail].entity_id = static_cast<const char*>(nullptr);
+    g_switch_queue[g_switch_tail].payload = static_cast<const char*>(nullptr);
+    g_switch_queue[g_switch_tail].valid = false;
     g_switch_tail = (g_switch_tail + 1) % SWITCH_QUEUE_SIZE;
   }
 
@@ -2008,8 +2032,10 @@ void process_switch_update_queue(uint8_t max_updates) {
     upd.parsed = false;
     upd.require_entity_match = false;
     upd.layout_generation = 0;
-    upd.entity_id.remove(0);
-    upd.payload.remove(0);
+    // Consumed slots are not a state cache. clear/remove and empty-string
+    // assignments retain Arduino String capacity, including large HA payloads.
+    upd.entity_id = static_cast<const char*>(nullptr);
+    upd.payload = static_cast<const char*>(nullptr);
     g_switch_tail = (g_switch_tail + 1) % SWITCH_QUEUE_SIZE;
   }
 }
@@ -2076,69 +2102,31 @@ static uint8_t climate_preset_modes_mask(const String& normalized_modes) {
   return mask;
 }
 
-static uint16_t climate_fan_modes_mask(const String& normalized_modes) {
-  static const char* const names[] = {
-      "auto", "low", "medium", "high", "on",
-      "off", "top", "middle", "focus", "diffuse"};
-  uint16_t mask = 0;
+// Keep every option Home Assistant lists (vendor modes such as "1" or
+// "Silent" included); only the JSON array syntax is removed. Names keep inner
+// spaces and are lowercased like the current mode. Options that do not fit
+// the bounded buffer are left out.
+static void climate_copy_mode_list(char* out, size_t out_size, String modes) {
+  modes.replace("[", "");
+  modes.replace("]", "");
+  modes.replace("\"", "");
+  String csv;
   int start = 0;
-  while (start <= normalized_modes.length()) {
-    int comma = normalized_modes.indexOf(',', start);
-    if (comma < 0) comma = normalized_modes.length();
-    const String mode = normalized_modes.substring(start, comma);
-    for (uint8_t id = 0; id < 10; ++id) {
-      if (mode == names[id]) {
-        mask |= static_cast<uint16_t>(1U << id);
-        break;
-      }
+  while (start <= modes.length()) {
+    int comma = modes.indexOf(',', start);
+    if (comma < 0) comma = modes.length();
+    String mode = modes.substring(start, comma);
+    mode.trim();
+    mode.toLowerCase();
+    const size_t needed = csv.length() + mode.length() + (csv.length() ? 1 : 0);
+    if (mode.length() && needed < out_size) {
+      if (csv.length()) csv += ',';
+      csv += mode;
     }
-    if (comma >= normalized_modes.length()) break;
+    if (comma >= modes.length()) break;
     start = comma + 1;
   }
-  return mask;
-}
-
-static uint8_t climate_swing_modes_mask(const String& normalized_modes) {
-  static const char* const names[] = {
-      "off", "on", "vertical", "horizontal", "both"};
-  uint8_t mask = 0;
-  int start = 0;
-  while (start <= normalized_modes.length()) {
-    int comma = normalized_modes.indexOf(',', start);
-    if (comma < 0) comma = normalized_modes.length();
-    const String mode = normalized_modes.substring(start, comma);
-    for (uint8_t id = 0; id < 5; ++id) {
-      if (mode == names[id]) {
-        mask |= static_cast<uint8_t>(1U << id);
-        break;
-      }
-    }
-    if (comma >= normalized_modes.length()) break;
-    start = comma + 1;
-  }
-  return mask;
-}
-
-static uint8_t climate_horizontal_swing_modes_mask(
-    const String& normalized_modes) {
-  static const char* const names[] = {
-      "off", "on", "left", "center", "right", "swing", "wide"};
-  uint8_t mask = 0;
-  int start = 0;
-  while (start <= normalized_modes.length()) {
-    int comma = normalized_modes.indexOf(',', start);
-    if (comma < 0) comma = normalized_modes.length();
-    const String mode = normalized_modes.substring(start, comma);
-    for (uint8_t id = 0; id < 7; ++id) {
-      if (mode == names[id]) {
-        mask |= static_cast<uint8_t>(1U << id);
-        break;
-      }
-    }
-    if (comma >= normalized_modes.length()) break;
-    start = comma + 1;
-  }
-  return mask;
+  climate_copy_text(out, out_size, csv);
 }
 
 static ClimateState parse_climate_payload(const char* payload) {
@@ -2203,17 +2191,14 @@ static ClimateState parse_climate_payload(const char* payload) {
       out.preset_modes_mask = climate_preset_modes_mask(modes);
     }
     if (extract_json_array_field(source, "fan_modes", modes)) {
-      climate_normalize_modes(modes);
-      out.fan_modes_mask = climate_fan_modes_mask(modes);
+      climate_copy_mode_list(out.fan_modes, sizeof(out.fan_modes), modes);
     }
     if (extract_json_array_field(source, "swing_modes", modes)) {
-      climate_normalize_modes(modes);
-      out.swing_modes_mask = climate_swing_modes_mask(modes);
+      climate_copy_mode_list(out.swing_modes, sizeof(out.swing_modes), modes);
     }
     if (extract_json_array_field(source, "swing_horizontal_modes", modes)) {
-      climate_normalize_modes(modes);
-      out.swing_horizontal_modes_mask =
-          climate_horizontal_swing_modes_mask(modes);
+      climate_copy_mode_list(out.swing_horizontal_modes,
+                             sizeof(out.swing_horizontal_modes), modes);
     }
 
     float number = 0.0f;
@@ -2360,6 +2345,15 @@ uint32_t climate_visual_color(const ClimateState& state) {
       state.hvac_mode, state.hvac_action);
 }
 
+bool climate_payload_icon_color(const char* payload, uint32_t& rgb, bool* active) {
+  if (!payload || !*payload) return false;
+  const ClimateState state = parse_climate_payload(payload);
+  if (!state.valid || !state.available) return false;
+  rgb = climate_visual_color(state);
+  if (active) *active = climate_visuals::state_active(state.hvac_mode, state.hvac_action);
+  return true;
+}
+
 static ClimatePopupInit build_climate_popup_init(
     GridType grid_type, uint8_t grid_index, const ClimateState& state) {
   ClimatePopupInit init;
@@ -2383,12 +2377,11 @@ static ClimatePopupInit build_climate_popup_init(
   init.preset_mode = climatePresetName(state.preset_mode_id);
   init.preset_modes = climatePresetModesCsv(state.preset_modes_mask);
   init.fan_mode = state.fan_mode;
-  init.fan_modes = climateFanModesCsv(state.fan_modes_mask);
+  init.fan_modes = state.fan_modes;
   init.swing_mode = state.swing_mode;
-  init.swing_modes = climateSwingModesCsv(state.swing_modes_mask);
+  init.swing_modes = state.swing_modes;
   init.swing_horizontal_mode = state.swing_horizontal_mode;
-  init.swing_horizontal_modes =
-      climateHorizontalSwingModesCsv(state.swing_horizontal_modes_mask);
+  init.swing_horizontal_modes = state.swing_horizontal_modes;
   init.temperature_unit = state.temperature_unit;
   init.current_temperature = state.current_temperature;
   init.current_humidity = state.current_humidity;
@@ -2483,8 +2476,8 @@ static void update_climate_tile_state(
       if (!icon.length()) icon = getMdiChar("thermostat");
       lv_label_set_text(widget.icon_label, icon.c_str());
     }
-    lv_obj_set_style_text_color(
-        widget.icon_label, lv_color_hex(climate_visual_color(state)), 0);
+    tile_icon_disc::set_icon_color(
+        widget.icon_label, lv_color_hex(climate_visual_color(state)));
   }
 
   ClimatePopupInit init = build_climate_popup_init(grid_type, grid_index, state);
@@ -2517,6 +2510,8 @@ void queue_climate_tile_update(
 
   const uint8_t next = (g_climate_head + 1) % CLIMATE_QUEUE_SIZE;
   if (next == g_climate_tail) {
+    g_climate_queue[g_climate_tail].payload = static_cast<const char*>(nullptr);
+    g_climate_queue[g_climate_tail].valid = false;
     g_climate_tail = (g_climate_tail + 1) % CLIMATE_QUEUE_SIZE;
     Serial.println("[Queue] Climate queue full, oldest update replaced");
   }
@@ -2539,8 +2534,19 @@ void process_climate_update_queue(uint8_t max_updates) {
       update.valid = false;
       ++processed;
     }
+    update.payload = static_cast<const char*>(nullptr);
     g_climate_tail = (g_climate_tail + 1) % CLIMATE_QUEUE_SIZE;
   }
+}
+
+// Width left for the condition beside the temperature and the separator.
+static lv_coord_t weather_condition_room(lv_coord_t inner_w, lv_coord_t gap,
+                                         const lv_font_t* font, const char* temp) {
+  lv_point_t temp_size{};
+  lv_point_t sep_size{};
+  lv_text_get_size(&temp_size, temp ? temp : "", font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  lv_text_get_size(&sep_size, "|", font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  return inner_w - temp_size.x - sep_size.x - 2 * gap;
 }
 
 /* === Thread-safe weather update queue (MQTT -> main loop) === */
@@ -2619,23 +2625,27 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
     lv_obj_t* value_row =
         widgets.temp_label ? lv_obj_get_parent(widgets.temp_label) : nullptr;
     if (value_row) {
-      lv_obj_align(value_row, LV_ALIGN_TOP_MID, 0,
+      // Centre-relative, matching the renderer: upstream centres the
+      // no-forecast value row in the real card so a half-step taller card
+      // moves it down. 28 -> 14 is the sensor tile's own caption lift.
+      lv_obj_align(value_row, LV_ALIGN_CENTER, 0,
                    widgets.value_row_base_y -
                        (has_humidity ? tile_layout::scale(14) : 0));
     }
   }
 
   if (widgets.icon_label) {
+    // The icon disc follows the icon; an empty disc never shows.
     if (icon_name.length()) {
       String iconChar = getMdiChar(icon_name);
       if (iconChar.length()) {
         lv_label_set_text(widgets.icon_label, iconChar.c_str());
-        lv_obj_clear_flag(widgets.icon_label, LV_OBJ_FLAG_HIDDEN);
+        tile_icon_disc::set_icon_hidden(widgets.icon_label, false);
       } else {
-        lv_obj_add_flag(widgets.icon_label, LV_OBJ_FLAG_HIDDEN);
+        tile_icon_disc::set_icon_hidden(widgets.icon_label, true);
       }
     } else {
-      lv_obj_add_flag(widgets.icon_label, LV_OBJ_FLAG_HIDDEN);
+      tile_icon_disc::set_icon_hidden(widgets.icon_label, true);
     }
   }
 
@@ -2644,14 +2654,42 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
   const TileGridConfig& grid = tileConfig.getActiveGrid();
   const Tile& tile = grid.tiles[grid_index];
   const bool has_condition_text = condition_text.length() && condition_text != "--";
-  const bool show_condition = (tile.span_w > 1) && has_condition_text;
-  const uint8_t forecast_limit =
-      (tile.span_h >= 2) ? weather_forecast_count(tile.span_w) : 0;
+  const lv_coord_t card_w = tile_geometry::extent(
+      tile.col, tile.span_w < 1 ? 1.0f : tile.span_w, GRID_CELL_W, GRID_GAP);
+  const String temp_text = has_temp ? format_weather_temp(temperature, unit) : String("--");
+  bool show_condition = weather_shows_condition(tile.span_w) && has_condition_text;
+  if (show_condition && widgets.condition_label && widgets.temp_label) {
+    // The condition takes the room left beside the temperature. Below two
+    // cells it appears only when it fits completely, never abbreviated.
+    lv_obj_t* value_row = lv_obj_get_parent(widgets.condition_label);
+    lv_obj_t* card = value_row ? lv_obj_get_parent(value_row) : nullptr;
+    const lv_coord_t inner_w = card
+        ? card_w - lv_obj_get_style_pad_left(card, LV_PART_MAIN) -
+              lv_obj_get_style_pad_right(card, LV_PART_MAIN)
+        : card_w;
+    const lv_font_t* font = lv_obj_get_style_text_font(widgets.temp_label, LV_PART_MAIN);
+    const lv_coord_t room = weather_condition_room(
+        inner_w, value_row ? lv_obj_get_style_pad_column(value_row, LV_PART_MAIN) : 0,
+        font, temp_text.c_str());
+    lv_point_t condition_size{};
+    lv_text_get_size(&condition_size, condition_text.c_str(),
+                     lv_obj_get_style_text_font(widgets.condition_label, LV_PART_MAIN),
+                     0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    if (tile.span_w < 2.0f ? condition_size.x > room : room < tile_layout::scale(60)) {
+      show_condition = false;
+    } else {
+      lv_obj_set_style_max_width(widgets.condition_label, room, 0);
+    }
+  }
+  const uint8_t forecast_limit = weather_shows_forecast(tile.span_h)
+      ? weather_forecast_count(tile.span_w, card_w,
+                               tile_geometry::extent(tile.col, tile.span_w + 0.5f,
+                                                     GRID_CELL_W, GRID_GAP))
+      : 0;
   String today_date;
   const bool has_today = get_local_today_date(today_date);
 
   if (widgets.temp_label) {
-    String temp_text = has_temp ? format_weather_temp(temperature, unit) : String("--");
     if (!show_condition) {
       lv_label_set_text(widgets.temp_label, temp_text.c_str());
     } else if (!widgets.condition_label) {
@@ -2904,6 +2942,8 @@ void queue_weather_tile_update(GridType grid_type, uint8_t grid_index, const cha
     if ((g_weather_overflow_count++ % 10) == 0) {
       Serial.println("[Queue] FULL! Oldest weather update will be overwritten");
     }
+    g_weather_queue[g_weather_tail].payload = static_cast<const char*>(nullptr);
+    g_weather_queue[g_weather_tail].valid = false;
     g_weather_tail = (g_weather_tail + 1) % WEATHER_QUEUE_SIZE;
   }
 
@@ -2923,6 +2963,7 @@ void process_weather_update_queue(uint8_t max_updates) {
       upd.valid = false;
       ++processed;
     }
+    upd.payload = static_cast<const char*>(nullptr);
     g_weather_tail = (g_weather_tail + 1) % WEATHER_QUEUE_SIZE;
   }
 }
@@ -3112,7 +3153,11 @@ static void update_media_popup_from_widgets(GridType grid_type,
   init.title = media_popup_title_for_tile(tile);
   init.icon_name = media_popup_icon_for_tile(tile);
   init.icon_char = media_label_text(widgets.icon_label);
-  init.bg_color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  init.bg_color = tile_icon_source::popup_background(widgets.icon_label,
+                                                     tileBgColorOrDefault(tile, tileDefaultBgColor()));
+  if (widgets.icon_label) {
+    init.icon_color = lv_color_to_u32(lv_obj_get_style_text_color(widgets.icon_label, LV_PART_MAIN)) & 0xFFFFFF;
+  }
   init.media_title = media_label_text(widgets.media_title_label);
   init.media_subtitle = media_label_text(widgets.media_subtitle_label);
   init.is_playing = state_override.length() ? media_is_playing_state(state_override)
@@ -4485,6 +4530,8 @@ void queue_media_tile_update(GridType grid_type, uint8_t grid_index, const char*
     if ((g_media_overflow_count++ % 10) == 0) {
       Serial.println("[Queue] FULL! Oldest media update will be overwritten");
     }
+    g_media_queue[g_media_tail].payload = static_cast<const char*>(nullptr);
+    g_media_queue[g_media_tail].valid = false;
     g_media_tail = (g_media_tail + 1) % MEDIA_QUEUE_SIZE;
   }
 
@@ -4504,6 +4551,7 @@ static void process_media_state_updates(uint8_t max_updates) {
       upd.valid = false;
       ++processed;
     }
+    upd.payload = static_cast<const char*>(nullptr);
     g_media_tail = (g_media_tail + 1) % MEDIA_QUEUE_SIZE;
   }
 }
@@ -4748,21 +4796,21 @@ void set_tile_grid_cell(lv_obj_t* obj, uint8_t col, uint8_t row, uint8_t span_w,
       LV_GRID_ALIGN_STRETCH, row, h);
 }
 
-static bool get_tile_layout(const Tile& tile, uint8_t& col, uint8_t& row, uint8_t& span_w, uint8_t& span_h) {
+static bool get_tile_layout(const Tile& tile, float& col, float& row, float& span_w, float& span_h) {
   if (tile.col >= GRID_COLS || tile.row >= GRID_ROWS) return false;
   col = tile.col;
   row = tile.row;
-  span_w = tile.span_w < 1 ? 1 : tile.span_w;
-  span_h = tile.span_h < 1 ? 1 : tile.span_h;
+  span_w = tile.span_w < 0.5f ? 1 : tile.span_w;
+  span_h = tile.span_h < 0.5f ? 1 : tile.span_h;
   clamp_media_tile_layout(tile.type, col, row, span_w, span_h);
   if (span_w > GRID_COLS - col) span_w = GRID_COLS - col;
   if (span_h > GRID_ROWS - row) span_h = GRID_ROWS - row;
   return true;
 }
 
-static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], uint8_t col, uint8_t row, uint8_t span_w, uint8_t span_h) {
-  for (uint8_t r = row; r < row + span_h; ++r) {
-    for (uint8_t c = col; c < col + span_w; ++c) {
+static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], float col, float row, float span_w, float span_h) {
+  for (uint8_t r = static_cast<uint8_t>(row); r < row + span_h; ++r) {
+    for (uint8_t c = static_cast<uint8_t>(col); c < col + span_w; ++c) {
       if (r < GRID_ROWS && c < GRID_COLS) {
         occupied[r][c] = true;
       }
@@ -4798,10 +4846,10 @@ void render_tile_grid(lv_obj_t* parent, const TileGridConfig& config, GridType g
 
   bool occupied[GRID_ROWS][GRID_COLS] = {};
   struct TileLayout {
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     bool valid = false;
   };
   TileLayout layouts[TILES_PER_GRID]{};
@@ -4809,10 +4857,10 @@ void render_tile_grid(lv_obj_t* parent, const TileGridConfig& config, GridType g
   for (int i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = config.tiles[i];
     if (tile.type == TILE_EMPTY) continue;
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     if (!get_tile_layout(tile, col, row, span_w, span_h)) continue;
     layouts[i] = {col, row, span_w, span_h, true};
     mark_occupied(occupied, col, row, span_w, span_h);
@@ -4869,6 +4917,12 @@ lv_obj_t* render_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint
   if (desc && desc->render) {
     lv_obj_t* tile_obj =
         desc->render(parent, col, row, tile, index, grid_type, scene_cb);
+    apply_fractional_tile_geometry(tile_obj, tile);
+    // Rules (forced icon color, tile tint) from the cached states, before the
+    // discs take the icon color and the background.
+    tile_icon_source::refresh_card(tile_obj, tile);
+    tile_icon_disc::apply_tile_options(tile_obj, tile.icon_disc_mode, tile.icon_glow);
+    if (!tileBorderEnabled(tile)) ui_surface_style::disable_tile_border(tile_obj);
     // Normal grids use the global display option. The screensaver has its
     // own setting and applies it after rendering in image_screensaver.cpp.
     if (tile_obj && grid_type != GridType::SCREENSAVER &&
@@ -4996,5 +5050,16 @@ void update_sensor_tile_value(GridType grid_type, uint8_t grid_index, const char
                               target[grid_index].gauge != nullptr,
                               target[grid_index].chart != nullptr,
                               caption);
+  }
+
+  // Per-tile icon colors follow every state update; "--" covers empty,
+  // unavailable and unknown states, which keep the default white icon.
+  // Tiles without icon colors keep their icon untouched.
+  if (lv_obj_t* icon = target[grid_index].icon_label) {
+    if (tile && tile->icon_colors.length()) {
+      tile_icon_color_rules::apply(icon, tile->icon_colors.c_str(),
+                                   displayValue != "--", value, nullptr,
+                                   lv_color_white());
+    }
   }
 }

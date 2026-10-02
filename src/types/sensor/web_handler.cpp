@@ -34,8 +34,11 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
   uint8_t value_font = 0;
   if (server.hasArg("sensor_value_font")) {
     int raw = server.arg("sensor_value_font").toInt();
-    // 1-4 proportional, 5-6 mono, 7-8 mono bold (JetBrains Mono 20/24).
-    value_font = (raw >= 1 && raw <= 8) ? static_cast<uint8_t>(raw) : 0;
+    // FORK: also the monospace choices; an export from an older fork release
+    // still carries their old numbers (see tile_config.h).
+    if (raw >= 6 && raw <= 8) raw = sensor_value_font_from_legacy_fork(static_cast<uint8_t>(raw));
+    value_font = ((raw >= 1 && raw <= SENSOR_VALUE_FONT_MAX) || sensor_value_font_is_mono(raw))
+                     ? static_cast<uint8_t>(raw) : 0;
   }
   tile.sensor_value_font = value_font;
   uint8_t popup_mode = TILE_POPUP_OPEN_SHORT_PRESS;

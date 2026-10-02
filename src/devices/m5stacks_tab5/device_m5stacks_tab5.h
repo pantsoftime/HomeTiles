@@ -2,10 +2,18 @@
 
 #include <FS.h>
 
+#include "src/devices/device_select.h"
 #include "src/devices/device_types.h"
 #include "src/devices/m5stacks_tab5/hardware_io_profile.h"
 
 namespace DeviceM5StacksTab5 {
+
+// Built-in SC202CS (SC2356) camera (HOMETILES_LOCAL_CAMERA in device_select.h).
+#if defined(HOMETILES_LOCAL_CAMERA)
+inline constexpr bool kBuiltinCamera = true;
+#else
+inline constexpr bool kBuiltinCamera = false;
+#endif
 
 inline constexpr Device::Profile kProfile{
     "m5stacks_tab5",
@@ -24,7 +32,7 @@ inline constexpr Device::Profile kProfile{
     0,
     2,
     // has_battery: Tab5 carries an NP-F battery read through M5.Power.
-    Device::Capabilities{true, false, false, false, false, false},
+    Device::Capabilities{true, false, false, false, false, false, kBuiltinCamera},
     kHardwareIoProfile,
 };
 

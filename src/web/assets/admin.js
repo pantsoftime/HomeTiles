@@ -56,6 +56,210 @@ function t(key) {
       showNotification(t('networkErrorSave'), false);
     }
   }
+
+// Icon discs are a root class: every preview grid, including cached and lazily
+// inserted folders, follows it without re-rendering a tile.
+let iconDiscsSaveSequence = 0;
+function iconDiscsEnabled() {
+  return !document.documentElement.classList.contains('icon-discs-off');
+}
+function applyIconDiscsPreview(enabled) {
+  document.documentElement.classList.toggle('icon-discs-off', !enabled);
+  document.querySelectorAll('.global-icon-disc-toggle').forEach(input => {
+    input.checked = !!enabled;
+  });
+}
+async function saveIconDiscs(enabled) {
+  const wanted = !!enabled;
+  const sequence = ++iconDiscsSaveSequence;
+  applyIconDiscsPreview(wanted);
+  try {
+    const response = await fetch('/api/display/icon-discs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'enabled=' + (wanted ? '1' : '0')
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+  } catch (error) {
+    if (sequence !== iconDiscsSaveSequence) return;
+    applyIconDiscsPreview(!wanted);
+    showNotification(t('networkErrorSave'), false);
+  }
+}
+
+// Glow strength of colored icon discs: previews read the root variable
+// --icon-glow-pct (applyIconDiscTint); the device rebuilds its tiles after
+// the save. Range and step mirror icon_glow.h.
+let iconGlowConfirmed = null;
+let iconGlowSaveSequence = 0;
+function currentIconGlow() {
+  const raw = String(getComputedStyle(document.documentElement).getPropertyValue('--icon-glow-pct')).trim();
+  const value = Number(raw);
+  return raw !== '' && Number.isFinite(value) ? value : 25;
+}
+function previewIconGlowLive(value) {
+  const number = Math.round(Number(value) / 5) * 5;
+  const percent = Math.min(100, Math.max(0, Number.isFinite(number) ? number : 25));
+  if (iconGlowConfirmed === null) iconGlowConfirmed = currentIconGlow();
+  document.documentElement.style.setProperty('--icon-glow-pct', String(percent));
+  document.querySelectorAll('.global-icon-glow').forEach(input => { input.value = String(percent); });
+  document.querySelectorAll('.global-icon-glow-value').forEach(output => { output.textContent = percent + ' %'; });
+  document.querySelectorAll('.tile').forEach(tile => applyIconDiscTint(tile));
+  return percent;
+}
+async function saveIconGlow(value) {
+  const percent = previewIconGlowLive(value);
+  const sequence = ++iconGlowSaveSequence;
+  try {
+    const response = await fetch('/api/display/icon-glow', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'percent=' + percent
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    if (sequence === iconGlowSaveSequence) iconGlowConfirmed = percent;
+  } catch (error) {
+    if (sequence !== iconGlowSaveSequence) return;
+    const confirmed = iconGlowConfirmed;
+    iconGlowConfirmed = null;
+    if (confirmed !== null) previewIconGlowLive(confirmed);
+    showNotification(t('networkErrorSave'), false);
+  }
+}
+
+// The global default tile color paints every tile without its own color
+// through --tile-default-bg; reset and new tiles take it as their default.
+let defaultTileColorConfirmed = null;
+let defaultTileColorSaveSequence = 0;
+function currentDefaultTileColor() {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue('--tile-default-bg').trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : '#2A2A2A';
+}
+function previewDefaultTileColor(value) {
+  const color = String(value || '').trim().toUpperCase();
+  if (!/^#[0-9A-F]{6}$/.test(color)) return;
+  if (defaultTileColorConfirmed === null) {
+    defaultTileColorConfirmed = currentDefaultTileColor();
+  }
+  document.documentElement.style.setProperty('--tile-default-bg', color);
+  Object.values(typeof TILE_TYPE_REGISTRY === 'object' ? TILE_TYPE_REGISTRY : {})
+    .forEach(meta => { if (meta && meta.sharedBg) meta.defaultBg = color; });
+  document.querySelectorAll('.global-tile-color').forEach(input => { input.value = color; });
+  // Open editors of tiles without their own color show the new default.
+  document.querySelectorAll('input[type="color"][id$="_tile_color"]').forEach(input => {
+    if (input.dataset.bgColorDefault !== '1') return;
+    const tab = input.id.slice(0, -'_tile_color'.length);
+    const type = document.getElementById(tab + '_tile_type')?.value || '0';
+    if (getTileTypeMeta(type).sharedBg) input.value = color;
+  });
+  return color;
+}
+async function saveDefaultTileColor(value) {
+  const color = previewDefaultTileColor(value);
+  if (!color) return;
+  const sequence = ++defaultTileColorSaveSequence;
+  try {
+    const response = await fetch('/api/display/tile-color', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({color}).toString()
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const result = await response.json();
+    if (!result.success || String(result.color).toUpperCase() !== color) {
+      throw new Error('invalid response');
+    }
+    if (sequence === defaultTileColorSaveSequence) defaultTileColorConfirmed = color;
+  } catch (error) {
+    if (sequence !== defaultTileColorSaveSequence) return;
+    previewDefaultTileColor(defaultTileColorConfirmed || color);
+    showNotification(t('networkErrorSave'), false);
+  }
+}
+function syncGlobalDisplayControls(tabEl) {
+  tabEl.querySelectorAll('.global-icon-disc-toggle').forEach(input => {
+    input.checked = iconDiscsEnabled();
+  });
+  const color = currentDefaultTileColor();
+  tabEl.querySelectorAll('.global-tile-color').forEach(input => { input.value = color; });
+  const glow = currentIconGlow();
+  tabEl.querySelectorAll('.global-icon-glow').forEach(input => { input.value = String(glow); });
+  tabEl.querySelectorAll('.global-icon-glow-value').forEach(output => { output.textContent = glow + ' %'; });
+}
+
+// The shared root variables also reach cached and lazily inserted folder grids.
+let tileRadiusConfirmed = null;
+let tileRadiusWanted = null;
+let tileRadiusSaving = false;
+let tileRadiusRevision = 0;
+let tileRadiusPreviewTimer = null;
+let tileRadiusLiveWanted = null;
+function previewTileRadiusLive(value) {
+  const radius = previewTileRadius(value);
+  tileRadiusLiveWanted = radius;
+  if (tileRadiusPreviewTimer === null) tileRadiusPreviewTimer = setTimeout(() => {
+    tileRadiusPreviewTimer = null;
+    queueTileRadius(tileRadiusLiveWanted, false);
+  }, 80);
+}
+function previewTileRadius(value) {
+  const input = document.querySelector('.global-tile-radius');
+  if (!input) return;
+  const radius = Math.max(Number(input.min), Math.min(Number(input.max), Math.round(Number(value))));
+  if (!Number.isFinite(radius)) return;
+  const root = document.documentElement;
+  if (tileRadiusConfirmed === null) {
+    tileRadiusConfirmed = Number(getComputedStyle(root).getPropertyValue('--tile-radius-device'));
+  }
+  const scale = Number(getComputedStyle(root).getPropertyValue('--radius-preview-scale'));
+  root.style.setProperty('--tile-radius', Math.max(1, Math.round(radius * scale)) + 'px');
+  root.style.setProperty('--tile-radius-device', String(radius));
+  document.querySelectorAll('.global-tile-radius').forEach(control => { control.value = radius; });
+  document.querySelectorAll('.global-tile-radius-value').forEach(output => { output.textContent = radius; });
+  tileRadiusRevision++;
+  return radius;
+}
+function saveTileRadius(value) {
+  clearTimeout(tileRadiusPreviewTimer);
+  tileRadiusPreviewTimer = null;
+  return queueTileRadius(value, true);
+}
+async function queueTileRadius(value, persist) {
+  const radius = previewTileRadius(value);
+  if (radius === undefined) return;
+  tileRadiusWanted = { radius, persist };
+  if (tileRadiusSaving) return;
+  tileRadiusSaving = true;
+  try {
+    while (tileRadiusWanted !== null) {
+      const wanted = tileRadiusWanted;
+      const revision = tileRadiusRevision;
+      tileRadiusWanted = null;
+      try {
+        const response = await fetch('/api/display/tile-radius', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ radius: String(wanted.radius), preview: wanted.persist ? '0' : '1' }).toString()
+        });
+        if (!response.ok) throw new Error('save failed');
+        const result = await response.json();
+        if (!result.success || result.radius !== wanted.radius) throw new Error('invalid response');
+        if (wanted.persist) tileRadiusConfirmed = wanted.radius;
+      } catch (error) {
+        if (tileRadiusWanted === null && revision === tileRadiusRevision) {
+          previewTileRadius(tileRadiusConfirmed);
+          showNotification(t('networkErrorSave'), false);
+        }
+      }
+    }
+  } finally { tileRadiusSaving = false; }
+}
+function syncTileRadiusControls(tabEl) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue('--tile-radius-device').trim();
+  tabEl.querySelectorAll('.global-tile-radius').forEach(control => { control.value = value; });
+  tabEl.querySelectorAll('.global-tile-radius-value').forEach(output => { output.textContent = value; });
+}
   let tabSwitchSequence = 0;
 
   function folderIdFromAdminTabName(tabName) {
@@ -225,6 +429,9 @@ function t(key) {
         el.textContent = getClockPreviewDate(0);
       }
     });
+    if (typeof fitCompactClockPreview === 'function') {
+      document.querySelectorAll('.tile.clock-compact').forEach(fitCompactClockPreview);
+    }
     if (screensaverDraft) {
       const time = document.getElementById('screensaverClockTime');
       const date = document.getElementById('screensaverClockDate');
@@ -351,7 +558,7 @@ function t(key) {
           : Number(hiddenTile?.dataset.bgColor || 0));
     const isDefault = source && source.bg_color_default !== undefined
       ? String(source.bg_color_default) === '1'
-      : !tileBgValueIsSet(bgValue);
+      : tileBgFollowsDefault(bgValue);
     const color = source?.color ||
       tileBgToHex(bgValue, getTileTypeMeta('7').defaultBg || '#2A2A2A');
     const rawCol = Number(source?.col ?? hiddenTile?.dataset.col ?? 0);
@@ -401,7 +608,8 @@ function t(key) {
       return;
     }
     tile.style.background = snapshot.bg_color_default === '1'
-      ? (getTileTypeMeta('7').defaultBg || '#2A2A2A')
+      ? tileBackgroundCss(getTileTypeMeta('7'), true,
+          getTileTypeMeta('7').defaultBg || '#2A2A2A')
       : snapshot.color;
     const iconName = normalizeMdiIconName(snapshot.icon);
     if (iconName) {
@@ -486,7 +694,8 @@ function t(key) {
     if (requested.swipeEnabled) body.set('settings_swipe_enabled', '1');
     body.set('settings_reveal_edge', requested.revealEdge);
     if (hasNewPin) body.set('settings_pin', pinValue);
-    if (target && Number.isInteger(target.col) && Number.isInteger(target.row)) {
+    if (target && [target.col, target.row].every(value =>
+        Number.isFinite(value) && value >= 0 && Number.isInteger(value * 2))) {
       body.set('settings_tile_target_col', String(target.col));
       body.set('settings_tile_target_row', String(target.row));
     }
@@ -710,6 +919,413 @@ function t(key) {
       showNotification(err?.message || t('screenshotFailed'), false);
     }
   }
+  // Built-in camera opt-in (only rendered on the exact camera profile). The
+  // server provides every visible text as data attributes on the status line;
+  // this code only selects between them. A ready sensor adds its model name
+  // and chip ID; internal detail codes stay diagnostic-only in the JSON.
+  // The live-stream mode and rotation selects are server-rendered too and
+  // save on change.
+  let localCameraSaveSequence = 0;
+  let localCameraModeSequence = 0;
+  let localCameraMirrorSequence = 0;
+  let localCameraRotationSequence = 0;
+  let localCameraRbSwapSequence = 0;
+  let localCameraIndicatorSequence = 0;
+  let localCameraPollTimer = null;
+  const LOCAL_CAMERA_STATE_KEYS = {
+    disabled: 'stateDisabled',
+    probing: 'stateProbing',
+    ready: 'stateReady',
+    not_found: 'stateNotFound',
+    error: 'stateError'
+  };
+
+  function localCameraStatusText(note, status) {
+    const state = status && typeof status.state === 'string' ? status.state : 'error';
+    const key = LOCAL_CAMERA_STATE_KEYS[state] || 'stateError';
+    let text = (note.dataset.label || '') + ': ' + (note.dataset[key] || state);
+    if (state === 'ready') {
+      const parts = [];
+      if (status.sensor) parts.push(String(status.sensor).toUpperCase());
+      if (status.chip_id) parts.push(String(status.chip_id));
+      if (parts.length) text += ' (' + parts.join(', ') + ')';
+    }
+    return text;
+  }
+
+  function applyLocalCameraStatus(status) {
+    const note = document.getElementById('local_camera_status');
+    const toggle = document.getElementById('local_camera_enabled');
+    if (!note || !status || typeof status !== 'object') return;
+    if (toggle && typeof status.enabled === 'boolean') toggle.checked = status.enabled;
+    const mirrorToggle = document.getElementById('local_camera_mirror');
+    if (mirrorToggle && typeof status.mirror === 'boolean') mirrorToggle.checked = status.mirror;
+    const rotationSelect = document.getElementById('local_camera_rotation');
+    if (rotationSelect && Number.isInteger(status.rotation)) {
+      rotationSelect.value = String(status.rotation);
+      rotationSelect.dataset.saved = String(status.rotation);
+    }
+    const rbSwapToggle = document.getElementById('local_camera_rb_swap');
+    if (rbSwapToggle && typeof status.rb_swap === 'boolean') rbSwapToggle.checked = status.rb_swap;
+    if (Number.isInteger(status.indicator)) applyLocalCameraIndicator(status.indicator);
+    const modeSelect = document.getElementById('local_camera_stream_mode');
+    if (modeSelect && Number.isInteger(status.stream_mode)) {
+      modeSelect.value = String(status.stream_mode);
+      modeSelect.dataset.saved = String(status.stream_mode);
+    }
+    if (Number.isInteger(status.stream_mode)) showLocalCameraCustom(status.stream_mode);
+    applyLocalCameraCustom(status.custom);
+    applyLocalCameraImage(status.image);
+    note.dataset.state = String(status.state || '');
+    note.textContent = localCameraStatusText(note, status);
+    clearTimeout(localCameraPollTimer);
+    localCameraPollTimer = null;
+    // The sensor probe runs on the camera worker; follow it briefly.
+    if (status.state === 'probing') {
+      localCameraPollTimer = setTimeout(refreshLocalCameraStatus, 1000);
+    }
+  }
+
+  async function refreshLocalCameraStatus() {
+    if (!document.getElementById('local_camera_status')) return;
+    try {
+      const response = await fetch('/api/local-camera', {cache: 'no-store'});
+      if (!response.ok) return;
+      applyLocalCameraStatus(await response.json());
+    } catch (error) {
+      // A status refresh is optional; the next toggle or reload retries.
+    }
+  }
+
+  async function saveLocalCameraEnabled(enabled) {
+    const wanted = !!enabled;
+    const sequence = ++localCameraSaveSequence;
+    const toggle = document.getElementById('local_camera_enabled');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'enabled=' + (wanted ? '1' : '0')
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraSaveSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraSaveSequence) return;
+      if (toggle) toggle.checked = !wanted;
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  async function saveLocalCameraMirror(enabled) {
+    const wanted = !!enabled;
+    const sequence = ++localCameraMirrorSequence;
+    const toggle = document.getElementById('local_camera_mirror');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'mirror=' + (wanted ? '1' : '0')
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraMirrorSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraMirrorSequence) return;
+      if (toggle) toggle.checked = !wanted;
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Rotation: clockwise quarter turns 0..3 (the select shows the degrees).
+  // A failed save restores the last saved value.
+  async function saveLocalCameraRotation(value) {
+    const rotation = String(value);
+    const sequence = ++localCameraRotationSequence;
+    const select = document.getElementById('local_camera_rotation');
+    const previous = select && select.dataset.saved !== undefined ? select.dataset.saved : null;
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'rotation=' + encodeURIComponent(rotation)
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraRotationSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraRotationSequence) return;
+      if (select && previous !== null) select.value = previous;
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  async function saveLocalCameraRbSwap(enabled) {
+    const wanted = !!enabled;
+    const sequence = ++localCameraRbSwapSequence;
+    const toggle = document.getElementById('local_camera_rb_swap');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'rb_swap=' + (wanted ? '1' : '0')
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraRbSwapSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraRbSwapSequence) return;
+      if (toggle) toggle.checked = !wanted;
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Indicator style (experimental): 0 none, 1 line only, 2 line with the pill.
+  // The pill checkbox only applies while the line is shown and keeps its own
+  // state while the line is off.
+  function applyLocalCameraIndicator(style) {
+    const line = document.getElementById('local_camera_indicator_line');
+    const pill = document.getElementById('local_camera_indicator_pill');
+    if (line) line.checked = style !== 0;
+    if (pill) {
+      if (style !== 0) pill.checked = style === 2;
+      pill.disabled = style === 0;
+    }
+  }
+
+  function localCameraIndicatorStyle() {
+    const line = document.getElementById('local_camera_indicator_line');
+    const pill = document.getElementById('local_camera_indicator_pill');
+    if (!line || !line.checked) return 0;
+    return pill && pill.checked ? 2 : 1;
+  }
+
+  async function saveLocalCameraIndicator() {
+    const style = localCameraIndicatorStyle();
+    const sequence = ++localCameraIndicatorSequence;
+    const line = document.getElementById('local_camera_indicator_line');
+    const pill = document.getElementById('local_camera_indicator_pill');
+    if (pill) pill.disabled = style === 0;
+    const saved = line && line.dataset.saved !== undefined ? parseInt(line.dataset.saved, 10) : null;
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'indicator=' + style
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraIndicatorSequence) return;
+      if (line && Number.isInteger(status.indicator)) line.dataset.saved = String(status.indicator);
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraIndicatorSequence) return;
+      if (Number.isInteger(saved)) applyLocalCameraIndicator(saved);
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Custom stream mode: frames per second and JPEG quality sliders, shown only
+  // while the Custom mode is selected (its id comes from data-mode). A slider
+  // saves on release; a failed save restores the last saved value. Numbers
+  // are untranslated.
+  const LOCAL_CAMERA_CUSTOM_KEYS = ['fps', 'quality'];
+  let localCameraCustomSequence = 0;
+
+  function showLocalCameraCustom(mode) {
+    const block = document.getElementById('local_camera_custom');
+    if (!block) return;
+    block.hidden = String(mode) !== String(block.dataset.mode);
+  }
+
+  function setLocalCameraCustomSlider(key, value) {
+    const slider = document.getElementById('local_camera_custom_' + key);
+    if (!slider) return;
+    slider.value = String(value);
+    const output = document.getElementById('local_camera_custom_' + key + '_value');
+    if (output) output.textContent = String(value);
+  }
+
+  function applyLocalCameraCustom(custom) {
+    if (!custom || typeof custom !== 'object') return;
+    for (const key of LOCAL_CAMERA_CUSTOM_KEYS) {
+      const slider = document.getElementById('local_camera_custom_' + key);
+      if (!slider || !Number.isInteger(custom[key])) continue;
+      slider.dataset.saved = String(custom[key]);
+      setLocalCameraCustomSlider(key, custom[key]);
+    }
+  }
+
+  function localCameraCustomInput(slider) {
+    const key = slider && slider.dataset ? slider.dataset.customKey : '';
+    if (!LOCAL_CAMERA_CUSTOM_KEYS.includes(key)) return;
+    const output = document.getElementById('local_camera_custom_' + key + '_value');
+    if (output) output.textContent = String(slider.value);
+  }
+
+  async function localCameraCustomChange(slider) {
+    const key = slider && slider.dataset ? slider.dataset.customKey : '';
+    if (!LOCAL_CAMERA_CUSTOM_KEYS.includes(key)) return;
+    const value = parseInt(slider.value, 10);
+    if (!Number.isInteger(value)) return;
+    localCameraCustomInput(slider);
+    const sequence = ++localCameraCustomSequence;
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'custom_' + key + '=' + value
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraCustomSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraCustomSequence) return;
+      if (slider.dataset.saved !== undefined) setLocalCameraCustomSlider(key, slider.dataset.saved);
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  async function saveLocalCameraStreamMode(value) {
+    const mode = String(value);
+    const sequence = ++localCameraModeSequence;
+    const select = document.getElementById('local_camera_stream_mode');
+    const previous = select && select.dataset.saved !== undefined ? select.dataset.saved : null;
+    showLocalCameraCustom(mode);
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'mode=' + encodeURIComponent(mode)
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      if (sequence !== localCameraModeSequence) return;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      if (sequence !== localCameraModeSequence) return;
+      if (select && previous !== null) select.value = previous;
+      if (previous !== null) showLocalCameraCustom(previous);
+      showNotification(t('networkErrorSave'), false);
+    }
+  }
+
+  // Image controls (brightness, contrast, saturation, red, blue, Max. gain). Sliders save
+  // while dragging (debounced) and immediately on release. One POST is in
+  // flight at a time so the device applies values in order; a value that is
+  // still pending is never overwritten by a status update, and a failed save
+  // restores the last saved value. Numbers are untranslated.
+  const LOCAL_CAMERA_IMAGE_KEYS = ['brightness', 'contrast', 'saturation', 'red', 'blue', 'gain'];
+  const LOCAL_CAMERA_IMAGE_DEBOUNCE_MS = 300;
+  let localCameraImagePending = {};
+  let localCameraImageTimer = null;
+  let localCameraImageInFlight = null;
+
+  function localCameraImageSlider(key) {
+    return document.getElementById('local_camera_' + key);
+  }
+
+  function showLocalCameraImageValue(slider, value) {
+    const output = document.getElementById('local_camera_' + slider.dataset.imageKey + '_value');
+    if (output) output.textContent = String(value) + (slider.dataset.unit || '');
+  }
+
+  function setLocalCameraImageSlider(key, value) {
+    const slider = localCameraImageSlider(key);
+    if (!slider) return;
+    slider.value = String(value);
+    showLocalCameraImageValue(slider, value);
+  }
+
+  function applyLocalCameraImage(image) {
+    if (!image || typeof image !== 'object') return;
+    for (const key of LOCAL_CAMERA_IMAGE_KEYS) {
+      const slider = localCameraImageSlider(key);
+      if (!slider || !Number.isInteger(image[key])) continue;
+      slider.dataset.saved = String(image[key]);
+      // Keep what the user is dragging or has not sent yet.
+      const busy = key in localCameraImagePending ||
+        (localCameraImageInFlight && key in localCameraImageInFlight &&
+         String(localCameraImageInFlight[key]) !== String(image[key]));
+      if (!busy) setLocalCameraImageSlider(key, image[key]);
+    }
+  }
+
+  function queueLocalCameraImage(slider) {
+    const key = slider && slider.dataset ? slider.dataset.imageKey : '';
+    if (!LOCAL_CAMERA_IMAGE_KEYS.includes(key)) return false;
+    const value = parseInt(slider.value, 10);
+    if (!Number.isInteger(value)) return false;
+    showLocalCameraImageValue(slider, value);
+    localCameraImagePending[key] = value;
+    return true;
+  }
+
+  function localCameraImageInput(slider) {
+    if (!queueLocalCameraImage(slider)) return;
+    clearTimeout(localCameraImageTimer);
+    localCameraImageTimer = setTimeout(flushLocalCameraImage, LOCAL_CAMERA_IMAGE_DEBOUNCE_MS);
+  }
+
+  function localCameraImageChange(slider) {
+    if (!queueLocalCameraImage(slider)) return;
+    return flushLocalCameraImage();
+  }
+
+  function resetLocalCameraImage() {
+    localCameraImagePending = {reset: 1};
+    return flushLocalCameraImage();
+  }
+
+  async function flushLocalCameraImage() {
+    clearTimeout(localCameraImageTimer);
+    localCameraImageTimer = null;
+    // The running save flushes the rest when it finishes.
+    if (localCameraImageInFlight) return;
+    const values = localCameraImagePending;
+    const keys = Object.keys(values);
+    if (!keys.length) return;
+    localCameraImagePending = {};
+    localCameraImageInFlight = values;
+    const body = keys.map(key => key + '=' + encodeURIComponent(String(values[key]))).join('&');
+    try {
+      const response = await fetch('/api/local-camera', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const status = await response.json();
+      localCameraImageInFlight = null;
+      applyLocalCameraStatus(status);
+    } catch (error) {
+      localCameraImageInFlight = null;
+      const sent = 'reset' in values ? LOCAL_CAMERA_IMAGE_KEYS : keys;
+      for (const key of sent) {
+        const slider = localCameraImageSlider(key);
+        if (!slider || key in localCameraImagePending) continue;
+        if (slider.dataset.saved !== undefined) setLocalCameraImageSlider(key, slider.dataset.saved);
+      }
+      showNotification(t('networkErrorSave'), false);
+    }
+    if (Object.keys(localCameraImagePending).length) await flushLocalCameraImage();
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const modeSelect = document.getElementById('local_camera_stream_mode');
+    if (modeSelect) modeSelect.dataset.saved = modeSelect.value;
+    const rotationSelect = document.getElementById('local_camera_rotation');
+    if (rotationSelect) rotationSelect.dataset.saved = rotationSelect.value;
+    const indicatorLine = document.getElementById('local_camera_indicator_line');
+    if (indicatorLine) indicatorLine.dataset.saved = String(localCameraIndicatorStyle());
+    const note = document.getElementById('local_camera_status');
+    if (note && note.dataset.state === 'probing') refreshLocalCameraStatus();
+  });
 
   let fileManagerLoaded = false;
   const fileManagerState = { fs: 'sd', path: '/', selected: null, sdAvailable: null };
@@ -1560,7 +2176,7 @@ function t(key) {
   let latestSaveRequestByTab = {};
   let saveInFlightByTile = {};
   let queuedSaveByTile = {};
-  let sensorMetaCache = { values: {}, units: {}, icons: {}, names: {}, loaded: false };
+  let sensorMetaCache = { values: {}, units: {}, icons: {}, names: {}, sceneEntities: {}, loaded: false };
   let sensorMetaFetchInFlight = null;
   let lastSensorMetaFetchMs = 0;
   let entityOptionsCache = null;
@@ -1572,7 +2188,7 @@ function t(key) {
 
   function normalizeSensorMetaPayload(payload) {
     if (!payload || typeof payload !== 'object') {
-      return { values: {}, units: {}, icons: {}, names: {}, loaded: false };
+      return { values: {}, units: {}, icons: {}, names: {}, sceneEntities: {}, loaded: false };
     }
     const hasMeta = Object.prototype.hasOwnProperty.call(payload, 'editable_values') ||
                     Object.prototype.hasOwnProperty.call(payload, 'values') ||
@@ -1584,7 +2200,7 @@ function t(key) {
                     Object.prototype.hasOwnProperty.call(payload, 'energy_units') ||
                     Object.prototype.hasOwnProperty.call(payload, 'climate_values');
     if (!hasMeta) {
-      return { values: payload || {}, units: {}, icons: {}, names: {}, loaded: true };
+      return { values: payload || {}, units: {}, icons: {}, names: {}, sceneEntities: {}, loaded: true };
     }
     return {
       values: Object.assign(
@@ -1598,6 +2214,10 @@ function t(key) {
       units: Object.assign({}, payload.units || {}, payload.energy_units || {}),
       icons: payload.icons || {},
       names: payload.names || {},
+      // Scene alias -> entity, so scene tiles resolve the entity icon like the
+      // device. A grid refresh normalizes the already normalized cache again,
+      // so the normalized name must survive too (it lost every scene icon).
+      sceneEntities: payload.scene_entities || payload.sceneEntities || {},
       loaded: true
     };
   }
@@ -1829,18 +2449,76 @@ function t(key) {
         rebuildEntitySelect(tab + '_cover_entity', data.covers);
         rebuildEntitySelect(tab + '_camera_entity', data.cameras);
         rebuildEntitySelect(tab + '_scene_alias', data.scenes);
+        if (typeof iconColorSourceEntries === 'function') {
+          rebuildEntitySelect(tab + '_tile_icon_source', iconColorSourceEntries(data));
+        }
       })
       .catch(() => {});
+  }
+
+  // Per-tile icon disc options are common to every type with an icon, so
+  // they travel with the type fields through drafts, copy/paste and saves.
+  function tileTypeHasIcon(typeValue) {
+    return !['0', '16'].includes(String(typeValue ?? '0'));
+  }
+  // Glow only matters where the icon can take a color: from its entity
+  // (switch/light, climate, cover, binary sensor), from the color bar or
+  // state colors (sensor family, energy) or from a fixed icon color (scene,
+  // folder, back, camera). Other icons are always white.
+  function tileTypeHasColoredIcon(typeValue) {
+    return ['1', '2', '4', '5', '8', '12', '14', '15', '17', '18', '19', '20', '21', '22', '23']
+      .includes(String(typeValue ?? '0'));
+  }
+  // Stored disc mode: 0 follows the global option, 2 hides the disc on this
+  // tile. A legacy stored 1 ("on") loads as checked.
+  function iconDiscModeFromCheckbox(box) {
+    return box?.checked === false ? '2' : '0';
+  }
+  // Like the per-tile Tile borders option, only Back, Clock and Text can hide
+  // their own icon disc; every other tile follows the global option.
+  function tileTypeHasDiscToggle(typeValue) {
+    return ['8', '9', '10'].includes(String(typeValue ?? '0'));
+  }
+  function collectIconDiscFields(tab, typeValue) {
+    const box = document.getElementById(tab + '_tile_icon_disc');
+    if (!box || !tileTypeHasIcon(typeValue)) return {};
+    const glow = document.getElementById(tab + '_tile_icon_glow');
+    return {
+      icon_disc: tileTypeHasDiscToggle(typeValue) ? iconDiscModeFromCheckbox(box) : '0',
+      icon_glow: tileTypeHasColoredIcon(typeValue) && glow?.checked === false ? '0' : '1',
+    };
+  }
+  function loadIconDiscFields(tab, data) {
+    const box = document.getElementById(tab + '_tile_icon_disc');
+    if (box) box.checked = String(data?.icon_disc) !== '2';
+    const glow = document.getElementById(tab + '_tile_icon_glow');
+    if (glow) glow.checked = !['0', 'false'].includes(String(data?.icon_glow));
+    syncIconDiscFields(tab);
+  }
+  function resetIconDiscFields(tab) {
+    const box = document.getElementById(tab + '_tile_icon_disc');
+    if (box) box.checked = true;
+    const glow = document.getElementById(tab + '_tile_icon_glow');
+    if (glow) glow.checked = true;
+  }
+  function syncIconDiscFields(tab) {
+    const typeValue = document.getElementById(tab + '_tile_type')?.value || '0';
+    const discToggle = tileTypeHasDiscToggle(typeValue);
+    const colored = tileTypeHasColoredIcon(typeValue);
+    document.getElementById(tab + '_tile_icon_disc_fields')
+      ?.classList.toggle('hidden', !tileTypeHasIcon(typeValue) || (!discToggle && !colored));
+    document.getElementById(tab + '_tile_icon_disc_row')?.classList.toggle('hidden', !discToggle);
+    document.getElementById(tab + '_tile_icon_glow_row')?.classList.toggle('hidden', !colored);
   }
 
   function collectTypeFieldValues(tab) {
     const prefix = tab;
     const typeValue = document.getElementById(prefix + '_tile_type')?.value || '0';
     const meta = getTileTypeMeta(typeValue);
-    if (!meta.save) return {};
+    const out = collectIconDiscFields(prefix, typeValue);
+    if (!meta.save) return out;
     const fd = new FormData();
     callTypeHandler(meta, 'save', prefix, fd);
-    const out = {};
     for (const [key, value] of fd.entries()) {
       out[key] = value;
     }
@@ -1853,10 +2531,10 @@ function t(key) {
     const fallbackRow = (index >= 0)
       ? (Math.max(firstRow, Math.floor(index / GRID_COLS)) + 1)
       : (firstRow + 1);
-    let col = clampInt(snapshot?.col, 1, GRID_COLS, fallbackCol);
-    let row = clampInt(snapshot?.row, firstRow + 1, GRID_ROWS, fallbackRow);
-    let spanW = clampInt(snapshot?.span_w, 1, GRID_COLS, 1);
-    let spanH = clampInt(snapshot?.span_h, 1, GRID_ROWS, 1);
+    let col = clampHalf(snapshot?.col, 1, GRID_COLS, fallbackCol);
+    let row = clampHalf(snapshot?.row, firstRow + 1, GRID_ROWS + 0.5, fallbackRow);
+    let spanW = clampHalf(snapshot?.span_w, 0.5, GRID_COLS, 1);
+    let spanH = clampHalf(snapshot?.span_h, 0.5, GRID_ROWS, 1);
     return constrainLayoutToTab(
       normalizeLayoutForTileType(snapshot?.type, col - 1, row - 1,
                                  spanW, spanH),
@@ -1898,7 +2576,7 @@ function t(key) {
     const prev = tiles[index] || {};
     const tile = Object.assign({}, prev);
     const layout = normalizeSnapshotLayout(snapshot, index, tab);
-    const numericFields = ['type', 'sensor_decimals', 'sensor_value_font', 'sensor_display_mode', 'sensor_gauge_min', 'sensor_gauge_max', 'switch_style', 'navigate_target', 'popup_open_mode', 'key_code', 'key_modifier', 'background_opacity'];
+    const numericFields = ['type', 'sensor_decimals', 'sensor_value_font', 'sensor_display_mode', 'sensor_gauge_min', 'sensor_gauge_max', 'switch_style', 'navigate_target', 'popup_open_mode', 'key_code', 'key_modifier', 'background_opacity', 'icon_disc', 'icon_glow'];
 
     tile.type = clampInt(snapshot?.type, 0, 255, Number(prev.type) || 0);
     tile.title = snapshot?.title || '';
@@ -1969,6 +2647,9 @@ function t(key) {
       tile.sensor_gauge_max = Number.isFinite(num) ? num : 100;
     }
 
+    if ([8,9,10].includes(Number(tile.type)) && snapshot?.tile_border !== undefined) {
+      tile.sensor_display_mode = ['0','false'].includes(String(snapshot.tile_border)) ? 1 : 0;
+    }
     tiles[index] = tile;
     tilesData[tab] = tiles;
   }
@@ -2002,6 +2683,1231 @@ function t(key) {
     delete queuedSaveByTile[saveKey];
     saveTile(tab, queued.silent, index);
   }
+  // Per-tile icon colors for the Sensor family (Sensor, Number, Select,
+  // Date/Time), Binary sensor and Energy: a fixed icon color, a color bar for
+  // numeric states ("Icon color by value") and up to six state colors for
+  // text states ("Icon color by state"); Binary sensors show one On and one
+  // Off color, stored as the state lines "is RRGGBB on" and "is RRGGBB off".
+  // The editor keeps the canonical v2 record of
+  // src/tiles/config/tile_icon_colors.h in the "icon_colors" field. Parsing,
+  // normalization and the color formulas below mirror that header step by
+  // step, so the Web Admin previews show the device colors. The six type
+  // modules call the load/save/reset helpers from their own field handlers,
+  // so drafts, copy/paste, autosave and import/export carry the record like
+  // any other type field.
+  // Rules (every tile type, "src ..." in the record): the tile's own entity
+  // or another one, entity color or own rules, coloring the icon and/or
+  // tinting the tile (tile_icon_source.cpp). Scene, Folder, Back, Camera,
+  // Clock and Text have no entity of their own and use another entity only
+  // (tileTypeHasFixedIconColorOnly / tileTypeRulesUseOwnEntity in
+  // tile_type_policy.h).
+  const ICON_COLOR_FIXED_TYPES = ['2', '4', '8', '9', '10', '18'];
+  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23'];
+  // The own entity field of each type (pairs, not an object with numeric keys).
+  const ICON_COLOR_ENTITY_FIELDS = [['1', '_sensor_entity'], ['5', '_switch_entity'], ['12', '_weather_entity'],
+    ['14', '_energy_entity'], ['15', '_media_entity'], ['17', '_climate_entity'], ['19', '_cover_entity'],
+    ['20', '_binary_sensor_entity'], ['21', '_number_entity'], ['22', '_select_entity'], ['23', '_datetime_entity']];
+  // Domains shown by the Switch tile (tile_icon_source.cpp switch_domain).
+  const ICON_COLOR_SWITCH_DOMAINS = ['light', 'switch', 'input_boolean', 'automation', 'fan',
+    'humidifier', 'remote', 'siren'];
+  const ICON_COLOR_TYPES = ICON_COLOR_OWN_TYPES.concat(ICON_COLOR_FIXED_TYPES);
+  const ICON_COLOR_BAR_TYPES = ['1', '14', '21'];
+  const ICON_COLOR_ROW_TYPES = ['1', '20', '22', '23'];
+  const ICON_COLOR_MAX_STOPS = 6;
+  const ICON_COLOR_MAX_ROWS = 6;
+  const ICON_COLOR_MAX_VALUE_BYTES = 32;
+  const ICON_COLOR_MAX_NUMBER_BYTES = 12;
+  const ICON_COLOR_LEGACY_MAX_RULES = 3;
+  const ICON_COLOR_ROW_DEFAULT = '#22C55E';
+  // The Binary sensor state colors without per-tile colors.
+  const ICON_COLOR_BINARY_DEFAULTS = { on: '#FFC107', off: '#9E9E9E' };
+  // Stop positions are thousandths of the bar.
+  const ICON_COLOR_PRESETS = {
+    cold_warm: [[0, 0x3B82F6], [450, 0x22C55E], [700, 0xF59E0B], [1000, 0xEF4444]],
+    traffic: [[0, 0x22C55E], [500, 0xEAB308], [1000, 0xEF4444]],
+    battery: [[0, 0xEF4444], [250, 0xF59E0B], [600, 0x22C55E], [1000, 0x22C55E]],
+    humidity: [[0, 0xF59E0B], [400, 0x22C55E], [700, 0x22C55E], [1000, 0x3B82F6]],
+    single: [[0, 0xFFFFFF], [1000, 0xFFFFFF]]
+  };
+
+  function tileTypeHasIconColors(typeValue) {
+    return ICON_COLOR_TYPES.includes(String(typeValue ?? '0'));
+  }
+
+  function tileTypeHasFixedIconColorOnly(typeValue) {
+    return ICON_COLOR_FIXED_TYPES.includes(String(typeValue ?? '0'));
+  }
+
+  // ---- Record model (mirrors tile_icon_colors.h) ----
+
+  function iconColorTrim(text) {
+    return String(text).replace(/^[ \t\r]+|[ \t\r]+$/g, '');
+  }
+
+  // "RRGGBB" or "#RRGGBB", exactly.
+  function iconColorParseHex(text) {
+    const match = /^#?([0-9a-fA-F]{6})$/.exec(String(text));
+    return match ? parseInt(match[1], 16) : null;
+  }
+
+  function iconColorHex(rgb) {
+    return (rgb >>> 0).toString(16).toUpperCase().padStart(6, '0');
+  }
+
+  function normalizeIconColorHex(value) {
+    const rgb = iconColorParseHex(String(value ?? '').trim());
+    return rgb === null ? '' : '#' + iconColorHex(rgb);
+  }
+
+  function iconColorIsV2(text) {
+    return text.startsWith('v2') && (text.length === 2 || text[2] === '\n' || text[2] === '\r');
+  }
+
+  // parse_decimal(): "[-]digits[.digits]" with comma or dot, at most twelve
+  // characters; returns the value and the canonical text.
+  function iconColorParseDecimal(text) {
+    const trimmed = iconColorTrim(text);
+    if (!trimmed || trimmed.length > ICON_COLOR_MAX_NUMBER_BYTES ||
+        !/^-?[0-9]*[.,]?[0-9]*$/.test(trimmed) || !/[0-9]/.test(trimmed)) return null;
+    const canonical = trimmed.replace(',', '.');
+    const value = Number(canonical);
+    return Number.isFinite(value) ? { value, text: canonical } : null;
+  }
+
+  // leading_number(): the leading decimal number of a state, without exponent.
+  function iconColorLeadingNumber(state) {
+    const match = /^[ \t\r]*(-?[0-9]*(?:[.,][0-9]*)?)/.exec(String(state));
+    const text = match ? match[1] : '';
+    if (!/[0-9]/.test(text) || text.length > 31) return null;
+    const value = Number(text.replace(',', '.'));
+    return Number.isFinite(value) ? value : null;
+  }
+
+  // fold_at(): ASCII and the Latin-1 letters U+00C0-U+00DE except U+00D7.
+  function iconColorFold(text) {
+    let out = '';
+    for (const ch of String(text)) {
+      const code = ch.codePointAt(0);
+      if (code >= 0x41 && code <= 0x5A) out += String.fromCharCode(code + 32);
+      else if (code >= 0xC0 && code <= 0xDE && code !== 0xD7) out += String.fromCharCode(code + 0x20);
+      else out += ch;
+    }
+    return out;
+  }
+
+  function iconColorTextMatches(op, value, state) {
+    if (state === null || state === undefined) return false;
+    const haystack = iconColorFold(iconColorTrim(String(state)));
+    const needle = iconColorFold(value);
+    if (op === 'is') return haystack === needle;
+    return needle.length > 0 && haystack.includes(needle);
+  }
+
+  // parse_rule(): "<op> RRGGBB <value>".
+  function iconColorParseRule(line) {
+    const text = iconColorTrim(line);
+    const space = text.indexOf(' ');
+    const op = space < 0 ? '' : text.slice(0, space);
+    if (!['ge', 'le', 'eq', 'is', 'has'].includes(op)) return null;
+    const rest = text.slice(space + 1);
+    const colorEnd = rest.indexOf(' ');
+    const color = iconColorParseHex(colorEnd < 0 ? rest : rest.slice(0, colorEnd));
+    if (color === null) return null;
+    const value = colorEnd < 0 ? '' : iconColorTrim(rest.slice(colorEnd));
+    return value ? { op, color, value } : null;
+  }
+
+  function iconColorSortStops(stops) {
+    return stops.sort((a, b) => a.position - b.position);
+  }
+
+  // parse_stop(): "P:RRGGBB", P with 1-4 digits, clamped to 0..1000.
+  function iconColorParseStop(token) {
+    const colon = token.indexOf(':');
+    if (colon < 1 || colon > 4 || !/^[0-9]+$/.test(token.slice(0, colon))) return null;
+    const color = iconColorParseHex(token.slice(colon + 1));
+    if (color === null) return null;
+    return { position: Math.min(Number(token.slice(0, colon)), 1000), color };
+  }
+
+  // parse_bar(): "bar <smooth|steps> <min> <max> <P>:<RRGGBB> ...".
+  function iconColorParseBar(line) {
+    const tokens = String(line).split(/[ \t\r]+/).filter(Boolean);
+    if (tokens[0] !== 'bar' || !['smooth', 'steps'].includes(tokens[1])) return null;
+    const min = iconColorParseDecimal(tokens[2] ?? '');
+    const max = iconColorParseDecimal(tokens[3] ?? '');
+    if (!min || !max || !(min.value < max.value)) return null;
+    const stops = [];
+    for (const token of tokens.slice(4)) {
+      if (stops.length >= ICON_COLOR_MAX_STOPS) break;
+      const stop = iconColorParseStop(token);
+      if (stop) stops.push(stop);
+    }
+    if (stops.length < 2) return null;
+    return { mode: tokens[1], min: min.value, max: max.value, minText: min.text, maxText: max.text,
+      stops: iconColorSortStops(stops) };
+  }
+
+  // valid_entity(): "<domain>.<object>" in lowercase letters, digits and
+  // underscores, at most 128 characters.
+  function iconColorValidEntity(entity) {
+    const text = String(entity ?? '');
+    return text.length <= 128 && /^[a-z0-9_]+\.[a-z0-9_]+$/.test(text);
+  }
+
+  // parse_source_line(): "src <auto|rules> <self|entity_id> [tile=NN]
+  // [noicon] [off]", options in any order.
+  function iconColorParseSource(line) {
+    const tokens = String(line).split(/[ \t\r]+/).filter(Boolean);
+    if (tokens.length < 3 || tokens[0] !== 'src' || !['auto', 'rules'].includes(tokens[1])) return null;
+    const layer = { mode: tokens[1], self: tokens[2] === 'self', entity: '', tile: 0, icon: true, enabled: true };
+    if (!layer.self) {
+      if (!iconColorValidEntity(tokens[2])) return null;
+      layer.entity = tokens[2];
+    }
+    for (const token of tokens.slice(3)) {
+      if (token === 'noicon') layer.icon = false;
+      else if (token === 'off') layer.enabled = false;
+      else if (/^tile=[0-9]{1,2}$/.test(token)) layer.tile = Math.min(50, Math.max(10, Number(token.slice(5))));
+      else return null;
+    }
+    return layer;
+  }
+
+  // own_state_colors_icon(): no rule layer (b40 records) or an enabled
+  // "src rules self" that colors the icon.
+  function iconColorOwnStateColorsIcon(record) {
+    const layer = iconColorRecordSource(record);
+    return !layer || (layer.mode === 'rules' && layer.self && layer.enabled && layer.icon);
+  }
+
+  // source_of(): the first "src" line of a v2 record, or null.
+  function iconColorRecordSource(record) {
+    const text = String(record ?? '');
+    if (!iconColorIsV2(text)) return null;
+    const line = text.split('\n').slice(2).find(candidate => candidate.startsWith('src '));
+    return line === undefined ? null : iconColorParseSource(line);
+  }
+
+  // mix_colors(): per 8-bit channel with a weight of 0..1024, rounded.
+  function iconColorMix(a, b, weight) {
+    let out = 0;
+    for (let shift = 16; shift >= 0; shift -= 8) {
+      const from = (a >> shift) & 0xFF;
+      const to = (b >> shift) & 0xFF;
+      out |= ((from * (1024 - weight) + to * weight + 512) >> 10) << shift;
+    }
+    return out >>> 0;
+  }
+
+  // bar_color_at(): smooth bars interpolate between neighbouring stops;
+  // steps bars take the last stop at or below t; t is clamped to 0..1.
+  function iconColorBarColorAt(bar, t) {
+    if (!(t > 0)) t = 0;
+    if (t > 1) t = 1;
+    let index = -1;
+    bar.stops.forEach((stop, i) => { if (stop.position / 1000 <= t) index = i; });
+    if (index < 0) return bar.stops[0].color;
+    if (bar.mode === 'steps' || index + 1 === bar.stops.length) return bar.stops[index].color;
+    const from = bar.stops[index].position / 1000;
+    const to = bar.stops[index + 1].position / 1000;
+    const fraction = (t - from) / (to - from);
+    return iconColorMix(bar.stops[index].color, bar.stops[index + 1].color, Math.floor(fraction * 1024 + 0.5));
+  }
+
+  function iconColorBarColor(bar, value) {
+    return iconColorBarColorAt(bar, (value - bar.min) / (bar.max - bar.min));
+  }
+
+  // resolve(): the icon color for a known state as "#RRGGBB", or '' for the
+  // type default. Only v2 records are evaluated.
+  function resolveIconColorRecord(record, state, display, fixedFallback = true) {
+    const text = String(record ?? '');
+    if (!iconColorIsV2(text) || state === undefined || state === null) return '';
+    const lines = text.split('\n');
+    const number = iconColorLeadingNumber(state);
+    let barSeen = false;
+    for (const line of lines.slice(2)) {
+      if (line.startsWith('bar ')) {
+        if (barSeen) continue;
+        barSeen = true;
+        const bar = number !== null ? iconColorParseBar(line) : null;
+        if (bar) return '#' + iconColorHex(iconColorBarColor(bar, number));
+        continue;
+      }
+      const rule = iconColorParseRule(line);
+      if (!rule || (rule.op !== 'is' && rule.op !== 'has')) continue;
+      if (iconColorTextMatches(rule.op, rule.value, state) ||
+          (display !== undefined && display !== null && iconColorTextMatches(rule.op, rule.value, display))) {
+        return '#' + iconColorHex(rule.color);
+      }
+    }
+    if (!fixedFallback) return '';
+    const fixed = iconColorParseHex(iconColorTrim(lines[1] ?? ''));
+    return fixed === null ? '' : '#' + iconColorHex(fixed);
+  }
+
+  // copy_value() plus trim: no control characters, at most 32 UTF-8 bytes
+  // without a split character.
+  function iconColorClipValue(value) {
+    let bytes = new TextEncoder().encode(String(value).replace(/[\u0000-\u001f\u007f]/g, ''));
+    if (bytes.length > ICON_COLOR_MAX_VALUE_BYTES) {
+      let n = ICON_COLOR_MAX_VALUE_BYTES;
+      let lead = n;
+      while (lead > 0 && (bytes[lead - 1] & 0xC0) === 0x80) lead--;
+      if (lead > 0) {
+        const c = bytes[lead - 1];
+        const need = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+        if (n - (lead - 1) < need) n = lead - 1;
+      }
+      bytes = bytes.slice(0, n);
+    }
+    return iconColorTrim(new TextDecoder().decode(bytes));
+  }
+
+  // A b39 numeric rule counts only with a complete number.
+  function iconColorLegacyNumericValid(value) {
+    return new TextEncoder().encode(value).length <= ICON_COLOR_MAX_VALUE_BYTES &&
+      /^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$/.test(value.replace(/,/g, '.'));
+  }
+
+  // migrate_legacy_bar(): b39 ">=" thresholds on whole numbers in descending
+  // order become a steps bar when their positions are exact thousandths.
+  function iconColorMigrateLegacyBar(body, fixed) {
+    const thresholds = [];
+    const colors = [];
+    let rules = 0;
+    for (const line of body) {
+      if (rules >= ICON_COLOR_LEGACY_MAX_RULES) break;
+      const rule = iconColorParseRule(line);
+      if (!rule) continue;
+      if (rule.op === 'is' || rule.op === 'has') { rules++; continue; }
+      if (!iconColorLegacyNumericValid(rule.value)) continue;
+      rules++;
+      if (rule.op !== 'ge' || !/^-?[0-9]{1,7}$/.test(rule.value)) return null;
+      const value = Number(rule.value);
+      if (thresholds.length && value >= thresholds[thresholds.length - 1]) return null;
+      thresholds.push(value);
+      colors.push(rule.color);
+    }
+    if (!thresholds.length) return null;
+    const lowest = thresholds[thresholds.length - 1];
+    const highest = thresholds[0];
+    const min = thresholds.length === 1 ? lowest - 1 : lowest - (highest - lowest);
+    const range = highest - min;
+    const stops = [{ position: 0, color: fixed === null ? 0xFFFFFF : fixed }];
+    for (let i = thresholds.length - 1; i >= 0; i--) {
+      const scaled = (thresholds[i] - min) * 1000;
+      if (scaled % range) return null;
+      stops.push({ position: scaled / range, color: colors[i] });
+    }
+    return { mode: 'steps', min, max: highest, minText: String(min), maxText: String(highest), stops };
+  }
+
+  // normalize(): any record (editor, import, b39) in the canonical v2 form;
+  // numeric types keep only the bar, text types only the state lines.
+  function normalizeIconColorRecord(record, allowBar, allowRows, allowSource = false, allowSelf = false) {
+    const text = String(record ?? '');
+    const v2 = iconColorIsV2(text);
+    let source = allowSource ? iconColorRecordSource(text) : null;
+    if (source?.self && !allowSelf) source = null;
+    if (source?.mode === 'rules') {
+      if (!source.self || (!allowBar && !allowRows)) {
+        allowBar = true;
+        allowRows = true;
+      }
+    } else if (source?.mode === 'auto') {
+      allowBar = false;
+      allowRows = false;
+    }
+    // "src rules self" coloring the icon only is implicit (b40 records).
+    const emitLayer = !!source &&
+      !(source.mode === 'rules' && source.self && source.icon && !source.tile && source.enabled);
+    const lines = text.split('\n');
+    const fixedIndex = v2 ? 1 : 0;
+    const fixed = iconColorParseHex(iconColorTrim(lines[fixedIndex] ?? ''));
+    const body = lines.slice(fixedIndex + 1);
+    let bar = null;
+    if (allowBar && v2) {
+      const line = body.find(candidate => candidate.startsWith('bar '));
+      if (line !== undefined) bar = iconColorParseBar(line);
+    } else if (allowBar) {
+      bar = iconColorMigrateLegacyBar(body, fixed);
+    }
+    let out = 'v2\n' + (fixed === null ? '' : iconColorHex(fixed));
+    const fill = v2 ? iconColorFillOf(body) : 0;
+    if (fill) out += '\nfill ' + fill;
+    if (emitLayer) {
+      out += '\nsrc ' + source.mode + ' ' + (source.self ? 'self' : source.entity) +
+        (source.tile ? ' tile=' + source.tile : '') + (source.icon ? '' : ' noicon') + (source.enabled ? '' : ' off');
+    }
+    if (bar) {
+      out += '\nbar ' + bar.mode + ' ' + bar.minText + ' ' + bar.maxText +
+        bar.stops.map(stop => ' ' + stop.position + ':' + iconColorHex(stop.color)).join('');
+    }
+    let rows = 0;
+    if (allowRows) {
+      let legacyRules = 0;
+      for (const line of body) {
+        if (rows >= ICON_COLOR_MAX_ROWS) break;
+        if (v2 && (line.startsWith('bar ') || line.startsWith('src '))) continue;
+        const rule = iconColorParseRule(line);
+        if (!rule) continue;
+        const textRule = rule.op === 'is' || rule.op === 'has';
+        if (!v2) {
+          if (legacyRules >= ICON_COLOR_LEGACY_MAX_RULES) break;
+          if (!textRule) {
+            if (iconColorLegacyNumericValid(rule.value)) legacyRules++;
+            continue;
+          }
+          legacyRules++;
+        } else if (!textRule) {
+          continue;
+        }
+        const value = iconColorClipValue(rule.value);
+        if (!value) continue;
+        out += '\n' + rule.op + ' ' + iconColorHex(rule.color) + ' ' + value;
+        rows++;
+      }
+    }
+    return fixed === null && !fill && !emitLayer && !bar && rows === 0 ? '' : out;
+  }
+
+  // tile_icon_colors::fill_of(): the "fill NN" tint of the fixed color in
+  // percent (clamped like the rule tint), 0 without one.
+  function iconColorFillOf(lines) {
+    const line = lines.find(candidate => candidate.startsWith('fill '));
+    if (line === undefined) return 0;
+    const text = iconColorTrim(line.slice(5));
+    if (!/^[0-9]+$/.test(text) || text.length > 4) return 0;
+    return Math.min(50, Math.max(10, Number(text)));
+  }
+
+  // Editor view of a record: fixed color, bar and state rows.
+  function parseIconColorRecord(record) {
+    const lines = normalizeIconColorRecord(record, true, true, true, true).split('\n');
+    const fixed = iconColorParseHex(lines[1] ?? '');
+    let bar = null;
+    const rows = [];
+    for (const line of lines.slice(2)) {
+      if (line.startsWith('bar ')) { bar = iconColorParseBar(line); continue; }
+      const rule = iconColorParseRule(line);
+      if (rule) rows.push({ has: rule.op === 'has', color: '#' + iconColorHex(rule.color), value: rule.value });
+    }
+    return { color: fixed === null ? '' : '#' + iconColorHex(fixed), bar, rows,
+      fill: iconColorFillOf(lines.slice(2)), source: iconColorRecordSource(lines.join('\n')) };
+  }
+
+  // ---- Source entity (icon-and-title tiles), mirrors tile_icon_source.cpp ----
+
+  // The raw state of a payload: the JSON "state" field, else the plain text.
+  function iconColorPayloadState(payload) {
+    const text = String(payload ?? '').trim();
+    if (!text.startsWith('{')) return text;
+    try {
+      const value = JSON.parse(text);
+      return value && value.state !== undefined && value.state !== null ? String(value.state).trim() : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function iconColorStateKnown(state) {
+    const text = String(state ?? '').trim().toLowerCase();
+    return !!text && !['unavailable', 'unknown', 'none', 'null'].includes(text);
+  }
+
+  // "auto": the entity's own icon color as its tile preview shows it.
+  function iconColorSourceAutoColor(entity, payload) {
+    const domain = String(entity).split('.')[0];
+    const text = String(payload ?? '').trim();
+    if (!text) return '';
+    if (ICON_COLOR_SWITCH_DOMAINS.includes(domain) && typeof parseSwitchPayload === 'function') {
+      const state = parseSwitchPayload(text);
+      if (!state || state.available === false || !state.hasState) return '';
+      return state.isOn ? (state.hasColor ? state.color : '#FFD54F') : '#B0B0B0';
+    }
+    if (domain === 'binary_sensor' && typeof parseBinarySensorPreviewPayload === 'function') {
+      const state = parseBinarySensorPreviewPayload(text);
+      if (!state?.valid || state.available !== true || !['on', 'off'].includes(state.state)) return '';
+      return binarySensorPreviewColor(state);
+    }
+    if (domain === 'climate' && typeof parseClimatePreviewPayload === 'function') {
+      const state = parseClimatePreviewPayload(text);
+      return state && state.available !== false ? climatePreviewColor(state) : '';
+    }
+    if (domain === 'cover' && typeof parseCoverPreviewPayload === 'function') {
+      const state = parseCoverPreviewPayload(text);
+      return state && state.available !== false ? coverPreviewColor(state) : '';
+    }
+    return '';
+  }
+
+  // The `active` flag of tile_icon_source.cpp's auto_color(): false while the
+  // entity is off, closed or not running (climate_visuals::state_active()).
+  function iconColorSourceAutoActive(entity, payload) {
+    const domain = String(entity).split('.')[0];
+    const text = String(payload ?? '').trim();
+    if (!text) return false;
+    if (ICON_COLOR_SWITCH_DOMAINS.includes(domain) && typeof parseSwitchPayload === 'function') {
+      const state = parseSwitchPayload(text);
+      return !!state && state.available !== false && !!state.hasState && !!state.isOn;
+    }
+    if (domain === 'binary_sensor' && typeof parseBinarySensorPreviewPayload === 'function') {
+      const state = parseBinarySensorPreviewPayload(text);
+      return !!state?.valid && state.available === true && state.state === 'on';
+    }
+    if (domain === 'climate' && typeof parseClimatePreviewPayload === 'function') {
+      const state = parseClimatePreviewPayload(text);
+      if (!state || state.available === false) return false;
+      const action = String(state.action || '');
+      const mode = String(state.mode || '');
+      if (['heating', 'preheating', 'cooling', 'drying', 'fan', 'defrosting'].includes(action)) return true;
+      return !!mode && mode !== 'off' && mode !== 'unknown' && action !== 'off';
+    }
+    if (domain === 'cover' && typeof parseCoverPreviewPayload === 'function') {
+      const state = parseCoverPreviewPayload(text);
+      const value = String(state?.state || 'unknown').toLowerCase();
+      return !!state && state.available !== false && !['closed', 'unknown', 'unavailable'].includes(value);
+    }
+    return false;
+  }
+
+  // tile_icon_source::rule_color(): the rule color of a layer from the preview
+  // states of its entity (own or other); '' without a known state or result.
+  // Rules never fall back to the fixed color here.
+  function iconColorLayerColor(record, layer, ownEntity, meta, typeValue) {
+    if (!layer || !layer.enabled) return '';
+    const entity = layer.self ? String(ownEntity || '') : layer.entity;
+    if (!entity) return '';
+    if (layer.self && ['21', '22', '23'].includes(String(typeValue))) {
+      if (layer.mode === 'auto' || typeof iconColorRuleState !== 'function') return '';
+      const rule = iconColorRuleState(typeValue, entity, meta, null);
+      return rule ? resolveIconColorRecord(record, rule.state, rule.display, false) : '';
+    }
+    const payload = meta?.values?.[entity];
+    if (payload === undefined || payload === null || !String(payload).trim()) return '';
+    if (layer.mode === 'auto') return normalizeIconColorHex(iconColorSourceAutoColor(entity, payload));
+    const state = iconColorPayloadState(payload);
+    if (!iconColorStateKnown(state)) return '';
+    let display = null;
+    if (entity.startsWith('binary_sensor.') && typeof parseBinarySensorPreviewPayload === 'function' &&
+        typeof binarySensorPreviewStateText === 'function') {
+      const parsed = parseBinarySensorPreviewPayload(String(payload));
+      if (parsed?.valid && ['on', 'off'].includes(parsed.state)) display = binarySensorPreviewStateText(parsed);
+    }
+    return resolveIconColorRecord(record, state, display, false);
+  }
+
+  // The icon color of a tile with rules on another entity, else the fixed
+  // color ('' = white).
+  function iconColorSourcePreview(record, meta) {
+    const layer = iconColorRecordSource(record);
+    const color = layer && !layer.self && layer.icon ? iconColorLayerColor(record, layer, '', meta, '') : '';
+    return color || resolveIconColorRecord(record, '', null);
+  }
+
+  // The rules' tile tint for the preview: { color, percent } or null. Entity
+  // color tints only while the entity is active, like refresh_card(). With
+  // Tile color "From icon" the tile follows the icon instead (no rule tint).
+  function iconColorTilePreviewTint(typeValue, record, ownEntity, meta) {
+    const layer = iconColorRecordSource(record);
+    if (parseIconColorRecord(record).fill) return null;
+    const ruleTint = (() => {
+      if (!layer || !layer.enabled || !layer.tile) return null;
+      const color = iconColorLayerColor(record, layer, ownEntity, meta, typeValue);
+      if (!color) return null;
+      if (layer.mode === 'auto') {
+        const entity = layer.self ? String(ownEntity || '') : layer.entity;
+        if (!iconColorSourceAutoActive(entity, meta?.values?.[entity])) return null;
+      }
+      return tileTintChoice(true, color, layer.tile, 0, '');
+    })();
+    return ruleTint;
+  }
+
+  // tile_tint::has_hue(): white, grey and black never tint a tile.
+  function tileTintHasHue(color) {
+    const hex = normalizeIconColorHex(color);
+    return !!hex && !(hex.slice(1, 3) === hex.slice(3, 5) && hex.slice(3, 5) === hex.slice(5, 7));
+  }
+
+  // tile_tint::choose(), the one tint rule of device and preview: with Tile
+  // color "From icon" the tile follows the real color the icon shows (rules
+  // included), else an applying rule "Tint tile" with a real color tints it;
+  // null without a tint.
+  function tileTintChoice(ruleActive, ruleColor, rulePercent, fillPercent, iconColor) {
+    if (fillPercent) {
+      return tileTintHasHue(iconColor) ? { color: normalizeIconColorHex(iconColor), percent: fillPercent } : null;
+    }
+    if (ruleActive && rulePercent && tileTintHasHue(ruleColor)) {
+      return { color: normalizeIconColorHex(ruleColor), percent: rulePercent };
+    }
+    return null;
+  }
+
+  // tile_tint::background(): the base mixed with the color, darkened in 5 %
+  // steps until white text keeps a contrast of at least 4.5:1.
+  function tileTintBackground(base, color, percent) {
+    const parse = value => {
+      const hex = normalizeIconColorHex(value);
+      return hex ? [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)) : [42, 42, 42];
+    };
+    const channel = v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const contrast = rgb => 1.05 / (0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]) + 0.05);
+    const from = parse(base);
+    const to = parse(color);
+    let out = from.map((v, i) => Math.floor((v * (100 - percent) + to[i] * percent + 50) / 100));
+    for (let i = 0; i < 40 && contrast(out) < 4.5; i++) out = out.map(v => Math.floor((v * 95 + 50) / 100));
+    return '#' + out.map(v => v.toString(16).toUpperCase().padStart(2, '0')).join('');
+  }
+
+  // Entities offered as a source: the states the Bridge publishes to tiles.
+  function iconColorSourceEntries(data) {
+    const seen = new Set();
+    const entries = [];
+    for (const list of [data?.sensors, data?.binary_sensors, data?.switches, data?.climates, data?.covers]) {
+      for (const entry of Array.isArray(list) ? list : []) {
+        const value = String(entry?.v ?? '');
+        if (!iconColorValidEntity(value) || seen.has(value)) continue;
+        seen.add(value);
+        entries.push(entry);
+      }
+    }
+    return entries;
+  }
+
+  // ---- Editor ----
+
+  const iconColorEl = (tab, suffix) => document.getElementById(tab + suffix);
+
+  function iconColorTypeOf(tab) {
+    return String(iconColorEl(tab, '_tile_type')?.value || '0');
+  }
+
+  // Bar state lives in a hidden input: "" (off) or "<mode> P:RRGGBB ...".
+  function readIconColorBar(tab) {
+    const tokens = String(iconColorEl(tab, '_tile_icon_bar')?.value || '').split(' ').filter(Boolean);
+    const mode = ['smooth', 'steps'].includes(tokens[0]) ? tokens[0] : 'off';
+    const stops = mode === 'off' ? [] : tokens.slice(1).map(iconColorParseStop).filter(Boolean);
+    return { mode, stops };
+  }
+
+  function writeIconColorBar(tab, mode, stops) {
+    const input = iconColorEl(tab, '_tile_icon_bar');
+    if (!input) return;
+    input.value = mode === 'off' ? ''
+      : [mode].concat(stops.map(stop => stop.position + ':' + iconColorHex(stop.color))).join(' ');
+  }
+
+  function iconColorSelectedStop(tab) {
+    const value = Number(iconColorEl(tab, '_tile_icon_bar_handles')?.dataset.selected ?? -1);
+    return Number.isInteger(value) ? value : -1;
+  }
+
+  function setIconColorSelectedStop(tab, index) {
+    const handles = iconColorEl(tab, '_tile_icon_bar_handles');
+    if (handles) handles.dataset.selected = String(index);
+  }
+
+  function iconColorBarRange(tab) {
+    const min = iconColorParseDecimal(iconColorEl(tab, '_tile_icon_bar_min')?.value ?? '');
+    const max = iconColorParseDecimal(iconColorEl(tab, '_tile_icon_bar_max')?.value ?? '');
+    return min && max && min.value < max.value ? { min: min.value, max: max.value } : null;
+  }
+
+  function ensureIconColorRange(tab) {
+    if (iconColorBarRange(tab)) return;
+    const min = iconColorEl(tab, '_tile_icon_bar_min');
+    const max = iconColorEl(tab, '_tile_icon_bar_max');
+    if (min) min.value = '0';
+    if (max) max.value = '100';
+  }
+
+  function iconColorFormatValue(value, span) {
+    const decimals = span >= 20 ? 0 : (span >= 2 ? 1 : 2);
+    return String(Number(value.toFixed(decimals)));
+  }
+
+  function iconColorGradient(mode, stops) {
+    const css = rgb => '#' + iconColorHex(rgb);
+    if (mode === 'steps') {
+      const parts = [];
+      stops.forEach((stop, index) => {
+        const from = index === 0 ? 0 : stop.position / 10;
+        const to = index + 1 < stops.length ? stops[index + 1].position / 10 : 100;
+        parts.push(css(stop.color) + ' ' + from + '%', css(stop.color) + ' ' + to + '%');
+      });
+      return 'linear-gradient(90deg, ' + parts.join(', ') + ')';
+    }
+    return 'linear-gradient(90deg, ' +
+      stops.map(stop => css(stop.color) + ' ' + stop.position / 10 + '%').join(', ') + ')';
+  }
+
+  // Draws the bar, the stop handles and their value labels. Existing handles
+  // are updated in place so a drag keeps its pointer capture.
+  function renderIconColorBar(tab) {
+    const section = iconColorEl(tab, '_tile_icon_bar_section');
+    if (!section) return;
+    const bar = readIconColorBar(tab);
+    section.querySelectorAll('[data-icon-color="mode"]').forEach(button => {
+      const active = button.dataset.mode === bar.mode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    iconColorEl(tab, '_tile_icon_bar_editor')?.classList.toggle('hidden', bar.mode === 'off');
+    const strip = iconColorEl(tab, '_tile_icon_bar_strip');
+    const handles = iconColorEl(tab, '_tile_icon_bar_handles');
+    if (!strip || !handles || bar.mode === 'off') return;
+    strip.style.background = iconColorGradient(bar.mode, iconColorSortStops(bar.stops.map(stop => ({ ...stop }))));
+    let knobs = Array.from(handles.querySelectorAll('.icon-color-stop'));
+    let labels = Array.from(handles.querySelectorAll('.icon-color-stop-label'));
+    if (knobs.length !== bar.stops.length) {
+      knobs.concat(labels).forEach(el => el.remove());
+      knobs = bar.stops.map((stop, index) => {
+        const knob = document.createElement('button');
+        knob.type = 'button';
+        knob.className = 'icon-color-stop';
+        knob.dataset.iconColor = 'stop';
+        knob.dataset.stop = String(index);
+        handles.appendChild(knob);
+        return knob;
+      });
+      labels = bar.stops.map(() => {
+        const label = document.createElement('span');
+        label.className = 'icon-color-stop-label';
+        handles.appendChild(label);
+        return label;
+      });
+    }
+    const selected = iconColorSelectedStop(tab);
+    const range = iconColorBarRange(tab);
+    bar.stops.forEach((stop, index) => {
+      const left = stop.position / 10 + '%';
+      knobs[index].style.left = left;
+      knobs[index].style.background = '#' + iconColorHex(stop.color);
+      knobs[index].classList.toggle('selected', index === selected);
+      labels[index].style.left = left;
+      labels[index].textContent = range
+        ? iconColorFormatValue(range.min + stop.position / 1000 * (range.max - range.min), range.max - range.min)
+        : '';
+    });
+    const remove = handles.querySelector('[data-icon-color="stop-remove"]');
+    const removable = selected >= 0 && selected < bar.stops.length && bar.stops.length > 2;
+    if (remove) {
+      remove.classList.toggle('hidden', !removable);
+      if (removable) remove.style.left = bar.stops[selected].position / 10 + '%';
+    }
+  }
+
+  function iconColorRuleRow(tab, index) {
+    return iconColorEl(tab, '_tile_icon_rule_' + index);
+  }
+
+  function readIconColorRows(tab) {
+    const rows = [];
+    for (let index = 0; index < ICON_COLOR_MAX_ROWS; index++) {
+      const row = iconColorRuleRow(tab, index);
+      if (!row || row.classList.contains('hidden')) continue;
+      rows.push({
+        value: document.getElementById(row.id + '_value')?.value || '',
+        has: !!document.getElementById(row.id + '_has')?.checked,
+        color: document.getElementById(row.id + '_color')?.value || ICON_COLOR_ROW_DEFAULT
+      });
+    }
+    return rows;
+  }
+
+  function writeIconColorRows(tab, rows) {
+    for (let index = 0; index < ICON_COLOR_MAX_ROWS; index++) {
+      const row = iconColorRuleRow(tab, index);
+      if (!row) continue;
+      const entry = rows[index];
+      row.classList.toggle('hidden', !entry);
+      const value = document.getElementById(row.id + '_value');
+      const has = document.getElementById(row.id + '_has');
+      const color = document.getElementById(row.id + '_color');
+      if (value) value.value = entry ? entry.value : '';
+      if (has) has.checked = !!entry?.has;
+      if (color) color.value = entry ? (normalizeIconColorHex(entry.color) || ICON_COLOR_ROW_DEFAULT) : ICON_COLOR_ROW_DEFAULT;
+    }
+    iconColorEl(tab, '_tile_icon_rule_add')?.classList.toggle('hidden', rows.length >= ICON_COLOR_MAX_ROWS);
+  }
+
+  // Binary sensor On/Off pickers; unset pickers keep the type color.
+  function setIconColorBinaryInput(tab, state, color) {
+    const input = iconColorEl(tab, '_tile_icon_' + state);
+    if (!input) return;
+    const hex = normalizeIconColorHex(color);
+    input.value = hex || input.dataset.default || ICON_COLOR_BINARY_DEFAULTS[state];
+    input.dataset.unset = hex ? '0' : '1';
+  }
+
+  function readIconColorBinaryRows(tab) {
+    const rows = [];
+    for (const state of ['on', 'off']) {
+      const input = iconColorEl(tab, '_tile_icon_' + state);
+      if (input && input.dataset.unset === '0') rows.push({ value: state, has: false, color: input.value });
+    }
+    return rows;
+  }
+
+  // An unset icon color keeps the type's default (white or state color).
+  function setIconColorInput(tab, color) {
+    const input = iconColorEl(tab, '_tile_icon_color');
+    if (!input) return;
+    const hex = normalizeIconColorHex(color);
+    input.value = hex || '#FFFFFF';
+    input.dataset.unset = hex ? '0' : '1';
+  }
+
+  function iconColorOwnEntity(tab, type) {
+    const field = ICON_COLOR_ENTITY_FIELDS.find(pair => pair[0] === type);
+    return field ? String(iconColorEl(tab, field[1])?.value || '') : '';
+  }
+
+  // The rule layer in the editor, or null when there is nothing to keep
+  // (another entity without a choice, or switched off at the defaults).
+  function readIconColorSource(tab) {
+    const type = iconColorTypeOf(tab);
+    const own = ICON_COLOR_OWN_TYPES.includes(type) && iconColorEl(tab, '_tile_icon_source_kind')?.value !== 'other';
+    const entity = String(iconColorEl(tab, '_tile_icon_source')?.value || '').trim();
+    if (!own && !iconColorValidEntity(entity)) return null;
+    const strength = Number(iconColorEl(tab, '_tile_icon_rule_strength')?.value || 20);
+    return {
+      mode: iconColorEl(tab, '_tile_icon_source_mode')?.value === 'auto' ? 'auto' : 'rules',
+      self: own,
+      entity: own ? '' : entity,
+      tile: iconColorEl(tab, '_tile_icon_rule_tile')?.checked
+        ? Math.min(50, Math.max(10, Math.round(strength / 5) * 5)) : 0,
+      icon: iconColorEl(tab, '_tile_icon_rule_icon')?.checked !== false,
+      enabled: iconColorEl(tab, '_tile_icon_rules_on')?.value === '1'
+    };
+  }
+
+  function writeIconColorSource(tab, layer) {
+    const select = iconColorEl(tab, '_tile_icon_source');
+    const entity = layer && !layer.self ? layer.entity : '';
+    if (select) {
+      if (entity && !Array.from(select.options).some(option => option.value === entity)) {
+        const option = document.createElement('option');
+        option.value = entity;
+        option.textContent = entity;
+        select.appendChild(option);
+      }
+      select.value = entity;
+      if (entity) select.dataset.configuredValue = entity;
+      else delete select.dataset.configuredValue;
+    }
+    const set = (suffix, value) => { const el = iconColorEl(tab, suffix); if (el) el.value = value; };
+    // Without a stored layer the rules start at Own entity and Own rules, also
+    // when the cell is still Empty and only gets its type afterwards; types
+    // without an entity of their own show Other entity regardless.
+    set('_tile_icon_source_kind', layer && !layer.self ? 'other' : 'self');
+    set('_tile_icon_source_mode', layer?.mode === 'auto' ? 'auto' : 'rules');
+    const icon = iconColorEl(tab, '_tile_icon_rule_icon');
+    if (icon) icon.checked = layer ? layer.icon : true;
+    const tile = iconColorEl(tab, '_tile_icon_rule_tile');
+    if (tile) tile.checked = !!layer?.tile;
+    set('_tile_icon_rule_strength', String(layer?.tile || 20));
+  }
+
+  function collectIconColorRecord(tab) {
+    const type = iconColorTypeOf(tab);
+    const input = iconColorEl(tab, '_tile_icon_color');
+    const fixed = input && input.dataset.unset !== '1' ? normalizeIconColorHex(input.value).slice(1) : '';
+    const lines = ['v2', fixed];
+    if (iconColorEl(tab, '_tile_icon_fill')?.checked) {
+      lines.push('fill ' + (iconColorEl(tab, '_tile_icon_fill_strength')?.value || '20'));
+    }
+    const layer = ICON_COLOR_TYPES.includes(type) ? readIconColorSource(tab) : null;
+    const bar = readIconColorBar(tab);
+    if (bar.mode !== 'off') {
+      // A number with inner spaces is invalid rather than a second token.
+      const number = suffix => {
+        const text = iconColorTrim(iconColorEl(tab, suffix)?.value ?? '');
+        return /^[^ \t\r]+$/.test(text) ? text : '-';
+      };
+      lines.push(['bar', bar.mode, number('_tile_icon_bar_min'), number('_tile_icon_bar_max')]
+        .concat(bar.stops.map(stop => stop.position + ':' + iconColorHex(stop.color))).join(' '));
+    }
+    const binaryOwn = type === '20' && (!layer || layer.self);
+    const rows = binaryOwn ? readIconColorBinaryRows(tab) : readIconColorRows(tab);
+    for (const row of rows) {
+      const color = normalizeIconColorHex(row.color) || ICON_COLOR_ROW_DEFAULT;
+      const value = row.value.replace(/[\u0000-\u001f\u007f]/g, '');
+      lines.push((row.has ? 'has ' : 'is ') + color.slice(1) + ' ' + value);
+    }
+    // A switched-off own layer at its defaults without rules is no layer.
+    const idle = layer && layer.self && !layer.enabled && layer.mode === 'rules' && layer.icon && !layer.tile &&
+      bar.mode === 'off' && rows.length === 0;
+    if (layer && !idle) {
+      lines.splice(2, 0, 'src ' + layer.mode + ' ' + (layer.self ? 'self' : layer.entity) +
+        (layer.tile ? ' tile=' + layer.tile : '') + (layer.icon ? '' : ' noicon') + (layer.enabled ? '' : ' off'));
+    }
+    return normalizeIconColorRecord(lines.join('\n'), ICON_COLOR_BAR_TYPES.includes(type),
+      ICON_COLOR_ROW_TYPES.includes(type), true, ICON_COLOR_OWN_TYPES.includes(type));
+  }
+
+  // States can be numbers or text: the current state picks the bar or the
+  // state list while neither holds colors.
+  function iconColorSensorIsText(tab, sourceEntity = null) {
+    const entity = sourceEntity ?? (iconColorEl(tab, '_sensor_entity')?.value || '');
+    const meta = typeof sensorMetaCache === 'object' ? sensorMetaCache : null;
+    const raw = iconColorPayloadState(meta?.values?.[entity] ?? '');
+    if (!raw || ['unavailable', 'unknown', 'none', 'null', '--'].includes(raw.toLowerCase())) return false;
+    return iconColorLeadingNumber(raw) === null;
+  }
+
+  function iconColorMarkActive(tab, role, value) {
+    iconColorEl(tab, '_tile_icon_source_section')?.querySelectorAll('[data-icon-color="' + role + '"]').forEach(button => {
+      const active = button.dataset.mode === value;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function syncIconColorFields(tab) {
+    const block = iconColorEl(tab, '_tile_icon_color_fields');
+    if (!block) return;
+    const type = iconColorTypeOf(tab);
+    const visible = tileTypeHasIconColors(type);
+    // Tile color "From icon color" lives with the tile color (grid-preview.js).
+    if (typeof syncTileColorMode === 'function') syncTileColorMode(tab);
+    block.classList.toggle('hidden', !visible);
+    iconColorEl(tab, '_tile_icon_color_fixed')?.classList.toggle('hidden', !visible);
+    if (!visible) return;
+    const own = ICON_COLOR_OWN_TYPES.includes(type);
+    const kindInput = iconColorEl(tab, '_tile_icon_source_kind');
+    const kind = own && kindInput?.value !== 'other' ? 'self' : 'other';
+    const on = iconColorEl(tab, '_tile_icon_rules_on')?.value === '1';
+    const mode = iconColorEl(tab, '_tile_icon_source_mode')?.value === 'auto' ? 'auto' : 'rules';
+    const tileTint = !!iconColorEl(tab, '_tile_icon_rule_tile')?.checked;
+    // With Tile color "From icon" the tile follows the icon: "Tint tile"
+    // stays visible but greyed out (its setting is kept) and a note says why.
+    const followsIcon = !!iconColorEl(tab, '_tile_icon_fill')?.checked;
+    iconColorEl(tab, '_tile_icon_source_section')?.classList.remove('hidden');
+    iconColorEl(tab, '_tile_icon_rules_body')?.classList.toggle('hidden', !on);
+    iconColorEl(tab, '_tile_icon_source_kinds')?.classList.toggle('hidden', !own);
+    iconColorEl(tab, '_tile_icon_source')?.classList.toggle('hidden', kind !== 'other');
+    iconColorEl(tab, '_tile_icon_rule_strength_row')?.classList.toggle('hidden', !tileTint);
+    iconColorEl(tab, '_tile_icon_rule_strength_row')?.classList.toggle('is-disabled', followsIcon);
+    const tintBox = iconColorEl(tab, '_tile_icon_rule_tile');
+    if (tintBox) tintBox.disabled = followsIcon;
+    tintBox?.closest('label')?.classList.toggle('is-disabled', followsIcon);
+    const tintStrength = iconColorEl(tab, '_tile_icon_rule_strength');
+    if (tintStrength) tintStrength.disabled = followsIcon;
+    iconColorEl(tab, '_tile_icon_rule_follows_icon')?.classList.toggle('hidden', !followsIcon);
+    const strength = iconColorEl(tab, '_tile_icon_rule_strength');
+    const output = iconColorEl(tab, '_tile_icon_rule_strength_value');
+    if (strength && output) output.textContent = strength.value + ' %';
+    iconColorMarkActive(tab, 'rules-on', on ? '1' : '0');
+    iconColorMarkActive(tab, 'source-kind', kind);
+    iconColorMarkActive(tab, 'source-mode', mode);
+    const layer = readIconColorSource(tab);
+    let showBinary = false;
+    let showBar = false;
+    let showRows = false;
+    if (on && mode === 'rules' && layer) {
+      const sensorBar = ICON_COLOR_BAR_TYPES.includes(type);
+      const sensorRows = ICON_COLOR_ROW_TYPES.includes(type);
+      if (kind === 'self' && type === '20') {
+        showBinary = true;
+      } else if (kind === 'self' && (sensorBar || sensorRows) && !(sensorBar && sensorRows)) {
+        showBar = sensorBar;
+        showRows = sensorRows;
+      } else {
+        showBar = true;
+        showRows = true;
+      }
+    }
+    if (showBar && showRows) {
+      const hasBar = readIconColorBar(tab).mode !== 'off';
+      const hasRows = readIconColorRows(tab).length > 0;
+      if (hasBar || hasRows) {
+        showBar = hasBar;
+        showRows = hasRows;
+      } else {
+        const text = iconColorSensorIsText(tab, kind === 'self' ? iconColorOwnEntity(tab, type) : layer.entity);
+        showBar = !text;
+        showRows = text;
+        if (typeof isSensorMetaCacheLoaded === 'function' && !isSensorMetaCacheLoaded() &&
+            typeof fetchSensorMetaCache === 'function' && block.dataset.metaRequested !== '1') {
+          block.dataset.metaRequested = '1';
+          fetchSensorMetaCache().then(() => syncIconColorFields(tab)).catch(() => {});
+        }
+      }
+    }
+    iconColorEl(tab, '_tile_icon_bar_section')?.classList.toggle('hidden', !showBar);
+    iconColorEl(tab, '_tile_icon_state_section')?.classList.toggle('hidden', !showRows);
+    iconColorEl(tab, '_tile_icon_binary_section')?.classList.toggle('hidden', !showBinary);
+    if (showBar) renderIconColorBar(tab);
+  }
+
+  function loadIconColorFields(tab, data) {
+    const type = iconColorTypeOf(tab);
+    const parsed = parseIconColorRecord(data?.icon_colors);
+    setIconColorInput(tab, parsed.color);
+    const fill = iconColorEl(tab, '_tile_icon_fill');
+    if (fill) fill.checked = parsed.fill > 0;
+    const fillStrength = iconColorEl(tab, '_tile_icon_fill_strength');
+    if (fillStrength) fillStrength.value = String(parsed.fill || 20);
+    const barInput = iconColorEl(tab, '_tile_icon_bar');
+    if (barInput) barInput.dataset.last = '';
+    writeIconColorBar(tab, parsed.bar ? parsed.bar.mode : 'off', parsed.bar ? parsed.bar.stops : []);
+    const min = iconColorEl(tab, '_tile_icon_bar_min');
+    const max = iconColorEl(tab, '_tile_icon_bar_max');
+    if (min) min.value = parsed.bar ? parsed.bar.minText : '';
+    if (max) max.value = parsed.bar ? parsed.bar.maxText : '';
+    setIconColorSelectedStop(tab, -1);
+    writeIconColorRows(tab, parsed.rows);
+    writeIconColorSource(tab, parsed.source);
+    // Records without a layer (b40) keep their own rules switched on.
+    const own = ICON_COLOR_OWN_TYPES.includes(type);
+    const on = parsed.source ? parsed.source.enabled : own && (!!parsed.bar || parsed.rows.length > 0);
+    const onInput = iconColorEl(tab, '_tile_icon_rules_on');
+    if (onInput) onInput.value = on ? '1' : '0';
+    for (const state of ['on', 'off']) {
+      const row = parsed.rows.find(entry => !entry.has && iconColorFold(entry.value) === state);
+      setIconColorBinaryInput(tab, state, row ? row.color : '');
+    }
+    syncIconColorFields(tab);
+  }
+
+  function saveIconColorFields(tab, formData) {
+    formData.append('icon_colors', collectIconColorRecord(tab));
+  }
+
+  function resetIconColorFields(tab) {
+    loadIconColorFields(tab, {});
+  }
+
+  // Delegated listeners survive folder-tab HTML replacement without stale or
+  // duplicate handlers. Every change takes the shared live-editor path:
+  // preview, draft snapshot and autosave.
+  function commitIconColorChange(tab) {
+    syncIconColorFields(tab);
+    updateTilePreview(tab);
+    updateDraft(tab);
+    scheduleAutoSave(tab);
+  }
+
+  function iconColorEventTab(element) {
+    return element?.closest?.('.tile-icon-color-fields')?.dataset.tab || '';
+  }
+
+  function iconColorBarPosition(element, clientX) {
+    const rect = element.getBoundingClientRect();
+    if (!rect.width) return null;
+    return Math.max(0, Math.min(1000, Math.round((clientX - rect.left) / rect.width * 1000)));
+  }
+
+  function addIconColorStop(tab, position) {
+    const bar = readIconColorBar(tab);
+    if (bar.mode === 'off' || bar.stops.length >= ICON_COLOR_MAX_STOPS || position === null) return false;
+    const stops = iconColorSortStops(bar.stops);
+    const stop = { position, color: iconColorBarColorAt({ mode: bar.mode, stops }, position / 1000) };
+    stops.push(stop);
+    iconColorSortStops(stops);
+    writeIconColorBar(tab, bar.mode, stops);
+    setIconColorSelectedStop(tab, stops.indexOf(stop));
+    return true;
+  }
+
+  function openIconColorStopPicker(tab, index) {
+    const stop = readIconColorBar(tab).stops[index];
+    const picker = iconColorEl(tab, '_tile_icon_stop_color');
+    if (!stop || !picker) return;
+    picker.value = '#' + iconColorHex(stop.color);
+    try {
+      if (typeof picker.showPicker === 'function') picker.showPicker();
+      else picker.click();
+    } catch (_) {
+      picker.click();
+    }
+  }
+
+  document.addEventListener('input', event => {
+    const target = event.target;
+    const role = target?.dataset?.iconColor;
+    if (!['color', 'binary', 'value', 'rule-color', 'min', 'max', 'stop-color', 'rule-strength', 'fill-strength'].includes(role)) return;
+    const tab = iconColorEventTab(target);
+    if (!tab) return;
+    if (role === 'color' || role === 'binary') target.dataset.unset = '0';
+    if (role === 'stop-color') {
+      const bar = readIconColorBar(tab);
+      const stop = bar.stops[iconColorSelectedStop(tab)];
+      const rgb = iconColorParseHex(target.value);
+      if (!stop || rgb === null) return;
+      stop.color = rgb;
+      writeIconColorBar(tab, bar.mode, bar.stops);
+    }
+    commitIconColorChange(tab);
+  });
+
+  document.addEventListener('change', event => {
+    const target = event.target;
+    const id = target?.id || '';
+    if (['has', 'source', 'rule-target', 'fill-target'].includes(target?.dataset?.iconColor)) {
+      const tab = iconColorEventTab(target);
+      if (tab) commitIconColorChange(tab);
+      return;
+    }
+    for (const suffix of ['_tile_type', '_sensor_entity', '_select_entity', '_datetime_entity']) {
+      if (id.endsWith(suffix)) syncIconColorFields(id.slice(0, -suffix.length));
+    }
+  });
+
+  document.addEventListener('click', event => {
+    const button = event.target?.closest?.('button[data-icon-color]');
+    const tab = iconColorEventTab(button);
+    if (!button || !tab) return;
+    const role = button.dataset.iconColor;
+    if (role === 'stop') {
+      // A finished drag is not a click on the stop.
+      if (button.dataset.dragged === '1') {
+        delete button.dataset.dragged;
+        return;
+      }
+      const index = Number(button.dataset.stop);
+      setIconColorSelectedStop(tab, index);
+      renderIconColorBar(tab);
+      openIconColorStopPicker(tab, index);
+      return;
+    }
+    if (role === 'clear') {
+      setIconColorInput(tab, '');
+    } else if (role === 'source-mode') {
+      const mode = iconColorEl(tab, '_tile_icon_source_mode');
+      if (mode) mode.value = button.dataset.mode === 'rules' ? 'rules' : 'auto';
+    } else if (role === 'strength-reset') {
+      const strength = iconColorEl(tab, '_tile_icon_rule_strength');
+      if (strength) strength.value = '20';
+    } else if (role === 'fill-strength-reset') {
+      const strength = iconColorEl(tab, '_tile_icon_fill_strength');
+      if (strength) strength.value = '20';
+    } else if (role === 'rules-on') {
+      const on = iconColorEl(tab, '_tile_icon_rules_on');
+      if (on) on.value = button.dataset.mode === '1' ? '1' : '0';
+    } else if (role === 'source-kind') {
+      const kind = iconColorEl(tab, '_tile_icon_source_kind');
+      if (kind) kind.value = button.dataset.mode === 'other' ? 'other' : 'self';
+    } else if (role === 'binary-clear') {
+      setIconColorBinaryInput(tab, button.dataset.state, '');
+    } else if (role === 'remove') {
+      const rows = readIconColorRows(tab);
+      rows.splice(Number(button.dataset.rule), 1);
+      writeIconColorRows(tab, rows);
+    } else if (role === 'add') {
+      const rows = readIconColorRows(tab);
+      if (rows.length >= ICON_COLOR_MAX_ROWS) return;
+      rows.push({ value: '', has: false, color: ICON_COLOR_ROW_DEFAULT });
+      writeIconColorRows(tab, rows);
+      document.getElementById(tab + '_tile_icon_rule_' + (rows.length - 1) + '_value')?.focus();
+    } else if (role === 'mode') {
+      const mode = button.dataset.mode;
+      const input = iconColorEl(tab, '_tile_icon_bar');
+      const bar = readIconColorBar(tab);
+      if (mode === 'off') {
+        if (bar.mode !== 'off' && input) input.dataset.last = input.value;
+        writeIconColorBar(tab, 'off', []);
+      } else if (bar.mode === 'off') {
+        // Turning the bar on restores the last stops, else Cold -> Warm.
+        const last = String(input?.dataset.last || '').split(' ').slice(1).map(iconColorParseStop).filter(Boolean);
+        const stops = last.length >= 2 ? last
+          : ICON_COLOR_PRESETS.cold_warm.map(([position, color]) => ({ position, color }));
+        writeIconColorBar(tab, mode, stops);
+        ensureIconColorRange(tab);
+      } else {
+        writeIconColorBar(tab, mode, bar.stops);
+      }
+      setIconColorSelectedStop(tab, -1);
+    } else if (role === 'preset') {
+      const preset = ICON_COLOR_PRESETS[button.dataset.preset];
+      if (!preset) return;
+      const bar = readIconColorBar(tab);
+      writeIconColorBar(tab, bar.mode === 'off' ? 'smooth' : bar.mode,
+        preset.map(([position, color]) => ({ position, color })));
+      ensureIconColorRange(tab);
+      setIconColorSelectedStop(tab, -1);
+    } else if (role === 'stop-remove') {
+      const bar = readIconColorBar(tab);
+      const selected = iconColorSelectedStop(tab);
+      if (bar.stops.length <= 2 || !bar.stops[selected]) return;
+      bar.stops.splice(selected, 1);
+      writeIconColorBar(tab, bar.mode, bar.stops);
+      setIconColorSelectedStop(tab, -1);
+    } else {
+      return;
+    }
+    commitIconColorChange(tab);
+  });
+
+  // Double-click on the bar adds a stop with the color already shown there.
+  document.addEventListener('dblclick', event => {
+    const strip = event.target?.closest?.('[data-icon-color="bar"]');
+    const tab = iconColorEventTab(strip);
+    if (!strip || !tab) return;
+    if (addIconColorStop(tab, iconColorBarPosition(strip, event.clientX))) commitIconColorChange(tab);
+  });
+
+  // Dragging a stop handle (mouse, pen or touch) moves it along the bar; the
+  // preview follows live, the draft and autosave follow on release.
+  let iconColorDrag = null;
+
+  document.addEventListener('pointerdown', event => {
+    const knob = event.target?.closest?.('[data-icon-color="stop"]');
+    const tab = iconColorEventTab(knob);
+    if (!knob || !tab || (event.button !== undefined && event.button !== 0)) return;
+    delete knob.dataset.dragged;
+    const index = Number(knob.dataset.stop);
+    setIconColorSelectedStop(tab, index);
+    renderIconColorBar(tab);
+    const start = readIconColorBar(tab).stops[index];
+    iconColorDrag = { tab, index, knob, pointerId: event.pointerId, startX: event.clientX,
+      startPosition: start ? start.position : 0, moved: false };
+    try { knob.setPointerCapture?.(event.pointerId); } catch (_) {}
+    event.preventDefault();
+  });
+
+  document.addEventListener('pointermove', event => {
+    const drag = iconColorDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.moved && Math.abs(event.clientX - drag.startX) < 3) return;
+    drag.moved = true;
+    const handles = iconColorEl(drag.tab, '_tile_icon_bar_handles');
+    const position = handles ? iconColorBarPosition(handles, event.clientX) : null;
+    const bar = readIconColorBar(drag.tab);
+    if (position === null || !bar.stops[drag.index]) return;
+    bar.stops[drag.index].position = position;
+    writeIconColorBar(drag.tab, bar.mode, bar.stops);
+    renderIconColorBar(drag.tab);
+    updateTilePreview(drag.tab);
+  });
+
+  function endIconColorDrag(event) {
+    const drag = iconColorDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    iconColorDrag = null;
+    if (!drag.moved) return;
+    drag.knob.dataset.dragged = '1';
+    const bar = readIconColorBar(drag.tab);
+    const moved = bar.stops[drag.index];
+    if (!moved) return;
+    // Re-sort on release; a stop dragged onto a neighbour's position lands on
+    // the side it came from, so dragging past a neighbour puts it behind it.
+    const stops = iconColorSortStops(bar.stops.filter(stop => stop !== moved));
+    const right = moved.position >= drag.startPosition;
+    let at = stops.findIndex(stop => right ? stop.position > moved.position : stop.position >= moved.position);
+    if (at < 0) at = stops.length;
+    stops.splice(at, 0, moved);
+    writeIconColorBar(drag.tab, bar.mode, stops);
+    setIconColorSelectedStop(drag.tab, at);
+    commitIconColorChange(drag.tab);
+  }
+
+  document.addEventListener('pointerup', endIconColorDrag);
+  document.addEventListener('pointercancel', endIconColorDrag);
 
   function getTileResizeHandlesHtml(typeValue) {
     if (String(typeValue || '0') === '0') return '';
@@ -2092,6 +3998,8 @@ function t(key) {
 
   function syncFolderFragmentWithRoot(tabEl) {
     if (!tabEl) return;
+    syncTileRadiusControls(tabEl);
+    syncGlobalDisplayControls(tabEl);
 
     const sourceBorderToggle = Array.from(
       document.querySelectorAll('.normal-tile-border-toggle'))
@@ -2197,6 +4105,7 @@ function t(key) {
       enableTileDrag(String(data.tab_id));
       enableTileKeys(String(data.tab_id));
       enableTileResize(String(data.tab_id));
+      enableFreeSlotHover(String(data.tab_id));
     }
     if (name !== null || icon !== null) {
       ensureNavigateTargetOption(
@@ -2532,19 +4441,92 @@ function t(key) {
     return v;
   }
 
+  function clampHalf(value, min, max, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number * 2) / 2)) : fallback;
+  }
+  function isCompactSensorType(type) { return [1, 14, 20].includes(Number(type)); }
+  // Types that may use half-cell sizes (mirrors tile_geometry::half_size).
+  // Scene, Folder, Settings, Back and Camera show only an icon and a title.
+  function supportsHalfSize(type) { return isCompactSensorType(type) || [2, 4, 7, 8, 9, 18].includes(Number(type)); }
+  // Every type resizes in half steps from 1x1; only half-size types may be half
+  // a row high (mirrors tile_geometry::supported).
+  function supportedTileLayout(type, layout) {
+    const values = layout ? [layout.col, layout.row, layout.span_w, layout.span_h] : [];
+    if (!layout || !values.every(v => Number.isFinite(v) && v >= 0 && Number.isInteger(v * 2))) return false;
+    if (layout.span_w < 1) return false;
+    return layout.span_h >= 1 || (supportsHalfSize(type) && layout.span_h === 0.5);
+  }
+  // Half-height value size for a value size choice, like
+  // compact_sensor_layout::value_step: the title size by default and for 20,
+  // 24, or 28 for 28 and the larger choices (32, 40), which do not fit.
+  function compactValueSize(choice) {
+    const value = String(choice ?? '0');
+    if (value === '2') return 24;
+    return ['3', '4', '5'].includes(value) ? 28 : 20;
+  }
+  // The value size choices a tile shows: Default, 24 and 28 in half-height
+  // tiles; Default, 20, 24, 32 and 40 otherwise (28 is the default there).
+  // A choice the other size lacks moves to the one that looks the same.
+  function syncCompactValueFontOptions(select, halfHeight) {
+    if (!select?.options) return;
+    // Fork: the monospace choices (200-203, sensor_value_font_fork.h) are for
+    // full-size tiles; value_step() shows them at the title size in a
+    // half-height tile, so they move to Default there.
+    const forkMono = ['200', '201', '202', '203'];
+    const shown = halfHeight ? ['0', '2', '5'] : ['0', '1', '2', '3', '4', ...forkMono];
+    for (const option of Array.from(select.options)) {
+      const hidden = !shown.includes(option.value);
+      option.hidden = hidden;
+      option.disabled = hidden;
+      if (option.value === '0') {
+        option.textContent = option.textContent.replace(/^\d+(?= )/, halfHeight ? '20' : '28');
+      }
+    }
+    const value = select.value;
+    if (halfHeight && value === '1') select.value = '0';
+    else if (halfHeight && (value === '3' || value === '4')) select.value = '5';
+    else if (!halfHeight && value === '5') select.value = '0';
+    else if (halfHeight && forkMono.includes(value)) select.value = '0';
+  }
+  function applyCompactSensorPreview(el, type, layout, mode = 0, valueFont = 0) {
+    const halfHeight = layout?.span_w >= 1 && layout.span_h === 0.5;
+    // A half-height icon-and-title tile (Scene, Folder, Settings, Back, Camera) uses the
+    // half-height Sensor header: the icon in the corner disc and the title
+    // (if any) centered beside it.
+    const compactIconTitle = [2, 4, 7, 8, 18].includes(Number(type)) && halfHeight;
+    const compact = (isCompactSensorType(type) || compactIconTitle) && halfHeight;
+    el.classList.toggle('sensor-compact', compact);
+    el.classList.toggle('sensor-half', compact);
+    el.classList.toggle('compact-title-only', compactIconTitle);
+    const valueSize = compact && !compactIconTitle ? compactValueSize(valueFont) : 20;
+    el.classList.toggle('compact-value-24', valueSize === 24);
+    el.classList.toggle('compact-value-28', valueSize === 28);
+    el.classList.toggle('clock-compact', Number(type) === 9 && halfHeight);
+    if (Number(type) === 9) fitCompactClockPreview(el);
+  }
+
   function normalizeLayoutForTileType(typeValue, col, row, spanW, spanH) {
-    let safeCol = clampInt(col, 0, GRID_COLS - 1, 0);
-    let safeRow = clampInt(row, 0, GRID_ROWS - 1, 0);
-    let safeW = clampInt(spanW, 1, GRID_COLS, 1);
-    let safeH = clampInt(spanH, 1, GRID_ROWS, 1);
+    let safeCol = clampHalf(col, 0, GRID_COLS - 0.5, 0);
+    let safeRow = clampHalf(row, 0, GRID_ROWS - 0.5, 0);
+    let safeW = clampHalf(spanW, 0.5, GRID_COLS, 1);
+    let safeH = clampHalf(spanH, 0.5, GRID_ROWS, 1);
     if (Number(typeValue) === MEDIA_TILE_TYPE) {
       const minW = Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS);
       const minH = Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS);
-      safeW = clampInt(safeW, minW, Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS), minW);
-      safeH = clampInt(safeH, minH, Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS), minH);
+      safeW = clampHalf(safeW, minW, Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS), minW);
+      safeH = clampHalf(safeH, minH, Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS), minH);
       safeCol = Math.min(safeCol, GRID_COLS - safeW);
       safeRow = Math.min(safeRow, GRID_ROWS - safeH);
     } else {
+      // Keep at least a whole cell wide (and a whole row high unless the type
+      // allows half a row), so clamping at the grid edge never yields 0.5.
+      const type = Number(typeValue);
+      const minH = (type === 0 || supportsHalfSize(type)) ? 0.5 : 1;
+      safeW = Math.max(1, safeW);
+      safeH = Math.max(minH, safeH);
+      safeCol = Math.min(safeCol, GRID_COLS - 1);
+      safeRow = Math.min(safeRow, GRID_ROWS - minH);
       safeW = Math.min(safeW, GRID_COLS - safeCol);
       safeH = Math.min(safeH, GRID_ROWS - safeRow);
     }
@@ -2564,10 +4546,10 @@ function t(key) {
     const fallbackCol = index % GRID_COLS;
     const firstRow = firstAllowedGridRow(tab);
     const fallbackRow = Math.max(firstRow, Math.floor(index / GRID_COLS));
-    const col = clampInt(tile?.col, 0, GRID_COLS - 1, fallbackCol);
-    const row = clampInt(tile?.row, firstRow, GRID_ROWS - 1, fallbackRow);
-    let spanW = clampInt(tile?.span_w, 1, GRID_COLS, 1);
-    let spanH = clampInt(tile?.span_h, 1, GRID_ROWS, 1);
+    const col = clampHalf(tile?.col, 0, GRID_COLS - 0.5, fallbackCol);
+    const row = clampHalf(tile?.row, firstRow, GRID_ROWS - 0.5, fallbackRow);
+    let spanW = clampHalf(tile?.span_w, 0.5, GRID_COLS, 1);
+    let spanH = clampHalf(tile?.span_h, 0.5, GRID_ROWS, 1);
     return constrainLayoutToTab(
       normalizeLayoutForTileType(tile?.type, col, row, spanW, spanH), tab);
   }
@@ -2584,22 +4566,27 @@ function t(key) {
 
   function setTileGridPosition(el, col, row, spanW, spanH) {
     setGridItemPosition(el, col, row, spanW, spanH);
+    const fractional = [col, row, spanW, spanH].some(v => !Number.isInteger(v));
+    el.classList.toggle('fractional-tile', fractional);
+    for (const [name, value] of Object.entries({col, row, w: spanW, h: spanH})) el.style.setProperty('--tile-' + name, String(value));
+    if (fractional) { el.style.gridColumn = 'auto'; el.style.gridRow = 'auto'; }
+
   }
 
   function getTileElementLayout(tab, index) {
     const el = document.getElementById(tab + '-tile-' + index);
     if (!el) return null;
-    const col = clampInt(el.dataset.col, 0, GRID_COLS - 1, null);
-    const row = clampInt(el.dataset.row, firstAllowedGridRow(tab), GRID_ROWS - 1, null);
-    const spanW = clampInt(el.dataset.spanW, 1, GRID_COLS, null);
-    const spanH = clampInt(el.dataset.spanH, 1, GRID_ROWS, null);
+    const col = clampHalf(el.dataset.col, 0, GRID_COLS - 0.5, null);
+    const row = clampHalf(el.dataset.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, null);
+    const spanW = clampHalf(el.dataset.spanW, 0.5, GRID_COLS, null);
+    const spanH = clampHalf(el.dataset.spanH, 0.5, GRID_ROWS, null);
     if (col === null || row === null || spanW === null || spanH === null) return null;
     return { col, row, span_w: spanW, span_h: spanH };
   }
 
   function layoutTiles(tab, tiles) {
     if (!Array.isArray(tiles)) return;
-    const occupied = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(false));
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
     const emptyIndices = [];
 
     tiles.forEach((tile, idx) => {
@@ -2614,30 +4601,211 @@ function t(key) {
         setTileGridPosition(el, layout.col, layout.row, layout.span_w, layout.span_h);
         el.style.display = '';
       }
-      for (let r = layout.row; r < layout.row + layout.span_h; r++) {
-        for (let c = layout.col; c < layout.col + layout.span_w; c++) {
-          if (r < GRID_ROWS && c < GRID_COLS) occupied[r][c] = true;
-        }
-      }
+      markOccupied(occupied, layout);
     });
 
-    const freeCells = [];
-    for (let r = firstAllowedGridRow(tab); r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (!occupied[r][c]) freeCells.push({ col: c, row: r });
+    // A selected new tile keeps the spot the user picked (newTileSpot), even
+    // when a grid re-render recreates its element. One further empty tile is
+    // the free slot that follows the pointer (enableFreeSlotHover); it rests
+    // on the first free spot so keyboard and touch users reach it.
+    const editingNew = idx => currentTileTab === tab && currentTileIndex === idx;
+    const empties = emptyIndices
+      .map(idx => ({ idx, el: document.getElementById(tab + '-tile-' + idx) }))
+      .filter(entry => entry.el)
+      .sort((a, b) => editingNew(b.idx) - editingNew(a.idx));
+    let freeEl = null;
+    empties.forEach(({ idx, el }) => {
+      delete el.dataset.freeSlot;
+      el.classList.remove('free-slot-hover');
+      const kept = editingNew(idx) && newTileSpot?.tab === tab && newTileSpot.index === idx
+        ? newTileSpot.layout : null;
+      if (kept && slotFits(tab, occupied, kept.col, kept.row, kept.span_w, kept.span_h)) {
+        markOccupied(occupied, kept);
+        setTileGridPosition(el, kept.col, kept.row, kept.span_w, kept.span_h);
+        el.style.display = '';
+        return;
       }
-    }
-
-    emptyIndices.forEach((idx, i) => {
-      const el = document.getElementById(tab + '-tile-' + idx);
-      if (!el) return;
-      if (i < freeCells.length) {
-        const cell = freeCells[i];
-        setTileGridPosition(el, cell.col, cell.row, 1, 1);
+      const slot = freeEl ? null : firstFreeSlot(tab, occupied);
+      if (slot) {
+        freeEl = el;
+        el.dataset.freeSlot = '1';
+        setTileGridPosition(el, slot.col, slot.row, slot.span_w, slot.span_h);
         el.style.display = '';
       } else {
         el.style.display = 'none';
       }
+    });
+  }
+
+  function markOccupied(occupied, layout) {
+    for (let r = layout.row * 2; r < (layout.row + layout.span_h) * 2; r++) {
+      for (let c = layout.col * 2; c < (layout.col + layout.span_w) * 2; c++) {
+        if (r >= 0 && c >= 0 && r < GRID_ROWS * 2 && c < GRID_COLS * 2) occupied[r][c] = true;
+      }
+    }
+  }
+
+  function slotFits(tab, occupied, col, row, spanW, spanH) {
+    if (col < 0 || row < firstAllowedGridRow(tab) ||
+        col + spanW > GRID_COLS || row + spanH > GRID_ROWS) return false;
+    for (let r = row * 2; r < (row + spanH) * 2; r++) {
+      for (let c = col * 2; c < (col + spanW) * 2; c++) {
+        if (occupied[r][c]) return false;
+      }
+    }
+    return true;
+  }
+
+  // New tiles start as 1x1. The 1x0.5 slot is offered only where 1x1 does not
+  // fit; choosing a type that needs more grows it (grownNewTileLayout).
+  const FREE_SLOT_SIZES = [[1, 1], [1, 0.5]];
+
+  // Spot of the new (still empty) tile open in the editor: {tab, index, layout}.
+  let newTileSpot = null;
+
+  // Smallest size a type accepts (Media needs 2x2, half-size types 1x0.5).
+  function minimumTileSize(type) {
+    if (Number(type) === MEDIA_TILE_TYPE) return [Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS), Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS)];
+    return [1, supportsHalfSize(type) ? 0.5 : 1];
+  }
+
+  // Layout a new half-height tile grows to for a type that needs more room:
+  // downwards first, then upwards, then left. Null when it does not fit.
+  function grownNewTileLayout(tab, type) {
+    if (!newTileSpot || newTileSpot.tab !== tab || newTileSpot.index !== currentTileIndex ||
+        !newTileSpot.layout) return null;
+    const base = newTileSpot.layout;
+    const [minW, minH] = minimumTileSize(type);
+    if (base.span_w >= minW && base.span_h >= minH) return base;
+    const spanW = Math.max(base.span_w, minW), spanH = Math.max(base.span_h, minH);
+    for (const [dx, dy] of [[0, 0], [0, base.span_h - spanH], [base.span_w - spanW, 0], [base.span_w - spanW, base.span_h - spanH]]) {
+      const layout = { col: base.col + dx, row: base.row + dy, span_w: spanW, span_h: spanH };
+      if (supportedTileLayout(type, layout) && canPlaceTileLayout(tab, currentTileIndex, layout)) return layout;
+    }
+    return null;
+  }
+
+  // Pointer position in (fractional) grid cells.
+  function pointerGridPoint(tab, clientX, clientY) {
+    const metrics = getTileGridMetrics(tab);
+    if (!metrics) return null;
+    const x = (clientX - metrics.rect.left - metrics.padLeft + metrics.gapX / 2) / (metrics.cellW + metrics.gapX);
+    const y = (clientY - metrics.rect.top - metrics.padTop + metrics.gapY / 2) / (metrics.cellH + metrics.gapY);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  }
+
+  // The free slot centred under the pointer, snapped to half cells. Nearby
+  // half steps that still cover the pointer are tried before a smaller size.
+  function freeSlotNear(tab, occupied, point) {
+    const snap = value => Math.round(value * 2) / 2;
+    const offsets = [0, -0.5, 0.5];
+    for (const [spanW, spanH] of FREE_SLOT_SIZES) {
+      const baseCol = snap(point.x - spanW / 2);
+      const baseRow = snap(point.y - spanH / 2);
+      const candidates = [];
+      for (const dy of offsets) {
+        for (const dx of offsets) {
+          const col = baseCol + dx, row = baseRow + dy;
+          if (col <= point.x && point.x < col + spanW && row <= point.y && point.y < row + spanH) {
+            candidates.push({ col, row, cost: Math.abs(dx) + Math.abs(dy) });
+          }
+        }
+      }
+      candidates.sort((a, b) => a.cost - b.cost);
+      for (const { col, row } of candidates) {
+        if (slotFits(tab, occupied, col, row, spanW, spanH)) {
+          return { col, row, span_w: spanW, span_h: spanH };
+        }
+      }
+    }
+    return null;
+  }
+
+  function firstFreeSlot(tab, occupied) {
+    for (const [spanW, spanH, step] of [[1, 1, 1], [1, 1, 0.5], [1, 0.5, 1], [1, 0.5, 0.5]]) {
+      for (let r = firstAllowedGridRow(tab); r + spanH <= GRID_ROWS; r += step) {
+        for (let c = 0; c + spanW <= GRID_COLS; c += step) {
+          if (slotFits(tab, occupied, c, r, spanW, spanH)) {
+            return { col: c, row: r, span_w: spanW, span_h: spanH };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // Occupancy as currently shown, including unsaved local edits and a selected
+  // new tile, but without the free slot itself.
+  function occupiedFromGrid(tab, grid, freeEl) {
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
+    // A selected new tile still of type Empty does not block the free slot:
+    // the pointer may pick a spot half a cell next to or over it, and a click
+    // moves the new tile there. Once a type is chosen it blocks like a tile.
+    const selectedIsEmpty =
+      String(document.getElementById(tab + '_tile_type')?.value ?? '0') === '0';
+    grid.querySelectorAll(':scope > .tile[data-index]').forEach(el => {
+      if (el === freeEl || el.style.display === 'none') return;
+      if (Number(el.dataset.type || 0) === 0 &&
+          (el.dataset.selected !== '1' || selectedIsEmpty)) return;
+      const layout = getTileElementLayout(tab, parseInt(el.dataset.index, 10));
+      if (layout) markOccupied(occupied, layout);
+    });
+    return occupied;
+  }
+
+  function freeSlotElement(grid) {
+    const free = grid.querySelector(':scope > .tile.empty[data-free-slot="1"]:not([data-selected="1"])');
+    if (free) return free;
+    const spare = Array.from(grid.querySelectorAll(':scope > .tile.empty'))
+      .find(el => el.dataset.selected !== '1' && el.style.display === 'none');
+    if (spare) spare.dataset.freeSlot = '1';
+    return spare || null;
+  }
+
+  // Moves the free slot to the pointer in half-cell steps. A click on it (or a
+  // tap on free space) opens the editor for a new tile at exactly that spot.
+  function enableFreeSlotHover(tab) {
+    const grid = getTileGrid(tab);
+    if (!grid || grid.dataset.freeSlotBound === '1') return;
+    grid.dataset.freeSlotBound = '1';
+    const placeAt = (clientX, clientY) => {
+      const el = freeSlotElement(grid);
+      if (!el) return null;
+      const point = pointerGridPoint(tab, clientX, clientY);
+      const slot = point && freeSlotNear(tab, occupiedFromGrid(tab, grid, el), point);
+      if (!slot) {
+        el.classList.remove('free-slot-hover');
+        return null;
+      }
+      // Only one unselected placeholder may exist, so a stale one left by a
+      // previous selection can never catch the click.
+      grid.querySelectorAll(':scope > .tile.empty').forEach(other => {
+        if (other === el || other.dataset.selected === '1') return;
+        other.style.display = 'none';
+        delete other.dataset.freeSlot;
+        other.classList.remove('free-slot-hover');
+      });
+      setTileGridPosition(el, slot.col, slot.row, slot.span_w, slot.span_h);
+      el.style.display = '';
+      el.classList.add('free-slot-hover');
+      return el;
+    };
+    grid.addEventListener('pointermove', event => {
+      if (event.pointerType === 'touch' || resizeState || dragSource) return;
+      const over = event.target.closest('.tile');
+      if (over && over.parentElement === grid && !over.classList.contains('empty')) {
+        grid.querySelector(':scope > .tile.free-slot-hover')?.classList.remove('free-slot-hover');
+        return;
+      }
+      placeAt(event.clientX, event.clientY);
+    });
+    grid.addEventListener('pointerleave', () => {
+      grid.querySelector(':scope > .tile.free-slot-hover')?.classList.remove('free-slot-hover');
+    });
+    grid.addEventListener('click', event => {
+      if (event.target !== grid) return;
+      const el = placeAt(event.clientX, event.clientY);
+      if (el) selectTile(parseInt(el.dataset.index, 10), tab);
     });
   }
 
@@ -2665,11 +4833,11 @@ function t(key) {
       return { col: 0, row: 0, span_w: 1, span_h: 1 };
     }
 
-    let col = clampInt(colEl.value, 1, GRID_COLS, 1);
+    let col = clampHalf(colEl.value, 1, GRID_COLS, 1);
     const firstRow = firstAllowedGridRow(tab);
-    let row = clampInt(rowEl.value, firstRow + 1, GRID_ROWS, firstRow + 1);
-    let spanW = clampInt(spanWEl.value, 1, GRID_COLS, 1);
-    let spanH = clampInt(spanHEl.value, 1, GRID_ROWS, 1);
+    let row = clampHalf(rowEl.value, firstRow + 1, GRID_ROWS + 0.5, firstRow + 1);
+    let spanW = clampHalf(spanWEl.value, 0.5, GRID_COLS, 1);
+    let spanH = clampHalf(spanHEl.value, 0.5, GRID_ROWS, 1);
 
     const typeValue = document.getElementById(prefix + '_tile_type')?.value || '0';
     const layout = constrainLayoutToTab(
@@ -2691,6 +4859,9 @@ function t(key) {
   function updateLayoutFromInputs(tab) {
     if (currentTileIndex === -1) return;
     const layout = normalizeLayoutInputs(tab);
+    if (newTileSpot && newTileSpot.tab === tab && newTileSpot.index === currentTileIndex) {
+      newTileSpot.layout = layout;
+    }
     const tiles = getTilesData(tab);
     const tileEl = document.getElementById(tab + '-tile-' + currentTileIndex);
     if (tileEl && (!Array.isArray(tiles) || tiles.length === 0)) {
@@ -2699,6 +4870,11 @@ function t(key) {
     }
     if (!Array.isArray(tiles) || currentTileIndex >= tiles.length) return;
     const tile = tiles[currentTileIndex] || {};
+    const type = document.getElementById(tab + '_tile_type')?.value ?? tile.type;
+    if (Number(type) !== 0 && (!supportedTileLayout(type, layout) || !canPlaceTileLayout(tab, currentTileIndex, layout))) {
+      applyLayoutInputsFromLayout(tab, normalizeTileLayout(tile, currentTileIndex, tab), false);
+      return;
+    }
     tile.col = layout.col;
     tile.row = layout.row;
     tile.span_w = layout.span_w;
@@ -2708,6 +4884,7 @@ function t(key) {
     tile.type = isNaN(typeNum) ? 0 : typeNum;
     tiles[currentTileIndex] = tile;
     layoutTiles(tab, tiles);
+    syncTileSizePolicy(tab);
   }
 
   function applyLayoutInputsFromLayout(tab, layout, persistDraft = true) {
@@ -2809,8 +4986,10 @@ function t(key) {
     if (spanWEl) spanWEl.value = d.span_w || '1';
     const spanHEl = document.getElementById(prefix + '_tile_span_h');
     if (spanHEl) spanHEl.value = d.span_h || '1';
+    syncTileSizePolicy(tab);
     const meta = getTileTypeMeta(d.type || '0');
     callTypeHandler(meta, 'load', prefix, d);
+    loadIconDiscFields(prefix, d);
     refreshEntityOptionLists(prefix);
     syncGaugeUi(tab);
     updateTilePreview(tab);
@@ -2869,8 +5048,10 @@ function t(key) {
     if (spanWEl) spanWEl.value = data.span_w || '1';
     const spanHEl = document.getElementById(prefix + '_tile_span_h');
     if (spanHEl) spanHEl.value = data.span_h || '1';
+    syncTileSizePolicy(tab);
     const meta = getTileTypeMeta(typeValue);
     callTypeHandler(meta, 'load', prefix, data);
+    loadIconDiscFields(prefix, data);
     refreshEntityOptionLists(prefix);
     syncGaugeUi(tab);
   }
@@ -2894,6 +5075,28 @@ function t(key) {
       showNotification(t('noCopiedTile'), false);
       return;
     }
+    // Paste fills an empty tile only, and only where the copied size fits
+    // without covering other tiles. Pasting over a tile or into too small a
+    // gap used to replace the Back, Settings or a folder tile, or let the
+    // overlap fix move the pasted tile to column 1 / row 1.
+    if (Number(getCurrentTileType(tab) || 0) !== 0) {
+      showNotification(t('pasteEmptyOnly'), false);
+      return;
+    }
+    const target = getTileElementLayout(tab, currentTileIndex) ||
+      getTileLayoutFromData(tab, currentTileIndex);
+    const candidate = target && {
+      col: target.col,
+      row: target.row,
+      span_w: Number(tileClipboard.span_w) || 1,
+      span_h: Number(tileClipboard.span_h) || 1
+    };
+    if (!candidate ||
+        !supportedTileLayout(tileClipboard.type, candidate) ||
+        !canPlaceTileLayout(tab, currentTileIndex, candidate)) {
+      showNotification(t('pasteNoSpace'), false);
+      return;
+    }
     applyTileFormData(tab, tileClipboard);
     updateTilePreview(tab);
     updateDraft(tab);
@@ -2908,6 +5111,10 @@ function t(key) {
     }
     currentTileIndex = index;
     currentTileTab = tab;
+    // A new tile keeps the spot it was picked at (see layoutTiles).
+    newTileSpot = Number(getTilesData(tab)?.[index]?.type || 0) === 0
+      ? { tab, index, layout: getTileElementLayout(tab, index) }
+      : null;
     document.getElementById('settingsHiddenTile')?.classList.remove('active');
     persistSelectedTileState();
     document.querySelectorAll(
@@ -2964,6 +5171,7 @@ function t(key) {
     if (specific) {
       specific.classList.remove('hidden');
     }
+    applyFolderTypeLock('folder0', false);
     const snapshot = normalizeHiddenSettingsSnapshot();
     if (!applyDraft('folder0', HIDDEN_SETTINGS_TILE_INDEX)) {
       applyTileFormData('folder0', snapshot);
@@ -3107,6 +5315,8 @@ function t(key) {
       updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
     });
     bindLive(iconInput, 'input', 'tileIcon', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(document.getElementById(prefix + '_tile_icon_disc'), 'change', 'tileIconDisc', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(document.getElementById(prefix + '_tile_icon_glow'), 'change', 'tileIconGlow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colorInput, 'input', 'tileColor', () => { markTileColorInputExplicit(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(opacityInput, 'input', 'tileOpacity', () => { updateTilePreview(tab); updateDraft(tab); });
     bindLive(opacityInput, 'change', 'tileOpacitySave', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
@@ -3118,6 +5328,19 @@ function t(key) {
       const tileEl = document.getElementById(tab + '-tile-' + currentTileIndex);
       const previousType = Number(tileEl?.dataset.type ?? 0);
       const nextType = Number(typeSelect.value);
+      let currentLayout = getTileElementLayout(tab, currentTileIndex);
+      // A new tile grows from 1x0.5 to the smallest size the chosen type needs.
+      const grown = previousType === 0 && nextType !== 0 ? grownNewTileLayout(tab, nextType) : null;
+      if (grown && currentLayout && (grown.span_w !== currentLayout.span_w || grown.span_h !== currentLayout.span_h)) {
+        applyLayoutInputsFromLayout(tab, grown, false);
+        newTileSpot.layout = grown;
+        if (tileEl) setTileGridPosition(tileEl, grown.col, grown.row, grown.span_w, grown.span_h);
+        currentLayout = grown;
+      }
+      if (nextType !== 0 && currentLayout && !supportedTileLayout(nextType, currentLayout)) {
+        typeSelect.value = String(previousType);
+        return;
+      }
       // A freshly created tile must start with the selected type's real
       // default colour. Do not inherit an explicit colour state from the empty
       // editor placeholder.
@@ -3131,6 +5354,19 @@ function t(key) {
         opacityInput.value = String(SCREENSAVER_TILE_DEFAULT_OPACITY);
       }
       updateTileType(tab);
+      // New tiles start in the HomeTiles look: a type with icon colors tints
+      // the tile with the color its icon shows at 20 % (Tile color "From
+      // icon"). Existing tiles and the screensaver keep their own style.
+      if (previousType === 0 && nextType !== 0 && !isScreensaverTileTab(tab) &&
+          typeof tileTypeHasIconColors === 'function' &&
+          tileTypeHasIconColors(String(nextType))) {
+        const strength = document.getElementById(tab + '_tile_icon_fill_strength');
+        if (strength) strength.value = '20';
+        const fill = document.getElementById(tab + '_tile_icon_fill');
+        if (fill) fill.checked = true;
+        syncTileColorMode(tab);
+        if (typeof syncIconColorFields === 'function') syncIconColorFields(tab);
+      }
       normalizeLayoutInputs(tab);
       updateLayoutFromInputs(tab);
       updateTilePreview(tab);
@@ -3164,6 +5400,7 @@ function t(key) {
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
+    bindLive(document.getElementById(prefix + '_binary_sensor_value_font'), 'change', 'binarySensorValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(binarySensorPopupModeSelect, 'change', 'binarySensorPopupMode', () => {
       updateDraft(tab);
       scheduleAutoSave(tab);
@@ -3277,6 +5514,9 @@ function t(key) {
     bindLive(animationFpsInput, 'input', 'animationFps', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(animationFitSelect, 'change', 'animationFit', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(animationZoomInput, 'input', 'animationZoom', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    for (const kind of ['clock','text','back']) {
+      bindLive(document.getElementById(prefix + '_' + kind + '_tile_border'), 'change', kind + 'TileBorder', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    }
     bindLive(clockTimeCheck, 'change', 'clockShowTime', () => {
       ensureClockSelection(prefix);
       updateTilePreview(tab);
@@ -3341,6 +5581,72 @@ function t(key) {
     }
   }
 
+  // Tile Settings keep a clicked control where it is on screen. A choice that
+  // hides fields below it (Tile color, Rules, Own/Other entity, bar mode, ...)
+  // shortens the scrolling settings body; scrolled near its end, the browser
+  // then clamps the scroll position and everything above, the clicked control
+  // included, slides down. After the handlers ran, the body scrolls the
+  // control back; a spacer at the end of the body makes room when the content
+  // got too short and shrinks away again while the user scrolls up.
+  const SETTINGS_SCROLL_SPACER = 'tile-settings-scroll-spacer';
+
+  function settingsScrollSpacer(body) {
+    let spacer = body.querySelector(':scope > .' + SETTINGS_SCROLL_SPACER);
+    if (!spacer) {
+      spacer = document.createElement('div');
+      spacer.className = SETTINGS_SCROLL_SPACER;
+      spacer.setAttribute('aria-hidden', 'true');
+      body.appendChild(spacer);
+    }
+    return spacer;
+  }
+
+  function keepSettingsControlInPlace(body, control, top) {
+    if (!body.isConnected || !control.isConnected || !control.getClientRects().length) return;
+    const shift = control.getBoundingClientRect().top - top;
+    if (Math.abs(shift) < 1) return;
+    const target = body.scrollTop + shift;
+    const room = body.scrollHeight - body.clientHeight;
+    if (target > room) {
+      const spacer = settingsScrollSpacer(body);
+      spacer.style.height = ((parseFloat(spacer.style.height) || 0) + target - room) + 'px';
+    }
+    body.scrollTop = target;
+  }
+
+  // Only the part of the spacer below the visible area goes, so the view
+  // never moves while it shrinks.
+  function trimSettingsScrollSpacer(body) {
+    const spacer = body.querySelector(':scope > .' + SETTINGS_SCROLL_SPACER);
+    const height = spacer ? parseFloat(spacer.style.height) || 0 : 0;
+    if (!height) return;
+    const below = body.scrollHeight - body.scrollTop - body.clientHeight;
+    const next = Math.max(0, height - Math.max(0, below));
+    if (next !== height) spacer.style.height = next ? next + 'px' : '';
+  }
+
+  // One gesture fires several events (a label click, the click it forwards to
+  // its checkbox, the change); the first one records the position.
+  let pendingSettingsControl = null;
+
+  function rememberSettingsControl(event) {
+    const body = event.target?.closest?.('.tile-settings-body');
+    if (!body || pendingSettingsControl) return;
+    const control = event.target.closest('button, label, input, select, textarea') || event.target;
+    pendingSettingsControl = {body, control, top: control.getBoundingClientRect().top};
+    requestAnimationFrame(() => {
+      const pending = pendingSettingsControl;
+      pendingSettingsControl = null;
+      if (pending) keepSettingsControlInPlace(pending.body, pending.control, pending.top);
+    });
+  }
+
+  document.addEventListener('click', rememberSettingsControl, true);
+  document.addEventListener('change', rememberSettingsControl, true);
+  document.addEventListener('scroll', event => {
+    if (event.target?.classList?.contains('tile-settings-body')) trimSettingsScrollSpacer(event.target);
+  }, true);
+
   function updateTilePreview(tab) {
     if (currentTileIndex === -1) return;
     if (currentTileIndex === HIDDEN_SETTINGS_TILE_INDEX) {
@@ -3368,9 +5674,13 @@ function t(key) {
     const iconInput = document.getElementById(prefix + '_tile_icon');
     const switchStyle = document.getElementById(prefix + '_switch_style')?.value || '0';
     const isEnergyType = type === '14';
+    // Half-height tiles offer only the value sizes that fit.
+    const halfHeight = Number(document.getElementById(prefix + '_tile_span_h')?.value || 1) === 0.5;
+    for (const id of ['_sensor_value_font', '_binary_sensor_value_font', '_energy_value_font'])
+      syncCompactValueFontOptions(document.getElementById(prefix + id), halfHeight);
     const sensorValueFont = isEnergyType
       ? (document.getElementById(prefix + '_energy_value_font')?.value || '0')
-      : (document.getElementById(prefix + '_sensor_value_font')?.value || '0');
+      : (document.getElementById(prefix + (type === '20' ? '_binary_sensor_value_font' : '_sensor_value_font'))?.value || '0');
     const previewKind = meta.preview || 'none';
     const sensorValueClass = getSensorValueFontClass(isEditablePreview(previewKind)
       ? (document.getElementById(prefix + '_' + previewKind + '_value_font')?.value ?? '2') : sensorValueFont);
@@ -3400,6 +5710,10 @@ function t(key) {
                 ? coverEntity
                 : (previewKind === 'camera' ? cameraEntity : '')))))));
     if (isEditablePreview(previewKind)) iconEntity = document.getElementById(prefix + '_' + previewKind + '_entity')?.value || '';
+    if (type === '2') {
+      const alias = document.getElementById(prefix + '_scene_alias')?.value || '';
+      iconEntity = sensorMetaCache.sceneEntities?.[alias] || '';
+    }
     const rawIcon = iconInput ? iconInput.value : '';
     let iconName = resolveIconName(
       rawIcon,
@@ -3442,6 +5756,13 @@ function t(key) {
     if (type === '5' && switchStyle === '1') tileElem.classList.add('switch-toggle');
     tileElem.style.background = '';
     tileElem.dataset.type = type;
+    tileElem.dataset.iconDisc = tileTypeHasDiscToggle(type)
+      && document.getElementById(prefix + '_tile_icon_disc')?.checked === false ? '2' : '0';
+    tileElem.dataset.iconGlow = tileTypeHasColoredIcon(type)
+      && document.getElementById(prefix + '_tile_icon_glow')?.checked === false ? '0' : '1';
+    const borderToggle = type === '8' ? '_back_tile_border'
+      : (type === '9' ? '_clock_tile_border' : (type === '10' ? '_text_tile_border' : ''));
+    tileElem.classList.toggle('tile-border-hidden', !!borderToggle && document.getElementById(prefix + borderToggle)?.checked === false);
 
     if (type === '0') {
       tileElem.classList.add('empty');
@@ -3450,20 +5771,32 @@ function t(key) {
       applyTileAriaLabel(tileElem, '', type);
       if (wasActive) tileElem.classList.add('active');
       updateLayoutFromInputs(tab);
+    applyCompactSensorPreview(tileElem, type, {span_w:Number(document.getElementById(prefix + '_tile_span_w')?.value || 1),
+      span_h:Number(document.getElementById(prefix + '_tile_span_h')?.value || 1)},
+      document.getElementById(prefix + '_sensor_display_mode')?.value || 0, sensorValueFont);
       return;
     }
 
     const defaultBg = meta.defaultBg || '#353535';
-    if (tileColorInputIsDefault(tab)) {
+    // Tiles without their own color (or with the stored default grey) show
+    // and keep following the global default tile color.
+    const isDefaultBg = tileColorInputIsDefault(tab);
+    if (isDefaultBg) {
       const colorInput = document.getElementById(prefix + '_tile_color');
-      if (colorInput) colorInput.value = defaultBg;
+      if (colorInput) {
+        colorInput.value = defaultBg;
+        colorInput.dataset.bgColorDefault = '1';
+      }
     }
-    const tileBg = tileColorInputIsDefault(tab) ? defaultBg : (color || defaultBg);
+    syncTileColorMode(tab);
+    const tileBg = tileBackgroundCss(meta, isDefaultBg,
+      isDefaultBg ? defaultBg : (color || defaultBg));
     if (isScreensaverTileTab(tab)) {
       const opacity = clampInt(
         document.getElementById('screensaver_tile_opacity')?.value,
         0, 255, 0);
-      tileElem.style.background = tileBg + opacity.toString(16).padStart(2, '0');
+      tileElem.style.background = tileBackgroundCss(meta, isDefaultBg,
+        isDefaultBg ? defaultBg : (color || defaultBg), opacity);
     } else {
       tileElem.style.background = tileBg;
     }
@@ -3477,14 +5810,16 @@ function t(key) {
     let html = '';
 
     if (iconName) {
-      const iconStyle = previewKind === 'climate'
-        ? ' style="color:' + climatePreviewColor(climatePreviewState) + '"'
-        : (previewKind === 'cover'
-          ? ' style="color:' + coverPreviewColor(coverPreviewState) + '"'
-          : (previewKind === 'binary_sensor'
-            ? ' style="color:' + binarySensorPreviewColor(
-                binarySensorPreviewState) + '"'
-            : ''));
+      const iconRecord = typeof collectIconColorRecord === 'function' ? collectIconColorRecord(prefix) : '';
+      const iconColor = previewIconColor(type, iconRecord, iconEntity, sensorMetaCache,
+        binarySensorPreviewState, previewKind === 'climate'
+          ? climatePreviewColor(climatePreviewState)
+          : (previewKind === 'cover'
+            ? coverPreviewColor(coverPreviewState)
+            : (previewKind === 'binary_sensor'
+              ? binarySensorPreviewColor(binarySensorPreviewState)
+              : '')));
+      const iconStyle = iconColor ? ' style="color:' + escapeHtml(iconColor) + '"' : '';
       html += '<i class="mdi mdi-' + escapeHtml(iconName) + ' tile-icon"' + iconStyle + '></i>';
     }
 
@@ -3525,7 +5860,7 @@ function t(key) {
         '<br>' + escapeHtml(value) + '</div>';
     }
     if (previewKind === 'binary_sensor') {
-      html += '<div class="tile-value tile-binary-sensor-value" id="' +
+      html += '<div class="tile-value tile-binary-sensor-value ' + (Number(sensorValueFont) ? sensorValueClass : '') + '" id="' +
         tileId + '-value">' +
         escapeHtml(binarySensorPreviewStateText(binarySensorPreviewState)) +
         '</div>';
@@ -3576,6 +5911,11 @@ function t(key) {
 
     html += getTileResizeHandlesHtml(type);
     tileElem.innerHTML = html;
+    if (typeof applyTileRulesTint === 'function' && typeof collectIconColorRecord === 'function' &&
+        typeof iconColorOwnEntity === 'function') {
+      applyTileRulesTint(tileElem, type, collectIconColorRecord(prefix), iconColorOwnEntity(prefix, String(type)), sensorMetaCache);
+    }
+    applyIconDiscTint(tileElem);
     if (wasActive) tileElem.classList.add('active');
     if (typeWas !== type && wasActive) {
       tileElem.classList.add('active');
@@ -3584,6 +5924,9 @@ function t(key) {
     }
     if (type === '5') updateSwitchValuePreview(tab);
     updateLayoutFromInputs(tab);
+    applyCompactSensorPreview(tileElem, type, {span_w:Number(document.getElementById(prefix + '_tile_span_w')?.value || 1),
+      span_h:Number(document.getElementById(prefix + '_tile_span_h')?.value || 1)},
+      document.getElementById(prefix + '_sensor_display_mode')?.value || 0, sensorValueFont);
     if (previewKind === 'climate' &&
         typeof mountClimateMiniEditor === 'function') {
       mountClimateMiniEditor(tab);
@@ -3620,6 +5963,7 @@ function t(key) {
         if (colEl && rowEl && spanWEl && spanHEl) {
           const fallbackLayout = (data.type === 0) ? getTileElementLayout(tab, index) : null;
           const layoutInput = {
+            type: data.type,
             col: data.col,
             row: data.row,
             span_w: data.span_w,
@@ -3636,9 +5980,11 @@ function t(key) {
           rowEl.value = String(layout.row + 1);
           spanWEl.value = String(layout.span_w);
           spanHEl.value = String(layout.span_h);
+          syncTileSizePolicy(tab);
         }
         const meta = colorMeta;
         callTypeHandler(meta, 'load', prefix, data);
+        loadIconDiscFields(prefix, data);
         refreshEntityOptionLists(prefix);
         syncGaugeUi(tab);
         const tileElem = document.getElementById(tab + '-tile-' + index);
@@ -3664,9 +6010,15 @@ function t(key) {
     }
     const folderId = getFolderIdForTab(tab);
     if (folderId === undefined) return;
+    const baseline = JSON.stringify(cached);
     fetch('/api/tiles?folder=' + encodeURIComponent(folderId) + '&index=' + index)
       .then(res => res.json())
-      .then(data => applyTileDataToEditor(index, tab, data))
+      .then(data => {
+        const current = getTilesData(tab)[index];
+        const changed = JSON.stringify(current) !== baseline;
+        applyTileDataToEditor(index, tab,
+          current && (changed || drafts[tab]?.[index]?._dirty) ? current : data);
+      })
       .catch(error => console.error('Tile load failed:', error));
   }
 
@@ -3734,6 +6086,38 @@ function t(key) {
     syncGaugeUi(tab);
     applySpecialTileUiState(tab);
     syncFolderPinControls(tab);
+    syncTileSizePolicy(tab);
+    syncIconDiscFields(tab);
+  }
+
+  function syncTileSizePolicy(tab) {
+    const typeEl = document.getElementById(tab + '_tile_type');
+    if (!typeEl) return;
+    const h = Number(document.getElementById(tab + '_tile_span_h')?.value || 1);
+    // Half a row high only suits the half-size types.
+    const halfHeight = h < 1;
+    // A new half-height tile may still take a larger type when it can grow.
+    const isNewTile = Number(getTilesData(tab)?.[currentTileIndex]?.type || 0) === 0;
+    for (const option of typeEl.options) {
+      if (option.dataset.sizeDisabled === '1') { option.disabled = false; delete option.dataset.sizeDisabled; }
+      const type = Number(option.value);
+      const grows = isNewTile && type !== 0 && !!grownNewTileLayout(tab, type);
+      const blocked = type !== 0 && !grows && halfHeight && !supportsHalfSize(type);
+      if (blocked && !option.disabled) {
+        option.disabled = true; option.dataset.sizeDisabled = '1';
+      }
+    }
+    const compact = supportsHalfSize(typeEl.value);
+    for (const field of ['col', 'row', 'span_w', 'span_h']) {
+      const input = document.getElementById(tab + '_tile_' + field);
+      if (input) input.step = '0.5';
+    }
+    const row = document.getElementById(tab + '_tile_row');
+    if (row) row.max = String(GRID_ROWS + (compact && h === 0.5 ? 0.5 : 0));
+    const height = document.getElementById(tab + '_tile_span_h');
+    if (height && compact) height.min = '0.5';
+    const note = document.getElementById(tab + '_tile_size_note');
+    if (note) note.hidden = !halfHeight;
   }
 
   let notificationTimer = null;
@@ -3768,6 +6152,7 @@ function t(key) {
   function resetAllTypeFields(tab) {
     const metas = Object.values(TILE_TYPE_REGISTRY || {});
     metas.forEach(meta => callTypeHandler(meta, 'reset', tab));
+    resetIconDiscFields(tab);
   }
 
   function applyFolderTypeLock(tab, locked) {
@@ -4230,14 +6615,15 @@ function t(key) {
     // bottom rows and packs it into the target grid.
     const firstTargetRow = Math.max(0, GRID_ROWS - 2);
     const firstSourceRow = sourceRows > 1 ? sourceRows - 2 : 0;
-    const occupied = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(false));
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
     const prepared = [];
     for (const entry of sourceEntries) {
       if (prepared.length >= tileCount) throw new Error('Screensaver grid does not fit target device');
       const tile = entry.tile;
       const mediaTile = Number(tile.type) === MEDIA_TILE_TYPE;
-      let spanW = Math.max(1, Number(tile.span_w || 1));
-      let spanH = Math.max(1, Number(tile.span_h || 1));
+      const half = value => Math.round(Number(value || 1) * 2) / 2;
+      let spanW = Math.max(1, half(tile.span_w));
+      let spanH = Math.max(supportsHalfSize(tile.type) ? 0.5 : 1, half(tile.span_h));
       if (mediaTile) {
         spanW = Math.max(MEDIA_TILE_MIN_SPAN, spanW);
         spanH = Math.max(MEDIA_TILE_MIN_SPAN, spanH);
@@ -4245,7 +6631,7 @@ function t(key) {
       spanW = Math.min(spanW, GRID_COLS, mediaTile ? MEDIA_TILE_MAX_SPAN : GRID_COLS);
       spanH = Math.min(spanH, 2, mediaTile ? MEDIA_TILE_MAX_SPAN : 2);
 
-      const sourceSpanW = Math.max(1, Number(tile.span_w || 1));
+      const sourceSpanW = Math.max(1, half(tile.span_w));
       const sourceColRange = Math.max(0, sourceCols - sourceSpanW);
       const targetColRange = Math.max(0, GRID_COLS - spanW);
       const relativeCol = sourceColRange > 0
@@ -4256,11 +6642,11 @@ function t(key) {
       const desiredRow = Math.min(GRID_ROWS - spanH, firstTargetRow + sourceRowOffset);
 
       let best = null;
-      for (let row = firstTargetRow; row <= GRID_ROWS - spanH; row++) {
-        for (let col = 0; col <= GRID_COLS - spanW; col++) {
+      for (let row = firstTargetRow; row <= GRID_ROWS - spanH; row += 0.5) {
+        for (let col = 0; col <= GRID_COLS - spanW; col += 0.5) {
           let free = true;
-          for (let y = row; y < row + spanH && free; y++) {
-            for (let x = col; x < col + spanW; x++) {
+          for (let y = row * 2; y < (row + spanH) * 2 && free; y++) {
+            for (let x = col * 2; x < (col + spanW) * 2; x++) {
               if (occupied[y][x]) { free = false; break; }
             }
           }
@@ -4270,8 +6656,8 @@ function t(key) {
         }
       }
       if (!best) throw new Error('Screensaver grid does not fit target device');
-      for (let y = best.row; y < best.row + spanH; y++) {
-        for (let x = best.col; x < best.col + spanW; x++) occupied[y][x] = true;
+      for (let y = best.row * 2; y < (best.row + spanH) * 2; y++) {
+        for (let x = best.col * 2; x < (best.col + spanW) * 2; x++) occupied[y][x] = true;
       }
       prepared.push({
         targetIndex: prepared.length,
@@ -4413,13 +6799,19 @@ function t(key) {
     fd.append('type', safeType);
     fd.append('title', tile.title || '');
     fd.append('icon_name', tile.icon_name || '');
+    if (tile.icon_disc !== undefined && tile.icon_disc !== null) {
+      fd.append('icon_disc', tile.icon_disc);
+    }
+    if (tile.icon_glow !== undefined && tile.icon_glow !== null) {
+      fd.append('icon_glow', ['0', 'false'].includes(String(tile.icon_glow)) ? '0' : '1');
+    }
     const parsedBgColor = parseBgColorValue(tile.bg_color);
     if (parsedBgColor !== 0 || (typeof tile.bg_color === 'string' && tile.bg_color.trim().startsWith('#'))) {
       fd.append('bg_color', parsedBgColor);
     } else {
       fd.append('bg_color_default', '1');
     }
-    const layout = normalizeTileLayout(tile, index, tabByFolder[folderId] || '');
+    const layout = normalizeTileLayout({ ...tile, type: safeType }, index, tabByFolder[folderId] || '');
     fd.append('col', layout.col);
     fd.append('row', layout.row);
     fd.append('span_w', layout.span_w);
@@ -4427,6 +6819,9 @@ function t(key) {
     if (tile.background_opacity !== undefined && tile.background_opacity !== null) {
       fd.append('background_opacity', tile.background_opacity);
     }
+    // Per-tile icon colors (Sensor family, Binary sensor, Energy); older
+    // exports without the field import without icon colors.
+    if (typeof tile.icon_colors === 'string') fd.append('icon_colors', tile.icon_colors);
 
     if ([21, 22, 23].includes(safeType)) fd.append('sensor_value_font', tile.sensor_value_font ?? 2);
     if (safeType === 1) {
@@ -4474,6 +6869,7 @@ function t(key) {
       fd.append(kind + '_entity', tile.sensor_entity || tile[kind + '_entity'] || '');
       fd.append('popup_open_mode', tile.popup_open_mode ?? 1);
     } else if (safeType === 20) {
+      fd.append('sensor_value_font', tile.sensor_value_font ?? 0);
       fd.append(
         'binary_sensor_entity',
         tile.sensor_entity || tile.binary_sensor_entity || '');
@@ -4501,10 +6897,14 @@ function t(key) {
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
+    } else if (safeType === 8) {
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
     } else if (safeType === 10) {
       fd.append('text_value', tile.text_value || tile.scene_alias || tile.key_macro || '');
       fd.append('text_value_font', tile.text_value_font || tile.sensor_value_font || '0');
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
     } else if (safeType === 9) {
+      fd.append('tile_border', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
       fd.append('clock_show_time', ((Number(tile.sensor_decimals || 1) & 1) !== 0) ? '1' : '0');
       fd.append('clock_show_date', ((Number(tile.sensor_decimals || 1) & 2) !== 0) ? '1' : '0');
       fd.append('key_code', tile.key_code || 40);
@@ -4596,18 +6996,253 @@ function t(key) {
     if (!Number.isFinite(num) || num === 0) return fallback || '#353535';
     return rgbToHex(num);
   }
+  // Tiles without their own color follow the global default tile color. The
+  // preview paints them through one root variable, so a change of that color
+  // repaints loaded, cached and lazily inserted grids at once.
+  function tileBackgroundCss(meta, isDefault, hex, opacity = null) {
+    const shared = !!isDefault && !!meta?.sharedBg;
+    const sharedCss = 'var(--tile-default-bg, #2A2A2A)';
+    if (opacity === null || opacity === undefined) return shared ? sharedCss : hex;
+    if (shared) {
+      return 'color-mix(in srgb, ' + sharedCss + ' ' +
+        (opacity * 100 / 255).toFixed(2) + '%, transparent)';
+    }
+    return hex + opacity.toString(16).padStart(2, '0');
+  }
+  // Mirrors tile_icon_disc::icon_color_tints(): with glow on, a colored icon
+  // tints its disc with its own hue; white and grey icons keep the white disc.
+  function iconDiscTinted(color) {
+    const rgb = String(color || '').match(/(\d+)\D+(\d+)\D+(\d+)/);
+    return !!rgb && !(rgb[1] === rgb[2] && rgb[2] === rgb[3]);
+  }
+  // Channels (0..255) of a computed CSS color, or null when it is fully
+  // transparent or unknown. Chrome reports color-mix() backgrounds (screensaver
+  // tiles with an opacity) as color(srgb r g b / a) with 0..1 channels.
+  function cssColorChannels(value) {
+    const text = String(value || '').trim();
+    const srgb = text.match(/^color\(srgb\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s*\/\s*([\d.]+%?))?/);
+    const rgb = text.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?/);
+    const match = srgb || rgb;
+    if (!match) return null;
+    const alpha = match[4] === undefined ? 1
+      : match[4].endsWith('%') ? Number(match[4].slice(0, -1)) / 100 : Number(match[4]);
+    if (!(alpha > 0)) return null;
+    return [1, 2, 3].map(i => {
+      const v = Number(match[i]) * (srgb ? 255 : 1);
+      return Math.max(0, Math.min(255, Math.round(v)));
+    });
+  }
+  function applyIconDiscTint(tileElem) {
+    const icon = tileElem?.querySelector(':scope > .tile-icon');
+    if (!icon) return;
+    const glow = tileElem.dataset.iconGlow !== '0';
+    // Mirrors tile_icon_source.cpp on_icon_color(): with Tile color "From
+    // icon color" the tile takes the color the icon shows; grey and white
+    // icons (off, default) keep the untinted background (tile_tint::choose).
+    const fill = Number(tileElem.dataset.iconFill || 0);
+    if (fill && tileElem.dataset.ruleTint !== '1' && typeof tileTintBackground === 'function' &&
+        typeof tileTintChoice === 'function') {
+      const iconRgb = cssColorChannels(getComputedStyle(icon).color);
+      const choice = iconRgb
+        ? tileTintChoice(false, '', 0, fill, '#' + iconRgb.map(v => v.toString(16).padStart(2, '0')).join(''))
+        : null;
+      if (choice) {
+        const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
+        tileElem.style.background = tileTintBackground(base || '#1A1A1A', choice.color, choice.percent);
+      } else if (tileElem.dataset.baseBg !== undefined) {
+        tileElem.style.background = tileElem.dataset.baseBg;
+      }
+    }
+    // An unset Icon color field of the edited tile shows the color the icon
+    // has now (the entity's own color, e.g. a light or a detected Binary
+    // sensor); only picking a color stores a fixed one.
+    if (typeof currentTileTab === 'string' && tileElem.id === currentTileTab + '-tile-' + currentTileIndex) {
+      const input = document.getElementById(currentTileTab + '_tile_icon_color');
+      const shown = cssColorChannels(getComputedStyle(icon).color);
+      if (input && input.dataset.unset === '1' && shown) {
+        input.value = '#' + shown.map(v => v.toString(16).padStart(2, '0')).join('');
+      }
+    }
+    // Mirrors tile_icon_disc::contrast_step_for()/scaled_opa(): discs are
+    // subtler on dark tiles (8 % instead of 15 % at luma <= 0.08) in 4 steps.
+    const bg = cssColorChannels(getComputedStyle(tileElem).backgroundColor);
+    const iconRgb = cssColorChannels(getComputedStyle(icon).color);
+    const tinted = glow && iconDiscTinted(getComputedStyle(icon).color);
+    icon.classList.toggle('tile-icon-tinted', tinted);
+    // Mirrors ui_surface_style::border_hint(): a glowing icon gives the tile
+    // outline its hue halfway to white (lv_color_mix(white, icon, 128)) at the
+    // hairline's 20 %, mostly the tile with a hint of the icon.
+    if (tinted && iconRgb) {
+      const hint = iconRgb.map(v => Math.floor(((255 * 128 + v * 127) * 0x8081) / 0x800000));
+      tileElem.style.setProperty('--tile-border-tint', 'rgba(' + hint.join(',') + ',0.20)');
+    } else {
+      tileElem.style.removeProperty('--tile-border-tint');
+    }
+    const luma = bg ? (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) / 255 : 1;
+    const step = Math.floor(Math.min(1, Math.max(0, (luma - 0.08) / 0.17)) * 3 + 0.5);
+    const scaled = full => Math.floor((full * (24 + 7 * step) + 22) / 45);
+    // Global Glow strength (icon_glow.h, 0..100 %): the glowing disc at that
+    // percentage and the white disc scaled with it (38 at 25 %), both scaled
+    // like the device.
+    const glowRaw = String(getComputedStyle(document.documentElement).getPropertyValue('--icon-glow-pct')).trim();
+    const glowValue = glowRaw === '' ? 25 : Number(glowRaw);
+    const glowPct = Math.min(100, Math.max(0, Number.isFinite(glowValue) ? glowValue : 25));
+    const neutralOpa = Math.floor((38 * glowPct + 12) / 25);
+    tileElem.style.setProperty('--icon-disc-opa', (scaled(neutralOpa) / 255).toFixed(3));
+    const glowOpa = Math.floor((glowPct * 255 + 50) / 100);
+    tileElem.style.setProperty('--icon-disc-glow', (scaled(glowOpa) * 100 / 255).toFixed(1) + '%');
+  }
+  // Mirrors tileBgColorFollowsDefault(): an unset color and the built-in
+  // default grey (stored explicitly by older editors) follow the global
+  // default tile color; every other stored color is kept.
+  // Built-in default greys: tile_color::kDefault, kLegacyDefault and
+  // kPreviousDefault.
+  function isDefaultTileGrey(rgb) {
+    return rgb === 0x1A1A1A || rgb === 0x2A2A2A || rgb === 0x222222;
+  }
+  function tileBgFollowsDefault(value) {
+    const num = Number(value);
+    return !Number.isFinite(num) || num === 0 || isDefaultTileGrey(num & 0xFFFFFF);
+  }
+  function tileColorHexIsDefaultGrey(hex) {
+    const text = String(hex || '').trim();
+    return /^#[0-9a-f]{6}$/i.test(text) && isDefaultTileGrey(parseInt(text.slice(1), 16));
+  }
+  // Tile color is one choice, like the device (tile_tint::choose): Global
+  // follows the global tile color (stored as the default marker), Custom keeps
+  // the picked color, From icon color tints the tile with the color the icon
+  // shows (the icon colors' hidden "fill" checkbox). Only tiles with icon
+  // colors offer From icon color. Nothing else switches the choice.
+  function tileColorMode(tab) {
+    if (document.getElementById(tab + '_tile_icon_fill')?.checked) return 'icon';
+    return document.getElementById(tab + '_tile_color')?.dataset.bgColorDefault === '0' ? 'custom' : 'global';
+  }
+  function syncTileColorMode(tab) {
+    const typeValue = document.getElementById(tab + '_tile_type')?.value || '0';
+    const iconOffered = typeof tileTypeHasIconColors === 'function' && tileTypeHasIconColors(typeValue);
+    const fill = document.getElementById(tab + '_tile_icon_fill');
+    if (fill?.checked && !iconOffered) fill.checked = false;
+    const mode = tileColorMode(tab);
+    document.getElementById(tab + '_tile_color_modes')?.querySelectorAll('[data-tile-color-mode]').forEach(button => {
+      const active = button.dataset.tileColorMode === mode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      if (button.dataset.tileColorMode === 'icon') button.classList.toggle('hidden', !iconOffered);
+    });
+    document.getElementById(tab + '_tile_color_row')?.classList.toggle('color-hidden', mode !== 'custom');
+    document.getElementById(tab + '_tile_icon_fill_row')?.classList.toggle('hidden', mode !== 'icon');
+    const strength = document.getElementById(tab + '_tile_icon_fill_strength');
+    const output = document.getElementById(tab + '_tile_icon_fill_strength_value');
+    if (strength && output) output.textContent = strength.value + ' %';
+  }
+  function setTileColorMode(tab, mode) {
+    const input = document.getElementById(tab + '_tile_color');
+    if (!input) return;
+    const before = tileColorMode(tab);
+    // Leaving Custom remembers its color for a later return.
+    if (before === 'custom' && mode !== 'custom') input.dataset.customColor = input.value;
+    const fill = document.getElementById(tab + '_tile_icon_fill');
+    if (fill) fill.checked = mode === 'icon';
+    const remembered = input.dataset.customColor || '';
+    if (mode === 'custom') {
+      if (before !== 'custom' && remembered) input.value = remembered;
+      input.dataset.bgColorDefault = '0';
+    } else {
+      const type = document.getElementById(tab + '_tile_type')?.value || '0';
+      input.value = getTileTypeMeta(type).defaultBg || '#1A1A1A';
+      input.dataset.bgColorDefault = '1';
+    }
+    syncTileColorMode(tab);
+    // The rules hide "Tint tile" while the tile follows the icon.
+    if (typeof syncIconColorFields === 'function') syncIconColorFields(tab);
+    updateTilePreview(tab);
+    updateDraft(tab);
+    scheduleAutoSave(tab);
+    // A first Custom opens the color picker right away.
+    if (mode === 'custom' && before !== 'custom' && !remembered) {
+      try {
+        if (typeof input.showPicker === 'function') input.showPicker();
+      } catch (_) {}
+    }
+  }
+  // State the firmware compares with the per-tile icon color rules, or null
+  // while it is missing, unknown or unavailable (the type color applies).
+  function iconColorRuleState(typeValue, entity, meta, binaryState) {
+    const type = String(typeValue ?? '0');
+    // Icon-and-title tiles have no state; their fixed icon color applies.
+    if (typeof tileTypeHasFixedIconColorOnly === 'function' &&
+        tileTypeHasFixedIconColorOnly(type)) return { state: '', display: null };
+    if (type === '20') {
+      if (!binaryState?.valid || binaryState.available !== true ||
+          !['on', 'off'].includes(binaryState.state)) return null;
+      return { state: binaryState.state, display: binarySensorPreviewStateText(binaryState) };
+    }
+    if (['21', '22', '23'].includes(type)) {
+      let value = meta?.editableValues?.[entity];
+      if (typeof value === 'string') { try { value = JSON.parse(value); } catch (_) { return null; } }
+      if (!value || value.state === null || value.state === undefined || !value.available ||
+          ['unknown', 'unavailable'].includes(String(value.state))) return null;
+      const kind = type === '21' ? 'number' : (type === '22' ? 'select' : 'datetime');
+      return { state: String(value.state), display: editablePreviewText(entity, kind, meta) };
+    }
+    const raw = String(meta?.values?.[entity] ?? '').trim();
+    if (!raw || ['unavailable', 'unknown', 'none', 'null', '--'].includes(raw.toLowerCase())) return null;
+    return { state: raw, display: null };
+  }
+  // Icon color of a preview tile: the per-tile rule or fixed icon color
+  // (resolveIconColorRecord, same result as the firmware), else `fallback`.
+  function previewIconColor(typeValue, record, entity, meta, binaryState, fallback) {
+    if (!record || typeof tileTypeHasIconColors !== 'function' ||
+        !tileTypeHasIconColors(typeValue)) return fallback;
+    const type = String(typeValue ?? '0');
+    // Rules that color the icon win (tile_icon_source::refresh_card).
+    const layer = typeof iconColorRecordSource === 'function' ? iconColorRecordSource(record) : null;
+    if (layer && layer.enabled && layer.icon && typeof iconColorLayerColor === 'function') {
+      const color = iconColorLayerColor(record, layer, entity, meta, type);
+      if (color) return color;
+    }
+    // Only the Sensor family colors its icon from its own state; every other
+    // case shows the fixed icon color, else the type's color.
+    const ownRules = ['1', '14', '20', '21', '22', '23'].includes(type) &&
+      typeof iconColorOwnStateColorsIcon === 'function' && iconColorOwnStateColorsIcon(record);
+    if (!ownRules) return resolveIconColorRecord(record, '', null) || fallback;
+    const rule = iconColorRuleState(typeValue, entity, meta, binaryState);
+    return (rule && resolveIconColorRecord(record, rule.state, rule.display)) || fallback;
+  }
+  // Tints a preview tile like tile_icon_source.cpp ("Tint tile" rules): the
+  // tint replaces the tile color and starts from the global default tile
+  // color, never from an own tile color.
+  function applyTileRulesTint(el, typeValue, record, ownEntity, meta) {
+    if (!el) return;
+    // The icon color's "Tint tile" option follows the icon (applyIconDiscTint)
+    // from this untinted background, unless a rule tint wins.
+    el.dataset.baseBg = el.style.background || '';
+    const fill = record && typeof parseIconColorRecord === 'function' ? parseIconColorRecord(record).fill : 0;
+    if (fill) el.dataset.iconFill = String(fill);
+    else delete el.dataset.iconFill;
+    const tint = record && typeof iconColorTilePreviewTint === 'function'
+      ? iconColorTilePreviewTint(String(typeValue ?? '0'), record, ownEntity, meta) : null;
+    el.dataset.ruleTint = tint ? '1' : '0';
+    if (!tint) return;
+    const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
+    el.style.background = tileTintBackground(base || '#1A1A1A', tint.color, tint.percent);
+  }
   function snapshotBgColorIsDefault(snapshot) {
-    return String(snapshot?.bg_color_default || '0') === '1';
+    return String(snapshot?.bg_color_default || '0') === '1' ||
+      tileColorHexIsDefaultGrey(snapshot?.color);
   }
   function tileColorInputIsDefault(tab) {
     const input = document.getElementById(tab + '_tile_color');
-    return !!input && input.dataset.bgColorDefault === '1';
+    return !!input && (input.dataset.bgColorDefault === '1' || tileColorHexIsDefaultGrey(input.value));
   }
   function setTileColorInputFromStored(tab, value, fallback) {
     const input = document.getElementById(tab + '_tile_color');
     if (!input) return;
-    input.value = tileBgToHex(value, fallback || '#2A2A2A');
-    input.dataset.bgColorDefault = tileBgValueIsSet(value) ? '0' : '1';
+    const follows = tileBgFollowsDefault(value);
+    input.value = follows ? (fallback || '#2A2A2A') : tileBgToHex(value, fallback || '#2A2A2A');
+    input.dataset.bgColorDefault = follows ? '1' : '0';
+    delete input.dataset.customColor;
+    syncTileColorMode(tab);
   }
   function setTileColorInputFromSnapshot(tab, snapshot) {
     const input = document.getElementById(tab + '_tile_color');
@@ -4616,10 +7251,19 @@ function t(key) {
     const isDefault = snapshotBgColorIsDefault(snapshot);
     input.value = isDefault ? (meta.defaultBg || '#2A2A2A') : (snapshot?.color || meta.defaultBg || '#2A2A2A');
     input.dataset.bgColorDefault = isDefault ? '1' : '0';
+    delete input.dataset.customColor;
+    syncTileColorMode(tab);
   }
+  // Picking a color selects Tile color Custom. Rules are never switched off:
+  // while a rule "Tint tile" applies, it wins (tile_tint::choose).
   function markTileColorInputExplicit(tab) {
     const input = document.getElementById(tab + '_tile_color');
     if (input) input.dataset.bgColorDefault = '0';
+    const fill = document.getElementById(tab + '_tile_icon_fill');
+    const followed = !!fill?.checked;
+    if (fill) fill.checked = false;
+    syncTileColorMode(tab);
+    if (followed && typeof syncIconColorFields === 'function') syncIconColorFields(tab);
   }
   function resetTileColor(tab) {
     const input = document.getElementById(tab + '_tile_color');
@@ -4628,6 +7272,9 @@ function t(key) {
     const meta = getTileTypeMeta(typeValue);
     input.value = meta.defaultBg || '#2A2A2A';
     input.dataset.bgColorDefault = '1';
+    const fill = document.getElementById(tab + '_tile_icon_fill');
+    if (fill) fill.checked = false;
+    syncTileColorMode(tab);
     if (isScreensaverTileTab(tab)) {
       const opacity = document.getElementById('screensaver_tile_opacity');
       if (opacity) opacity.value = String(SCREENSAVER_TILE_DEFAULT_OPACITY);
@@ -4660,15 +7307,22 @@ function t(key) {
     if (typeValue === '0' && (!meta.css || meta.css !== 'empty')) cls.push('empty');
     el.className = cls.join(' ');
     el.dataset.type = typeValue;
+    el.dataset.iconDisc = ['1', '2'].includes(String(tile?.icon_disc)) ? String(tile.icon_disc) : '0';
+    el.dataset.iconGlow = ['0', 'false'].includes(String(tile?.icon_glow)) ? '0' : '1';
+    el.classList.toggle('tile-border-hidden', ['8','9','10'].includes(typeValue) && Number(tile.sensor_display_mode) === 1);
+    applyCompactSensorPreview(el, typeValue, tile, tile.sensor_display_mode, tile.sensor_value_font);
     if (typeValue === '4') el.dataset.navigateTarget = String(tile.navigate_target || 0);
     else delete el.dataset.navigateTarget;
     if (typeValue === '0') el.style.background = 'transparent';
     else {
-      const bg = tileBgToHex(tile.bg_color, meta.defaultBg || '#353535');
+      const isDefaultBg = tileBgFollowsDefault(tile.bg_color);
+      const bg = tileBackgroundCss(meta, isDefaultBg,
+        tileBgToHex(tile.bg_color, meta.defaultBg || '#353535'));
       if (isScreensaverTileTab(tab)) {
         const opacity = clampInt(tile.background_opacity, 0, 255,
                                  SCREENSAVER_TILE_DEFAULT_OPACITY);
-        el.style.background = bg + opacity.toString(16).padStart(2, '0');
+        el.style.background = tileBackgroundCss(meta, isDefaultBg,
+          tileBgToHex(tile.bg_color, meta.defaultBg || '#353535'), opacity);
       } else {
         el.style.background = bg;
       }
@@ -4693,7 +7347,7 @@ function t(key) {
                           previewKind === 'climate' || previewKind === 'cover' ||
                           previewKind === 'camera')
         ? (tile.sensor_entity || '')
-        : '';
+        : (typeValue === '2' ? (sensorMeta?.sceneEntities?.[tile.scene_alias] || '') : '');
       const rawIcon = tile.icon_name || '';
       let iconName = resolveIconName(
         rawIcon,
@@ -4733,14 +7387,15 @@ function t(key) {
       let html = '';
 
       if (iconName) {
-        const iconStyle = previewKind === 'climate'
-          ? ' style="color:' + climatePreviewColor(climatePreviewState) + '"'
-          : (previewKind === 'cover'
-            ? ' style="color:' + coverPreviewColor(coverPreviewState) + '"'
-            : (previewKind === 'binary_sensor'
-              ? ' style="color:' + binarySensorPreviewColor(
-                  binarySensorPreviewState) + '"'
-              : ''));
+        const iconColor = previewIconColor(typeValue, tile.icon_colors, tile.sensor_entity || '',
+          sensorMeta, binarySensorPreviewState, previewKind === 'climate'
+            ? climatePreviewColor(climatePreviewState)
+            : (previewKind === 'cover'
+              ? coverPreviewColor(coverPreviewState)
+              : (previewKind === 'binary_sensor'
+                ? binarySensorPreviewColor(binarySensorPreviewState)
+                : '')));
+        const iconStyle = iconColor ? ' style="color:' + escapeHtml(iconColor) + '"' : '';
         html += '<i class="mdi mdi-' + escapeHtml(iconName) + ' tile-icon"' + iconStyle + '></i>';
       }
 
@@ -4789,7 +7444,7 @@ function t(key) {
           '<br>' + escapeHtml(value) + '</div>';
       }
       if (previewKind === 'binary_sensor') {
-        html += '<div class="tile-value tile-binary-sensor-value" id="' +
+        html += '<div class="tile-value tile-binary-sensor-value ' + (Number(tile.sensor_value_font) ? sensorValueClass : '') + '" id="' +
           tab + '-tile-' + index + '-value">' +
           escapeHtml(binarySensorPreviewStateText(binarySensorPreviewState)) +
           '</div>';
@@ -4817,6 +7472,11 @@ function t(key) {
       }
       html += getTileResizeHandlesHtml(typeValue);
       el.innerHTML = html;
+      if (typeof applyTileRulesTint === 'function') {
+        applyTileRulesTint(el, typeValue, tile.icon_colors, tile.sensor_entity || '', sensorMeta);
+      }
+      applyIconDiscTint(el);
+      if (typeValue === '9') fitCompactClockPreview(el);
     }
     if (currentTileTab === tab && currentTileIndex === index) el.classList.add('active');
     if (typeValue === '5' && tile.sensor_entity) {
@@ -4833,15 +7493,21 @@ function t(key) {
     const folderId = getFolderIdForTab(tab);
     if (folderId === undefined) return Promise.resolve([]);
 
+    const baseline = getTilesData(tab).map(tile => JSON.stringify(tile));
     tileDataLoadPromises[tab] = fetch(
       '/api/tiles?folder=' + encodeURIComponent(folderId))
       .then(async response => {
         if (!response.ok) throw new Error('Tiles HTTP ' + response.status);
         const tiles = await response.json();
         if (!Array.isArray(tiles)) throw new Error('Invalid tile grid response');
-        tilesData[tab] = tiles;
+        const current = getTilesData(tab);
+        tilesData[tab] = tiles.map((tile, index) => {
+          const changed = JSON.stringify(current[index]) !== baseline[index];
+          return current[index] && (changed || drafts[tab]?.[index]?._dirty)
+            ? current[index] : tile;
+        });
         tileDataLoadedTabs.add(tab);
-        return tiles;
+        return tilesData[tab];
       })
       .finally(() => { delete tileDataLoadPromises[tab]; });
     return tileDataLoadPromises[tab];
@@ -4878,11 +7544,8 @@ function t(key) {
       const sensorMeta = normalizeSensorMetaPayload(results[0] || {});
       sensorMetaCache = sensorMeta;
       tabs.forEach((tab, idx) => {
-        const tiles = Array.isArray(results[idx + 1]) ? results[idx + 1] : [];
-        if (refreshTiles) {
-          tilesData[tab] = tiles;
-        }
-        const tilesForRender = refreshTiles ? tiles : getTilesData(tab);
+        // Metadata may finish after another edit; render the current cache.
+        const tilesForRender = getTilesData(tab);
         if (!Array.isArray(tilesForRender)) return;
         tilesForRender.forEach((tile, i) => renderTileFromData(tab, i, tile, sensorMeta));
         layoutTiles(tab, tilesForRender);
@@ -5024,7 +7687,7 @@ function t(key) {
     return getGridElementMetrics(grid, GRID_COLS, GRID_ROWS);
   }
 
-  function getRawGridCellFromPointer(tab, clientX, clientY) {
+  function getRawGridCellFromPointer(tab, clientX, clientY, sizeStep = null) {
     const metrics = getTileGridMetrics(tab);
     if (!metrics) return null;
     const stepX = metrics.cellW + metrics.gapX;
@@ -5034,15 +7697,16 @@ function t(key) {
     if (!isFinite(relX) || !isFinite(relY)) return null;
     relX = Math.max(0, relX);
     relY = Math.max(0, relY);
-    let col = Math.floor((relX + (metrics.gapX / 2)) / stepX);
-    let row = Math.floor((relY + (metrics.gapY / 2)) / stepY);
+    const unit = sizeStep ?? 0.5;
+    let col = Math.floor((relX + (metrics.gapX / 2)) / (stepX * unit)) * unit;
+    let row = Math.floor((relY + (metrics.gapY / 2)) / (stepY * unit)) * unit;
     if (!isFinite(col)) col = 0;
     if (!isFinite(row)) row = 0;
     if (col < 0) col = 0;
     const firstRow = firstAllowedGridRow(tab);
     if (row < firstRow) row = firstRow;
-    if (col >= GRID_COLS) col = GRID_COLS - 1;
-    if (row >= GRID_ROWS) row = GRID_ROWS - 1;
+    if (col >= GRID_COLS) col = GRID_COLS - unit;
+    if (row >= GRID_ROWS) row = GRID_ROWS - unit;
     return { col, row };
   }
 
@@ -5050,8 +7714,8 @@ function t(key) {
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!rawCell) return null;
     if (!dragSource || dragSource.tab !== tab) return rawCell;
-    const anchorCol = clampInt(dragSource.grabCellCol, 0, GRID_COLS - 1, 0);
-    const anchorRow = clampInt(dragSource.grabCellRow, 0, GRID_ROWS - 1, 0);
+    const anchorCol = clampHalf(dragSource.grabCellCol, 0, GRID_COLS - 1, 0);
+    const anchorRow = clampHalf(dragSource.grabCellRow, 0, GRID_ROWS - 1, 0);
     return {
       col: rawCell.col - anchorCol,
       row: rawCell.row - anchorRow
@@ -5074,8 +7738,9 @@ function t(key) {
   function getDragAnchorCell(tab, layout, clientX, clientY) {
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!layout || !rawCell) return { col: 0, row: 0 };
-    const col = clampInt(rawCell.col - layout.col, 0, Math.max(0, layout.span_w - 1), 0);
-    const row = clampInt(rawCell.row - layout.row, 0, Math.max(0, layout.span_h - 1), 0);
+    const unit = 0.5;
+    const col = clampHalf(rawCell.col - layout.col, 0, Math.max(0, layout.span_w - unit), 0);
+    const row = clampHalf(rawCell.row - layout.row, 0, Math.max(0, layout.span_h - unit), 0);
     return { col, row };
   }
 
@@ -5088,8 +7753,9 @@ function t(key) {
         y: Math.max(0, (rect.height / 2) || 0)
       };
     }
-    const x = (grabCellCol * (metrics.cellW + metrics.gapX)) + (metrics.cellW / 2);
-    const y = (grabCellRow * (metrics.cellH + metrics.gapY)) + (metrics.cellH / 2);
+    const unit = 0.5;
+    const x = (grabCellCol * (metrics.cellW + metrics.gapX)) + ((metrics.cellW + metrics.gapX) * unit - metrics.gapX) / 2;
+    const y = (grabCellRow * (metrics.cellH + metrics.gapY)) + ((metrics.cellH + metrics.gapY) * unit - metrics.gapY) / 2;
     const maxX = Math.max(0, rect.width - 1);
     const maxY = Math.max(0, rect.height - 1);
     return {
@@ -5197,8 +7863,8 @@ function t(key) {
     if (!candidateLayout) return false;
     if (candidateLayout.col < 0 ||
         candidateLayout.row < firstRow ||
-        candidateLayout.span_w < 1 ||
-        candidateLayout.span_h < 1 ||
+        candidateLayout.span_w < 0.5 ||
+        candidateLayout.span_h < 0.5 ||
         candidateLayout.col + candidateLayout.span_w > columns ||
         candidateLayout.row + candidateLayout.span_h > rows) {
       return false;
@@ -5218,6 +7884,9 @@ function t(key) {
   function canPlaceTileLayout(tab, index, candidateLayout) {
     const tiles = getTilesData(tab);
     if (!Array.isArray(tiles)) return false;
+    const type = tab === currentTileTab && index === currentTileIndex
+      ? document.getElementById(tab + '_tile_type')?.value ?? tiles[index]?.type : tiles[index]?.type;
+    if (Number(type) !== 0 && index >= 0 && !supportedTileLayout(type, candidateLayout)) return false;
     const layouts = tiles.map((tile, tileIndex) =>
       getTileElementLayout(tab, tileIndex) ||
       getTileLayoutFromData(tab, tileIndex));
@@ -5231,6 +7900,7 @@ function t(key) {
   }
 
   function canPlaceHiddenSettingsLayout(tab, candidateLayout) {
+    if (!supportedTileLayout(7, candidateLayout)) return false;
     if (tileDataLoadedTabs.has(tab)) {
       return canPlaceTileLayout(tab, -1, candidateLayout);
     }
@@ -5255,10 +7925,10 @@ function t(key) {
 
   function buildGridPlacementCandidates(
       columns, rows, firstRow,
-      spanW, spanH, preferredCol, preferredRow) {
+      spanW, spanH, preferredCol, preferredRow, step = 1) {
     const candidates = [];
-    for (let row = firstRow; row < rows; row++) {
-      for (let col = 0; col < columns; col++) {
+    for (let row = firstRow; row < rows; row += step) {
+      for (let col = 0; col < columns; col += step) {
         if ((col + spanW) > columns || (row + spanH) > rows) continue;
         let distance = (row * columns) + col;
         if (preferredCol >= 0 && preferredRow >= 0) {
@@ -5284,7 +7954,7 @@ function t(key) {
 
   function simulateGridReorderLayouts(
       baseLayouts, activeIndices, fromIdx,
-      targetCol, targetRow, columns, rows, firstRow = 0) {
+      targetCol, targetRow, columns, rows, firstRow = 0, tileTypes = []) {
     const active = activeIndices instanceof Set
       ? new Set(activeIndices) : new Set(activeIndices || []);
     if (!active.has(fromIdx)) return null;
@@ -5314,6 +7984,8 @@ function t(key) {
         displacedIndices.push(index);
       }
     });
+    const fractional = [targetLayout, ...baseLayouts.filter((_, i) => active.has(i))]
+      .some(layout => layout && [layout.col, layout.row, layout.span_w, layout.span_h].some(v => !Number.isInteger(v)));
     displacedIndices.sort((a, b) => {
       const layoutA = baseLayouts[a];
       const layoutB = baseLayouts[b];
@@ -5334,7 +8006,8 @@ function t(key) {
       const candidates = buildGridPlacementCandidates(
         columns, rows, firstRow,
         layout.span_w, layout.span_h,
-        preferredCol, preferredRow);
+        preferredCol, preferredRow,
+        fractional ? 0.5 : 1);
       let placed = false;
       for (const candidate of candidates) {
         const nextLayout = {
@@ -5385,7 +8058,7 @@ function t(key) {
     return simulateGridReorderLayouts(
       baseLayouts, active, fromIdx,
       targetCol, targetRow,
-      GRID_COLS, GRID_ROWS, firstAllowedGridRow(tab));
+      GRID_COLS, GRID_ROWS, firstAllowedGridRow(tab), tiles.map(tile => tile?.type));
   }
 
   function clearDragPlaceholder() {
@@ -5472,6 +8145,8 @@ function t(key) {
         layout.span_h);
       if (slots && html) slots.outerHTML = html;
     }
+    const data = getTilesData(tab)?.[resizeState?.index];
+    applyCompactSensorPreview(preview, data?.type, layout, data?.sensor_display_mode, data?.sensor_value_font);
     placeholder.replaceChildren(preview);
   }
 
@@ -5496,8 +8171,7 @@ function t(key) {
   }
 
   function buildResizeCandidate(layout, direction, clientX, clientY, tab) {
-    const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
-    if (!layout || !rawCell) return null;
+    if (!layout) return null;
 
     let spanW = layout.span_w;
     let spanH = layout.span_h;
@@ -5507,18 +8181,22 @@ function t(key) {
     const typeValue = document.getElementById(tab + '_tile_type')?.value ?? tile?.type ?? 0;
     const isMedia = Number(typeValue) === MEDIA_TILE_TYPE;
     const minW = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS) : 1;
-    const minH = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS) : 1;
+    const unit = 0.5;
+    const snap = clampHalf;
+    const rawCell = getRawGridCellFromPointer(tab, clientX, clientY, unit);
+    if (!rawCell) return null;
+    const minH = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS) : (supportsHalfSize(typeValue) ? 0.5 : 1);
     const maxW = isMedia
       ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS - layout.col)
       : GRID_COLS - layout.col;
     const maxH = isMedia
       ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS - layout.row)
       : GRID_ROWS - layout.row;
-    if (String(direction || '').includes('e')) {
-      spanW = clampInt(rawCell.col - layout.col + 1, minW, maxW, layout.span_w);
-    }
     if (String(direction || '').includes('s')) {
-      spanH = clampInt(rawCell.row - layout.row + 1, minH, maxH, layout.span_h);
+      spanH = snap(rawCell.row - layout.row + unit, minH, maxH, layout.span_h);
+    }
+    if (String(direction || '').includes('e')) {
+      spanW = snap(rawCell.col - layout.col + unit, minW, maxW, layout.span_w);
     }
 
     return {
@@ -5646,12 +8324,12 @@ function t(key) {
     const placeholder = ensureDragPlaceholder(tab);
     if (!sourceLayout || !placeholder) return;
 
-    const targetCol = clampInt(col, 0, GRID_COLS - 1, sourceLayout.col);
-    const targetRow = clampInt(row, firstAllowedGridRow(tab), GRID_ROWS - 1, sourceLayout.row);
+    const targetCol = clampHalf(col, 0, GRID_COLS - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
     const fits = (targetCol + sourceLayout.span_w <= GRID_COLS) &&
                  (targetRow + sourceLayout.span_h <= GRID_ROWS);
     const spanW = Math.max(1, Math.min(sourceLayout.span_w, GRID_COLS - targetCol));
-    const spanH = Math.max(1, Math.min(sourceLayout.span_h, GRID_ROWS - targetRow));
+    const spanH = Math.max(0.5, Math.min(sourceLayout.span_h, GRID_ROWS - targetRow));
 
     placeholder.classList.toggle('invalid', !fits);
     placeholder.classList.add('show');
@@ -5666,8 +8344,8 @@ function t(key) {
     e.dataTransfer.dropEffect = 'move';
     const sourceLayout = getDragSourceLayout();
     if (!sourceLayout) return;
-    const targetCol = clampInt(cell.col, 0, GRID_COLS - 1, sourceLayout.col);
-    const targetRow = clampInt(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 1, sourceLayout.row);
+    const targetCol = clampHalf(cell.col, 0, GRID_COLS - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
     updateDragPlaceholder(tab, targetCol, targetRow);
 
     if (dragSource.kind === 'hidden-settings') {
@@ -5715,8 +8393,8 @@ function t(key) {
 
     e.preventDefault();
     e.stopPropagation();
-    const targetCol = clampInt(cell.col, 0, GRID_COLS - 1, sourceLayout.col);
-    const targetRow = clampInt(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 1, sourceLayout.row);
+    const targetCol = clampHalf(cell.col, 0, GRID_COLS - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
     const fits = (targetCol + sourceLayout.span_w <= GRID_COLS) &&
                  (targetRow + sourceLayout.span_h <= GRID_ROWS);
 
@@ -5779,9 +8457,17 @@ function t(key) {
       const tile = tiles[i];
       const layout = previewResult.layouts[i];
       if (!tile || Number(tile.type || 0) === 0 || !layout) continue;
+      const changed = tile.col !== layout.col || tile.row !== layout.row;
       tile.col = layout.col;
       tile.row = layout.row;
+      const draft = drafts[tab]?.[i];
+      if (changed && draft?._dirty) {
+        draft.col = String(layout.col + 1);
+        draft.row = String(layout.row + 1);
+        draft._rev = Number(draft._rev || 0) + 1;
+      }
     }
+    persistDrafts();
 
     tilesData[tab] = tiles;
     layoutTiles(tab, tiles);
@@ -5798,9 +8484,17 @@ function t(key) {
       const tile = tiles[i];
       const saved = snapshot[i];
       if (!tile || !saved) continue;
+      const changed = tile.col !== saved.col || tile.row !== saved.row;
       tile.col = saved.col;
       tile.row = saved.row;
+      const draft = drafts[tab]?.[i];
+      if (changed && draft?._dirty) {
+        draft.col = String(saved.col + 1);
+        draft.row = String(saved.row + 1);
+        draft._rev = Number(draft._rev || 0) + 1;
+      }
     }
+    persistDrafts();
     tilesData[tab] = tiles;
     layoutTiles(tab, tiles);
     clearReflowPreviewClasses(tab);
@@ -6021,8 +8715,8 @@ function t(key) {
         event.preventDefault();
         return;
       }
-      const spanW = clampInt(hiddenTile.dataset.spanW, 1, GRID_COLS, 1);
-      const spanH = clampInt(hiddenTile.dataset.spanH, 1, GRID_ROWS, 1);
+      const spanW = clampHalf(hiddenTile.dataset.spanW, 1, GRID_COLS, 1);
+      const spanH = clampHalf(hiddenTile.dataset.spanH, 0.5, GRID_ROWS, 1);
       dragSource = {
         kind: 'hidden-settings',
         tab: 'folder0',
@@ -6067,8 +8761,8 @@ function t(key) {
   }
 
   function reorderTiles(tab, fromIdx, toIdx, targetCol, targetRow) {
-    let col = parseInt(targetCol, 10);
-    let row = parseInt(targetRow, 10);
+    let col = Number(targetCol);
+    let row = Number(targetRow);
     if (isNaN(col)) col = -1;
     if (isNaN(row)) row = -1;
     const folderId = getFolderIdForTab(tab);
@@ -6130,8 +8824,8 @@ function t(key) {
     document.querySelectorAll('#tab-tiles-' + tab + ' .tile').forEach(tile => {
       const index = parseInt(tile.dataset.index, 10);
       if (isNaN(index) || Number(tile.dataset.type || 0) === 0) return;
-      const row = parseInt(tile.style.gridRowStart, 10);
-      const col = parseInt(tile.style.gridColumnStart, 10);
+      const row = Number(tile.dataset.row);
+      const col = Number(tile.dataset.col);
       const safeRow = isNaN(row) ? Number.MAX_SAFE_INTEGER : row;
       const safeCol = isNaN(col) ? Number.MAX_SAFE_INTEGER : col;
       if (safeRow < selectedRow || (safeRow === selectedRow && safeCol < selectedCol)) {
@@ -6157,6 +8851,7 @@ function t(key) {
     screensaverLoading = false;
     screensaverDraft = null;
     screensaverWallpaperIndex = -1;
+    syncScreensaverImages();
   }
 
   function ssClamp(value, min, max) {
@@ -6201,19 +8896,50 @@ function t(key) {
     data.wallpapers = Array.isArray(data.wallpapers) ? data.wallpapers : [];
     data.duration_seconds = Math.round(ssClamp(
       data.duration_seconds ?? 15, 3, 3600));
-    const configured = new Map(data.wallpapers.map(item => [item.file_name, item]));
-    const hadConfiguredWallpapers = data.wallpapers.length > 0;
-    (data.available_wallpapers || []).forEach(name => {
-      if (!configured.has(name)) {
-        data.wallpapers.push({
-          file_name: name, enabled: !hadConfiguredWallpapers,
-          focus_x: 500, focus_y: 500, zoom: 1000
-        });
-      }
-    });
-    screensaverWallpaperIndex = data.wallpapers.findIndex(w => w.enabled);
-    if (screensaverWallpaperIndex < 0 && data.wallpapers.length) screensaverWallpaperIndex = 0;
     return data;
+  }
+
+  // Keep the stored image list in step with the card: entries of deleted
+  // files are dropped and new images join checked, so an upload appears in
+  // the slideshow without extra clicks. Returns true when the list changed.
+  function ssSyncCardImages(data) {
+    const available = Array.isArray(data.available_wallpapers) ? data.available_wallpapers : [];
+    const key = name => String(name || '').toLowerCase();
+    let changed = false;
+    // Without a card the list stays untouched; its images may come back.
+    if (data.sd_ready === true) {
+      const onCard = new Set(available.map(key));
+      const kept = data.wallpapers.filter(item => onCard.has(key(item.file_name)));
+      changed = kept.length !== data.wallpapers.length;
+      data.wallpapers = kept;
+    }
+    const listed = new Set(data.wallpapers.map(item => key(item.file_name)));
+    available.forEach(name => {
+      // The display stores at most 32 images.
+      if (listed.has(key(name)) || data.wallpapers.length >= 32) return;
+      listed.add(key(name));
+      data.wallpapers.push({
+        file_name: name, enabled: true,
+        focus_x: 500, focus_y: 500, zoom: 1000
+      });
+      changed = true;
+    });
+    return changed;
+  }
+
+  // File manager uploads, renames and deletions store the updated list right
+  // away, so the display follows the card even while the Screensaver tab is
+  // closed. An open editor syncs and saves through its own load instead.
+  function syncScreensaverImages() {
+    fetch('/api/screensaver').then(r => r.json()).then(config => {
+      if (!config || !config.success || screensaverLoaded || screensaverLoading) return;
+      const data = ssNormalizeLoaded(config);
+      if (!ssSyncCardImages(data)) return;
+      return fetch('/api/screensaver', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ssPayload(data, ''))
+      });
+    }).catch(() => {});
   }
 
   function initScreensaverEditor() {
@@ -6225,16 +8951,19 @@ function t(key) {
     fetch('/api/screensaver').then(r => r.json()).then(config => {
       if (!config || !config.success) throw new Error('screensaver config');
       screensaverDraft = ssNormalizeLoaded(config);
+      const imagesChanged = ssSyncCardImages(screensaverDraft);
+      screensaverWallpaperIndex = screensaverDraft.wallpapers.findIndex(w => w.enabled);
+      if (screensaverWallpaperIndex < 0 && screensaverDraft.wallpapers.length) screensaverWallpaperIndex = 0;
       screensaverLoaded = true;
       bindScreensaverEditor();
       selectScreensaverBackground();
       renderScreensaverEditor();
+      if (imagesChanged) scheduleScreensaverSave();
     }).catch(() => showNotification(t('screensaverLoadFailed'), false))
       .finally(() => { screensaverLoading = false; });
   }
 
-  function ssPayload() {
-    const d = screensaverDraft;
+  function ssPayload(d = screensaverDraft, previewName = null) {
     return {
       version: 2,
       use_wallpapers: !!d.use_wallpapers,
@@ -6254,7 +8983,7 @@ function t(key) {
       clock_x: Math.round(ssClamp(d.clock_x, 0, 1000)),
       clock_y: Math.round(ssClamp(d.clock_y, 0, 1000)),
       duration_seconds: Math.round(ssClamp(d.duration_seconds, 3, 3600)),
-      preview_wallpaper: ssCurrentWallpaper()?.file_name || '',
+      preview_wallpaper: previewName ?? (ssCurrentWallpaper()?.file_name || ''),
       wallpapers: d.wallpapers.map(w => ({
         file_name: w.file_name, enabled: !!w.enabled,
         focus_x: Math.round(ssClamp(w.focus_x, 0, 1000)),
@@ -6483,14 +9212,18 @@ function t(key) {
     const clockResize = clock?.querySelector('.screensaver-clock-resize-handle');
     if (!preview || preview.dataset.bound === '1') return;
     preview.dataset.bound = '1';
+    // Tile selection replaces the clicked child before the event reaches the grid.
+    // The original event path retains its tile even when that child is detached.
+    const fromTileOrClock = event => event.composedPath().some(
+      node => node?.matches?.('.tile, #screensaverClock'));
     preview.addEventListener('click', e => {
-      if (!e.target.closest('.tile') && !e.target.closest('#screensaverClock')) {
+      if (!fromTileOrClock(e)) {
         selectScreensaverBackground();
       }
     });
     let backgroundDrag = null;
     preview.addEventListener('pointerdown', e => {
-      if (e.target.closest('.tile') || e.target.closest('#screensaverClock')) return;
+      if (fromTileOrClock(e)) return;
       selectScreensaverBackground();
       const wallpaper = ssCurrentWallpaper();
       if (!wallpaper) return;
@@ -7130,6 +9863,7 @@ function t(key) {
       enableTileDrag(tab);
       enableTileKeys(tab);
       enableTileResize(tab);
+      enableFreeSlotHover(tab);
     });
     enableSettingsHiddenSlot();
     associateFieldLabels();
@@ -7310,7 +10044,7 @@ function maybeFillTitleFromSensor(tab) {
 
   function normalizeSensorValueFont(value) {
     const v = String(value || '0');
-    return (['1','2','3','4'].includes(v)) ? v : '0';
+    return (['1','2','3','4','5'].includes(v)) ? v : '0';
   }
 
   function getSensorValueFontClass(value) {
@@ -7350,6 +10084,7 @@ function maybeFillTitleFromSensor(tab) {
   }
 
   function loadSensorFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_sensor_entity');
     if (entityEl) entityEl.value = data.sensor_entity || '';
@@ -7378,9 +10113,13 @@ function maybeFillTitleFromSensor(tab) {
     const graphHeightEl = document.getElementById(prefix + '_sensor_graph_height');
     if (graphHeightEl) graphHeightEl.value = (data.sensor_graph_height !== undefined && data.sensor_graph_height !== null) ? String(data.sensor_graph_height) : '';
     syncGaugeUi(tab);
+    // The entity is known now: numeric states show the color bar, text
+    // states the state list.
+    syncIconColorFields(tab);
   }
 
   function saveSensorFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const prefix = tab;
     formData.append('sensor_entity', document.getElementById(prefix + '_sensor_entity')?.value || '');
     formData.append('sensor_unit', document.getElementById(prefix + '_sensor_unit')?.value || '');
@@ -7398,6 +10137,7 @@ function maybeFillTitleFromSensor(tab) {
   }
 
   function resetSensorFields(tab) {
+    resetIconColorFields(tab);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_sensor_entity');
     if (entityEl) entityEl.value = '';
@@ -7428,6 +10168,7 @@ function maybeFillTitleFromSensor(tab) {
   }
 
   function loadBinarySensorFields(tab, data) {
+    loadIconColorFields(tab, data);
     const entity = document.getElementById(tab + '_binary_sensor_entity');
     const configured = data.sensor_entity || data.binary_sensor_entity || '';
     if (entity) {
@@ -7444,6 +10185,8 @@ function maybeFillTitleFromSensor(tab) {
       }
       entity.value = configured;
     }
+    const font = document.getElementById(tab + '_binary_sensor_value_font');
+    if (font) font.value = normalizeSensorValueFont(data.sensor_value_font);
     const popup = document.getElementById(
       tab + '_binary_sensor_popup_open_mode');
     if (popup) {
@@ -7453,17 +10196,22 @@ function maybeFillTitleFromSensor(tab) {
   }
 
   function saveBinarySensorFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const entityEl = document.getElementById(tab + '_binary_sensor_entity');
     const entity = entityEl
       ? (entityEl.value || entityEl.dataset.configuredValue || '') : '';
     formData.append('binary_sensor_entity', entity);
     formData.append('sensor_entity', entity);
+    formData.append('sensor_value_font', document.getElementById(tab + '_binary_sensor_value_font')?.value || '0');
     const popup = document.getElementById(
       tab + '_binary_sensor_popup_open_mode');
     if (popup) formData.append('popup_open_mode', popup.value || '1');
   }
 
   function resetBinarySensorFields(tab) {
+    resetIconColorFields(tab);
+    const font = document.getElementById(tab + '_binary_sensor_value_font');
+    if (font) font.value = '0';
     const entity = document.getElementById(tab + '_binary_sensor_entity');
     if (entity) {
       entity.value = '';
@@ -7506,6 +10254,7 @@ function maybeFillTitleFromEnergy(tab) {
   }
 
   function loadEnergyFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_energy_entity');
     if (entityEl) {
@@ -7534,6 +10283,7 @@ function maybeFillTitleFromEnergy(tab) {
   }
 
   function saveEnergyFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_energy_entity');
     const entity = entityEl ? (entityEl.value || entityEl.dataset.configuredValue || '') : '';
@@ -7547,6 +10297,7 @@ function maybeFillTitleFromEnergy(tab) {
   }
 
   function resetEnergyFields(tab) {
+    resetIconColorFields(tab);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_energy_entity');
     if (entityEl) entityEl.value = '';
@@ -7567,6 +10318,7 @@ function maybeFillTitleFromWeather(tab) {
   }
 
   function loadWeatherFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const el = document.getElementById(prefix + '_weather_entity');
     if (el) el.value = data.sensor_entity || data.weather_entity || '';
@@ -7576,12 +10328,14 @@ function maybeFillTitleFromWeather(tab) {
   }
 
   function saveWeatherFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const prefix = tab;
     formData.append('weather_entity', document.getElementById(prefix + '_weather_entity')?.value || '');
     formData.append('popup_open_mode', document.getElementById(prefix + '_weather_popup_open_mode')?.value || '1');
   }
 
   function resetWeatherFields(tab) {
+    resetIconColorFields(tab);
     const prefix = tab;
     const el = document.getElementById(prefix + '_weather_entity');
     if (el) el.value = '';
@@ -7605,6 +10359,7 @@ function maybeFillTitleFromScene(tab) {
   }
 
   function loadSceneFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const sceneEl = document.getElementById(prefix + '_scene_alias');
     if (sceneEl) sceneEl.value = data.scene_alias || '';
@@ -7614,12 +10369,14 @@ function maybeFillTitleFromScene(tab) {
   function saveSceneFields(tab, formData) {
     const prefix = tab;
     formData.append('scene_alias', document.getElementById(prefix + '_scene_alias')?.value || '');
+    saveIconColorFields(tab, formData);
   }
 
   function resetSceneFields(tab) {
     const prefix = tab;
     const sceneEl = document.getElementById(prefix + '_scene_alias');
     if (sceneEl) sceneEl.value = '';
+    resetIconColorFields(tab);
   }
 
 function normalizeIconName(value) {
@@ -7678,6 +10435,7 @@ function normalizeIconName(value) {
   }
 
   function loadNavigateFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
@@ -7706,9 +10464,11 @@ function normalizeIconName(value) {
     if (navEl) {
       formData.append('navigate_target', navEl.value || '0');
     }
+    saveIconColorFields(tab, formData);
   }
 
   function resetNavigateFields(tab) {
+    resetIconColorFields(tab);
     const prefix = tab;
     const toggle = document.getElementById(prefix + '_folder_pin_enabled');
     const input = document.getElementById(prefix + '_folder_pin');
@@ -7814,6 +10574,24 @@ function normalizeIconName(value) {
     } finally {
       if (button) button.disabled = false;
     }
+  }
+
+  // Back tile: the same per-tile border flag as Clock and Text.
+  function loadBackFields(tab, data) {
+    loadIconColorFields(tab, data);
+    const border = document.getElementById(tab + '_back_tile_border');
+    if (border) border.checked = data?.tile_border !== undefined ? !['0','false'].includes(String(data.tile_border)) : Number(data?.sensor_display_mode) !== 1;
+  }
+
+  function saveBackFields(tab, formData) {
+    formData.append('tile_border', document.getElementById(tab + '_back_tile_border')?.checked === false ? '0' : '1');
+    saveIconColorFields(tab, formData);
+  }
+
+  function resetBackFields(tab) {
+    const border = document.getElementById(tab + '_back_tile_border');
+    if (border) border.checked = true;
+    resetIconColorFields(tab);
   }
 
 function maybeFillTitleFromSwitch(tab) {
@@ -7973,6 +10751,12 @@ function maybeFillTitleFromSwitch(tab) {
 
   function applySwitchPreviewState(tileElem, state) {
     if (!tileElem) return;
+    applySwitchPreviewColors(tileElem, state);
+    // The icon disc follows the state color like on the device.
+    applyIconDiscTint(tileElem);
+  }
+
+  function applySwitchPreviewColors(tileElem, state) {
     const iconEl = tileElem.querySelector('.tile-icon');
     const switchEl = tileElem.querySelector('.tile-switch');
     const isToggleStyle = tileElem.classList.contains('switch-toggle');
@@ -8031,6 +10815,7 @@ function maybeFillTitleFromSwitch(tab) {
   }
 
   function loadSwitchFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_switch_entity');
     if (entityEl) entityEl.value = data.sensor_entity || data.switch_entity || '';
@@ -8046,6 +10831,7 @@ function maybeFillTitleFromSwitch(tab) {
   }
 
   function saveSwitchFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const prefix = tab;
     formData.append('switch_entity', document.getElementById(prefix + '_switch_entity')?.value || '');
     const styleEl = document.getElementById(prefix + '_switch_style');
@@ -8054,6 +10840,7 @@ function maybeFillTitleFromSwitch(tab) {
   }
 
   function resetSwitchFields(tab) {
+    resetIconColorFields(tab);
     const prefix = tab;
     const entityEl = document.getElementById(prefix + '_switch_entity');
     if (entityEl) entityEl.value = '';
@@ -8169,6 +10956,7 @@ function maybeFillTitleFromSwitch(tab) {
   }
 
   function loadCoverFields(tab, data) {
+    loadIconColorFields(tab, data);
     const entity = document.getElementById(tab + '_cover_entity');
     const configured = data.sensor_entity || data.cover_entity || '';
     if (entity) {
@@ -8194,6 +10982,7 @@ function maybeFillTitleFromSwitch(tab) {
   }
 
   function saveCoverFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const entity = document.getElementById(tab + '_cover_entity')?.value || '';
     formData.append('cover_entity', entity);
     formData.append('sensor_entity', entity);
@@ -8202,6 +10991,7 @@ function maybeFillTitleFromSwitch(tab) {
   }
 
   function resetCoverFields(tab) {
+    resetIconColorFields(tab);
     const entity = document.getElementById(tab + '_cover_entity');
     if (entity) {
       entity.value = '';
@@ -8221,6 +11011,7 @@ function maybeFillTitleFromMedia(tab) {
   }
 
   function loadMediaFields(tab, data) {
+    loadIconColorFields(tab, data);
     const prefix = tab;
     const el = document.getElementById(prefix + '_media_entity');
     if (el) el.value = data.sensor_entity || data.media_entity || '';
@@ -8229,6 +11020,7 @@ function maybeFillTitleFromMedia(tab) {
   }
 
   function saveMediaFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const prefix = tab;
     const entity = document.getElementById(prefix + '_media_entity')?.value || '';
     formData.append('media_entity', entity);
@@ -8236,6 +11028,7 @@ function maybeFillTitleFromMedia(tab) {
   }
 
   function resetMediaFields(tab) {
+    resetIconColorFields(tab);
     const prefix = tab;
     const el = document.getElementById(prefix + '_media_entity');
     if (el) el.value = '';
@@ -8290,16 +11083,20 @@ function maybeFillTitleFromMedia(tab) {
     return Math.min(6, columns * rows);
   }
 
+  // Width counts whole cells. The mini-grid has one row per half cell below
+  // the header row, so half steps add a row: 1 -> 1, 1.5 -> 2, 2 -> 3
+  // (climateTileGridRows on the device).
   function climateGridDimensions(spanW, spanH) {
     const columns = Math.max(
       1, Math.min(
-        climateMaxGridColumns(), Number(spanW) || 1));
-    const outerRows = Math.max(
-      1, Math.min(
-        climateMaxOuterRows(), Number(spanH) || 1));
+        climateMaxGridColumns(), Math.floor(Number(spanW) || 1)));
+    const halfRows = Math.max(
+      2, Math.min(
+        climateMaxOuterRows() * 2,
+        Math.round((Number(spanH) || 1) * 2)));
     return {
       columns,
-      rows: outerRows * 2 - 1
+      rows: halfRows - 1
     };
   }
 
@@ -8529,42 +11326,25 @@ function maybeFillTitleFromMedia(tab) {
       a.row + a.spanH > b.row;
   }
 
-  function canPlaceClimateItem(
-      items, configured, index, candidate, capacity) {
-    for (let other = 0; other < capacity; ++other) {
-      if (other === index) continue;
-      if (Number(configured[other]) === CLIMATE_TILE_CONTENT.EMPTY) {
-        continue;
-      }
-      if (climateGeometryOverlaps(candidate, items[other])) {
-        return false;
-      }
-    }
-    return true;
+  // Items are placed top-left first (row, column, then item number) when the
+  // tile has a stored mini-grid, so a smaller tile keeps what it can still
+  // show and drops only the rest. Without stored geometry the item number is
+  // the position (build_slot_kinds on the device).
+  function climatePlacementOrderFor(geometry, hasStoredGeometry) {
+    const order = [0, 1, 2, 3, 4, 5];
+    if (!hasStoredGeometry) return order;
+    const at = (index, key) => Number(geometry[index]?.[key]) || 0;
+    return order.sort((a, b) =>
+      at(a, 'row') - at(b, 'row') ||
+      at(a, 'col') - at(b, 'col') ||
+      a - b);
   }
 
-  function firstFreeClimatePlacement(
-      items, configured, capacity, columns, rows,
-      ignoreIndex = -1, spanW = 1, spanH = 1) {
-    const safeSpanW = Math.max(
-      1, Math.min(columns, Number(spanW) || 1));
-    const safeSpanH = Math.max(
-      1, Math.min(rows, Number(spanH) || 1));
-    for (let row = 0; row + safeSpanH <= rows; ++row) {
-      for (let col = 0; col + safeSpanW <= columns; ++col) {
-        const candidate = {
-          col, row,
-          spanW: safeSpanW,
-          spanH: safeSpanH
-        };
-        if (canPlaceClimateItem(
-              items, configured, ignoreIndex,
-              candidate, capacity)) {
-          return candidate;
-        }
-      }
-    }
-    return null;
+  function climatePlacementOrder(tab, geometry) {
+    const stored = document.getElementById(
+      tab + '_climate_geometry')?.value || '';
+    return climatePlacementOrderFor(
+      geometry, /^CLG[12]:/i.test(String(stored).trim()));
   }
 
   function notifyClimateGridChanged(tab) {
@@ -8986,12 +11766,14 @@ function maybeFillTitleFromMedia(tab) {
 
   function climateAutomaticEditorKinds(tab) {
     const state = climateEditorState(tab);
-    const spanW = Math.max(1, Number(
+    const spanW = Math.max(1, Math.floor(Number(
       document.getElementById(
-        tab + '_tile_span_w')?.value) || 1);
+        tab + '_tile_span_w')?.value) || 1));
+    // Height follows half steps through the mini-grid rows.
     const spanH = Math.max(1, Number(
       document.getElementById(
         tab + '_tile_span_h')?.value) || 1);
+    const { rows } = climateGridDimensions(spanW, spanH);
     const capacity = climateSlotCapacity(spanW, spanH);
     const kinds = [];
     const add = kind => {
@@ -9011,13 +11793,13 @@ function maybeFillTitleFromMedia(tab) {
       }
     };
 
-    if (spanW === 1 && spanH === 1) {
+    if (spanW === 1 && rows === 1) {
       if (!state.valid || state.current !== '--') {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       } else {
         addPrimaryTarget();
       }
-    } else if (spanW >= 2 && spanH === 1) {
+    } else if (spanW >= 2 && rows === 1) {
       if (!state.valid || state.current !== '--') {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
@@ -9027,7 +11809,7 @@ function maybeFillTitleFromMedia(tab) {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       addPrimaryTarget();
-      if (spanH === 2) return kinds;
+      if (rows <= 3) return kinds;
       if (state.targetHumidity !== null &&
           (state.targetLow !== null ||
            state.targetHigh !== null ||
@@ -9056,16 +11838,14 @@ function maybeFillTitleFromMedia(tab) {
     return kinds;
   }
 
+  // Every configured item takes part, not only the first cells-many item
+  // numbers: after a resize the items that still fit stay, whatever their
+  // number (build_slot_kinds on the device).
   function climateResolvedEditorKinds(tab) {
     const configured = currentClimateSlotConfig(tab);
     const automatic = climateAutomaticEditorKinds(tab);
-    const capacity = climateSlotCapacity(
-      document.getElementById(
-        tab + '_tile_span_w')?.value || 1,
-      document.getElementById(
-        tab + '_tile_span_h')?.value || 1);
     const explicit = new Set();
-    configured.slice(0, capacity).forEach(selection => {
+    configured.forEach(selection => {
       const kind = Number(selection) || 0;
       if (kind !== CLIMATE_TILE_CONTENT.AUTO &&
           kind !== CLIMATE_TILE_CONTENT.EMPTY) {
@@ -9073,12 +11853,9 @@ function maybeFillTitleFromMedia(tab) {
       }
     });
     let cursor = 0;
-    return configured.map((selection, index) => {
+    return configured.map(selection => {
       const kind = Number(selection) || 0;
-      if (index >= capacity ||
-          kind === CLIMATE_TILE_CONTENT.EMPTY) {
-        return null;
-      }
+      if (kind === CLIMATE_TILE_CONTENT.EMPTY) return null;
       if (kind !== CLIMATE_TILE_CONTENT.AUTO) return kind;
       while (cursor < automatic.length) {
         const candidate = automatic[cursor++];
@@ -9107,20 +11884,12 @@ function maybeFillTitleFromMedia(tab) {
     }
   }
 
-  function climatePlacementConfig(
-      configured, resolvedKinds) {
-    return configured.map((selection, index) =>
-      resolvedKinds[index] === null
-        ? CLIMATE_TILE_CONTENT.EMPTY
-        : selection);
-  }
-
   function climateTargetCaption(state, kind) {
     if (state?.available === false) return CLIMATE_I18N.unavailable;
     const entityState = String(state?.mode || '').toLowerCase();
     if (entityState === 'unknown') return CLIMATE_I18N.unknown;
     if (kind === CLIMATE_TILE_CONTENT.TARGET_HUMIDITY) {
-      return CLIMATE_I18N.targetHumidity;
+      return CLIMATE_I18N.humidityCaption;
     }
     if (kind === CLIMATE_TILE_CONTENT.TARGET_TEMPERATURE_LOW) {
       return CLIMATE_I18N.heat;
@@ -9381,11 +12150,11 @@ function maybeFillTitleFromMedia(tab) {
     });
   }
 
-  function climateActiveGridIndices(tab, capacity) {
+  function climateActiveGridIndices(tab) {
     const configured = currentClimateSlotConfig(tab);
     const resolved = climateResolvedEditorKinds(tab);
     const active = new Set();
-    for (let index = 0; index < capacity; ++index) {
+    for (let index = 0; index < 6; ++index) {
       // Count only items that are actually placed: syncClimateSlotFields hides
       // slots without free space, and their stored geometry must not block drag
       // and resize as a phantom occupancy.
@@ -9535,16 +12304,14 @@ function maybeFillTitleFromMedia(tab) {
           tab + '_tile_span_h')?.value || 1;
         const { columns, rows } =
           climateGridDimensions(spanW, spanH);
-        const capacity = climateSlotCapacity(spanW, spanH);
         const configured = currentClimateSlotConfig(tab);
         const resolvedKinds =
           climateResolvedEditorKinds(tab);
         const index = configured.findIndex(
           (value, candidate) =>
-            candidate < capacity &&
-            (Number(value) === CLIMATE_TILE_CONTENT.EMPTY ||
-             (Number(value) === CLIMATE_TILE_CONTENT.AUTO &&
-              resolvedKinds[candidate] === null)));
+            Number(value) === CLIMATE_TILE_CONTENT.EMPTY ||
+            (Number(value) === CLIMATE_TILE_CONTENT.AUTO &&
+             resolvedKinds[candidate] === null));
         if (index < 0) return;
         const row = Math.floor(cellIndex / columns);
         const col = cellIndex % columns;
@@ -9680,9 +12447,8 @@ function maybeFillTitleFromMedia(tab) {
         tab + '_tile_span_h')?.value || 1;
       const { columns, rows } =
         climateGridDimensions(spanW, spanH);
-      const capacity = climateSlotCapacity(spanW, spanH);
       const activeIndices =
-        climateActiveGridIndices(tab, capacity);
+        climateActiveGridIndices(tab);
       const baseLayouts =
         climateGridLayouts(tab, columns, rows);
       const origin = cloneLayout(baseLayouts[index]);
@@ -9876,8 +12642,6 @@ function maybeFillTitleFromMedia(tab) {
               tab + '_tile_span_h')?.value || 1;
             const { columns, rows } =
               climateGridDimensions(spanW, spanH);
-            const capacity =
-              climateSlotCapacity(spanW, spanH);
             const configured = currentClimateSlotConfig(tab);
             const stored = currentClimateGeometry(tab);
             const items = stored.map(entry =>
@@ -9886,7 +12650,7 @@ function maybeFillTitleFromMedia(tab) {
             const layouts =
               climateGridLayouts(tab, columns, rows);
             const activeIndices =
-              climateActiveGridIndices(tab, capacity);
+              climateActiveGridIndices(tab);
             const direction =
               String(handle.dataset.climateResize || 'se');
             item.classList.add('resizing');
@@ -9965,12 +12729,16 @@ function maybeFillTitleFromMedia(tab) {
 
   function syncClimateSlotFields(
       tab, finalizePreviewSelection = false) {
+    if (Number(document.getElementById(tab + '_tile_type')?.value) !== 17) {
+      parkClimateMiniEditor(tab);
+      return;
+    }
     mountClimateMiniEditor(tab);
-    const spanW = Math.max(1, Number(document.getElementById(
-      tab + '_tile_span_w')?.value) || 1);
-    const spanH = Math.max(1, Number(document.getElementById(
-      tab + '_tile_span_h')?.value) || 1);
-    const capacity = climateSlotCapacity(spanW, spanH);
+    // Width counts whole cells; half heights add a mini-grid row.
+    const spanW = Math.max(1, Math.floor(Number(document.getElementById(
+      tab + '_tile_span_w')?.value) || 1));
+    const spanH = Math.max(1, Math.round(Number(document.getElementById(
+      tab + '_tile_span_h')?.value) * 2 || 2) / 2);
     const { columns, rows } =
       climateGridDimensions(spanW, spanH);
     let configured = currentClimateSlotConfig(tab);
@@ -9999,8 +12767,6 @@ function maybeFillTitleFromMedia(tab) {
         resolvedKinds = climateResolvedEditorKinds(tab);
       }
     }
-    const placementConfig = climatePlacementConfig(
-      configured, resolvedKinds);
     const stored = currentClimateGeometry(tab);
     const items = stored.map(entry =>
       clampClimateGeometryItem(entry, columns, rows));
@@ -10015,12 +12781,13 @@ function maybeFillTitleFromMedia(tab) {
 
     const occupied = Array(columns * rows).fill(false);
     const accepted = [];
-    for (let index = 0; index < 6; ++index) {
+    const fits = candidate => !accepted.some(other =>
+      climateGeometryOverlaps(candidate, other.geometry));
+    for (const index of climatePlacementOrder(tab, stored)) {
       const item = document.getElementById(
         tab + '_climate_slot_row_' + index);
       const kind = Number(configured[index]) || 0;
       const active =
-        index < capacity &&
         kind !== CLIMATE_TILE_CONTENT.EMPTY &&
         resolvedKinds[index] !== null;
       if (!item) continue;
@@ -10028,13 +12795,23 @@ function maybeFillTitleFromMedia(tab) {
       if (!active) continue;
 
       let geometry = items[index];
-      if (accepted.some(other =>
-            climateGeometryOverlaps(
-              geometry, other.geometry))) {
-        const free = firstFreeClimatePlacement(
-          items, placementConfig, capacity,
-          columns, rows, index,
-          geometry.spanW, geometry.spanH);
+      if (!fits(geometry)) {
+        let free = null;
+        for (let row = 0;
+             row + geometry.spanH <= rows && !free; ++row) {
+          for (let col = 0;
+               col + geometry.spanW <= columns; ++col) {
+            const candidate = {
+              col, row,
+              spanW: geometry.spanW,
+              spanH: geometry.spanH
+            };
+            if (fits(candidate)) {
+              free = candidate;
+              break;
+            }
+          }
+        }
         if (!free) {
           item.classList.add('hidden');
           continue;
@@ -10115,10 +12892,9 @@ function maybeFillTitleFromMedia(tab) {
           tab + '_climate_cell_' + directCell);
         const index = configured.findIndex(
           (value, candidate) =>
-            candidate < capacity &&
-            (Number(value) === CLIMATE_TILE_CONTENT.EMPTY ||
-             (Number(value) === CLIMATE_TILE_CONTENT.AUTO &&
-              resolvedKinds[candidate] === null)));
+            Number(value) === CLIMATE_TILE_CONTENT.EMPTY ||
+            (Number(value) === CLIMATE_TILE_CONTENT.AUTO &&
+             resolvedKinds[candidate] === null));
         if (cell &&
             !cell.classList.contains('hidden') &&
             !cell.classList.contains('occupied') &&
@@ -10182,6 +12958,7 @@ function maybeFillTitleFromMedia(tab) {
   }
 
   function loadClimateFields(tab, data) {
+    loadIconColorFields(tab, data);
     const entity = document.getElementById(tab + '_climate_entity');
     if (entity) {
       const configuredEntity =
@@ -10370,8 +13147,10 @@ function maybeFillTitleFromMedia(tab) {
   function climatePreviewSlots(
       state, spanW, spanH, slotConfig = null,
       targetLayoutConfig = null, geometryConfig = null) {
-    const w = Math.max(1, Number(spanW) || 1);
-    const h = Math.max(1, Number(spanH) || 1);
+    // Layout variants follow whole cells in width and mini-grid rows in
+    // height (half steps add a row), like build_automatic_slot_kinds.
+    const w = Math.max(1, Math.floor(Number(spanW) || 1));
+    const h = Math.max(1, Math.round(Number(spanH) * 2 || 2) / 2);
     const capacity = climateSlotCapacity(w, h);
     const { columns, rows } =
       climateGridDimensions(w, h);
@@ -10420,13 +13199,13 @@ function maybeFillTitleFromMedia(tab) {
     if (state?.available === false || entityState === 'unavailable' ||
         entityState === 'unknown') {
       addAutomatic(CLIMATE_TILE_CONTENT.HVAC_MODE);
-    } else if (w === 1 && h === 1) {
+    } else if (w === 1 && rows === 1) {
       if (!state.valid || state.current !== '--') {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       } else {
         addPrimaryTarget();
       }
-    } else if (w >= 2 && h === 1) {
+    } else if (w >= 2 && rows === 1) {
       if (!state.valid || state.current !== '--') {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
@@ -10436,7 +13215,7 @@ function maybeFillTitleFromMedia(tab) {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       addPrimaryTarget();
-      if (h > 2 &&
+      if (rows > 3 &&
           state.targetHumidity !== null &&
           (state.targetLow !== null ||
            state.targetHigh !== null ||
@@ -10519,8 +13298,10 @@ function maybeFillTitleFromMedia(tab) {
       }
     };
 
+    // Every configured item takes part, not only the first cells-many item
+    // numbers; what does not fit is dropped during placement below.
     const explicitlyConfigured = new Set();
-    configured.slice(0, capacity).forEach(selection => {
+    configured.forEach(selection => {
       const kind = Number(selection) || 0;
       if (kind !== CLIMATE_TILE_CONTENT.AUTO &&
           kind !== CLIMATE_TILE_CONTENT.EMPTY) {
@@ -10530,7 +13311,7 @@ function maybeFillTitleFromMedia(tab) {
 
     const slots = [];
     let automaticCursor = 0;
-    for (let index = 0; index < capacity; ++index) {
+    for (let index = 0; index < 6; ++index) {
       const selection = Number(configured[index]) || 0;
       if (selection === CLIMATE_TILE_CONTENT.EMPTY) continue;
       let kind = selection;
@@ -10560,6 +13341,9 @@ function maybeFillTitleFromMedia(tab) {
     const hasStoredGeometry =
       Array.isArray(geometryConfig) ||
       /^CLG[12]:/i.test(String(geometryConfig || '').trim());
+    const order = climatePlacementOrderFor(geometry, hasStoredGeometry);
+    slots.sort((a, b) =>
+      order.indexOf(a.itemIndex) - order.indexOf(b.itemIndex));
     const placedSlots = [];
     slots.forEach(slot => {
       let candidate = {
@@ -10721,6 +13505,7 @@ function maybeFillTitleFromMedia(tab) {
   }
 
   function saveClimateFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     const packed = packClimateSlotConfig(tab);
     const packedLayouts = packClimateTargetLayouts(tab);
     const geometry = document.getElementById(
@@ -10742,6 +13527,7 @@ function maybeFillTitleFromMedia(tab) {
   }
 
   function resetClimateFields(tab) {
+    resetIconColorFields(tab);
     const entity = document.getElementById(tab + '_climate_entity');
     if (entity) {
       entity.value = '';
@@ -10767,6 +13553,7 @@ function maybeFillTitleFromMedia(tab) {
   bindClimatePreviewSelection();
 
 function loadCameraFields(tab, data) {
+    loadIconColorFields(tab, data);
     const el = document.getElementById(tab + '_camera_entity');
     const configured = data.sensor_entity || data.camera_entity || '';
     if (el) {
@@ -10790,8 +13577,10 @@ function loadCameraFields(tab, data) {
       document.getElementById(tab + '_camera_entity')?.value || '';
     formData.append('camera_entity', entity);
     formData.append('sensor_entity', entity);
+    saveIconColorFields(tab, formData);
   }
   function resetCameraFields(tab) {
+    resetIconColorFields(tab);
     const el = document.getElementById(tab + '_camera_entity');
     if (el) {
       el.value = '';
@@ -10944,12 +13733,14 @@ function getClockPreviewLanguage() {
   function getClockPreviewTextStyle(raw, fallback, color) {
     const size = getClockPreviewCssPx(raw, fallback);
     const safeColor = color || '#fff';
-    return 'style="font-size:' + size + 'px; line-height:1; color:' + safeColor + ';"';
+    return 'data-clock-font="' + normalizeClockPreviewFont(raw, fallback) +
+      '" style="font-size:' + size + 'px; line-height:1; color:' + safeColor + ';"';
   }
 
   function applyClockPreviewTextStyle(el, raw, fallback, color, lineHeight) {
     if (!el) return;
     const size = getClockPreviewCssPx(raw, fallback);
+    el.dataset.clockFont = String(normalizeClockPreviewFont(raw, fallback));
     el.style.fontSize = size + 'px';
     el.style.color = color || '#fff';
     el.style.lineHeight = lineHeight || '1';
@@ -10988,6 +13779,9 @@ function getClockPreviewLanguage() {
   }
 
   function loadClockFields(tab, data) {
+    loadIconColorFields(tab, data);
+    const border = document.getElementById(tab + '_clock_tile_border');
+    if (border) border.checked = data?.tile_border !== undefined ? !['0','false'].includes(String(data.tile_border)) : Number(data?.sensor_display_mode) !== 1;
     const timeFontEl = document.getElementById(tab + '_clock_time_font');
     if (timeFontEl) {
       const timeFont = (data && data.key_code !== undefined) ? Number(data.key_code) : 40;
@@ -11057,9 +13851,78 @@ function getClockPreviewLanguage() {
       dateEl.textContent = getClockPreviewDate(dateFormat);
       applyClockPreviewTextStyle(dateEl, dateFont, 24, '#fff', '1.1');
     }
+    fitCompactClockPreview(tileElem);
+  }
+
+  const CLOCK_PREVIEW_FONT_SIZES = [20, 24, 28, 32, 40, 48, 56, 64, 72, 80, 96];
+  let clockPreviewMeasureContext = null;
+
+  function measureClockPreviewText(el, text, px) {
+    clockPreviewMeasureContext = clockPreviewMeasureContext ||
+      document.createElement('canvas').getContext('2d');
+    if (!clockPreviewMeasureContext) return 0;
+    const style = getComputedStyle(el);
+    clockPreviewMeasureContext.font = style.fontWeight + ' ' + px + 'px ' + style.fontFamily;
+    return clockPreviewMeasureContext.measureText(text).width;
+  }
+
+  // Worst-case samples keep the chosen size stable while the time changes.
+  function clockPreviewSample(el, isTime) {
+    return isTime ? (/[AP]M/.test(el.textContent) ? '88:88 PM' : '88:88')
+      : el.textContent.replace(/[0-9]/g, '8');
+  }
+
+  // Half-height clocks use one row: the largest configured-or-smaller size whose
+  // rendered size fits 80% of the tile height and whose text fits the width.
+  // The date follows only from width 2 and only when it still fits.
+  // The firmware applies the same rule (fit_compact_clock in clock/renderer.cpp).
+  function fitCompactClockPreview(tileElem) {
+    if (!tileElem) return;
+    const lines = [tileElem.querySelector('.tile-clock-time'), tileElem.querySelector('.tile-clock-date')];
+    lines.forEach(el => {
+      if (!el) return;
+      el.hidden = false;
+      el.style.fontSize = getClockPreviewCssPx(el.dataset.clockFont, 40) + 'px';
+    });
+    if (!tileElem.classList.contains('clock-compact')) return;
+    const style = getComputedStyle(tileElem);
+    const root = getComputedStyle(document.documentElement);
+    const cellW = parseFloat(root.getPropertyValue('--preview-cell-w'));
+    const cellH = parseFloat(root.getPropertyValue('--preview-cell-h'));
+    const gridGap = parseFloat(root.getPropertyValue('--preview-gap')) || 0;
+    const span = (value, cell) => (Number(value) || 1) * (cell + gridGap) - gridGap;
+    // Hidden folder tabs have no layout yet; the grid variables still hold the size.
+    const tileW = cellW > 0 ? span(tileElem.dataset.spanW, cellW) : tileElem.clientWidth;
+    const tileH = cellH > 0 ? span(tileElem.dataset.spanH, cellH) : tileElem.clientHeight;
+    const availW = tileW - parseFloat(style.paddingLeft || 0) - parseFloat(style.paddingRight || 0);
+    const maxPx = tileH * 0.8;
+    const gap = parseFloat(style.columnGap || 0) || 0;
+    const [time, date] = lines;
+    const primary = time || date;
+    const secondary = time && date && Number(tileElem.dataset.spanW) >= 2 ? date : null;
+    if (date && date !== primary && date !== secondary) date.hidden = true;
+    if (!primary) return;
+    const fit = (el, capPx, usedW) => {
+      const sample = clockPreviewSample(el, el === time);
+      for (const size of [...CLOCK_PREVIEW_FONT_SIZES].reverse()) {
+        const px = getClockPreviewCssPx(size, size);
+        if (size > Number(el.dataset.clockFont || 40) || px > capPx) continue;
+        const width = measureClockPreviewText(el, sample, px);
+        if (usedW + width <= availW) return { px, width };
+      }
+      return null;
+    };
+    const first = fit(primary, maxPx, 0) || { px: getClockPreviewCssPx(20, 20), width: 0 };
+    primary.style.fontSize = first.px + 'px';
+    if (!secondary) return;
+    const second = fit(secondary, first.px, first.width + gap);
+    if (second) secondary.style.fontSize = second.px + 'px';
+    else secondary.hidden = true;
   }
 
   function saveClockFields(tab, formData) {
+    saveIconColorFields(tab, formData);
+    formData.append('tile_border', document.getElementById(tab + '_clock_tile_border')?.checked === false ? '0' : '1');
     ensureClockSelection(tab);
     const flags = getClockFlagsFromInputs(tab);
     formData.append('clock_show_time', (flags & 1) ? '1' : '0');
@@ -11071,6 +13934,9 @@ function getClockPreviewLanguage() {
   }
 
   function resetClockFields(tab) {
+    resetIconColorFields(tab);
+    const border = document.getElementById(tab + '_clock_tile_border');
+    if (border) border.checked = true;
     applyClockFlagsToInputs(tab, 1);
     const timeFontEl = document.getElementById(tab + '_clock_time_font');
     if (timeFontEl) timeFontEl.value = '40';
@@ -11088,6 +13954,9 @@ function normalizeTextValueFont(value) {
   }
 
   function loadTextFields(tab, data) {
+    loadIconColorFields(tab, data);
+    const border = document.getElementById(tab + '_text_tile_border');
+    if (border) border.checked = data?.tile_border !== undefined ? !['0','false'].includes(String(data.tile_border)) : Number(data?.sensor_display_mode) !== 1;
     const prefix = tab;
     const textEl = document.getElementById(prefix + '_text_value');
     const fontEl = document.getElementById(prefix + '_text_value_font');
@@ -11113,12 +13982,17 @@ function normalizeTextValueFont(value) {
   }
 
   function saveTextFields(tab, formData) {
+    saveIconColorFields(tab, formData);
+    formData.append('tile_border', document.getElementById(tab + '_text_tile_border')?.checked === false ? '0' : '1');
     const prefix = tab;
     formData.append('text_value', document.getElementById(prefix + '_text_value')?.value || '');
     formData.append('text_value_font', document.getElementById(prefix + '_text_value_font')?.value || '0');
   }
 
   function resetTextFields(tab) {
+    resetIconColorFields(tab);
+    const border = document.getElementById(tab + '_text_tile_border');
+    if (border) border.checked = true;
     const prefix = tab;
     const textEl = document.getElementById(prefix + '_text_value');
     if (textEl) textEl.value = '';
@@ -11141,6 +14015,7 @@ function normalizeTextValueFont(value) {
   }
 
   function loadNumberFields(tab, data) {
+    loadIconColorFields(tab, data);
     const font = document.getElementById(tab + '_number_value_font');
     if (font) font.value = String(data.sensor_value_font ?? 2);
     const entity = document.getElementById(tab + '_number_entity');
@@ -11168,6 +14043,7 @@ function normalizeTextValueFont(value) {
   }
 
   function saveNumberFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     formData.append('sensor_value_font', document.getElementById(tab + '_number_value_font')?.value ?? '2');
     const entityEl = document.getElementById(tab + '_number_entity');
     const entity = entityEl
@@ -11180,6 +14056,7 @@ function normalizeTextValueFont(value) {
   }
 
   function resetNumberFields(tab) {
+    resetIconColorFields(tab);
     const font = document.getElementById(tab + '_number_value_font');
     if (font) font.value = '2';
     const entity = document.getElementById(tab + '_number_entity');
@@ -11193,6 +14070,7 @@ function normalizeTextValueFont(value) {
   }
 
   function loadSelectFields(tab, data) {
+    loadIconColorFields(tab, data);
     const font = document.getElementById(tab + '_select_value_font');
     if (font) font.value = String(data.sensor_value_font ?? 2);
     const entity = document.getElementById(tab + '_select_entity');
@@ -11217,9 +14095,12 @@ function normalizeTextValueFont(value) {
       popup.value = data.popup_open_mode !== undefined
         ? String(data.popup_open_mode) : '1';
     }
+    // The entity is known now: the state color section follows it.
+    syncIconColorFields(tab);
   }
 
   function saveSelectFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     formData.append('sensor_value_font', document.getElementById(tab + '_select_value_font')?.value ?? '2');
     const entityEl = document.getElementById(tab + '_select_entity');
     const entity = entityEl
@@ -11232,6 +14113,7 @@ function normalizeTextValueFont(value) {
   }
 
   function resetSelectFields(tab) {
+    resetIconColorFields(tab);
     const font = document.getElementById(tab + '_select_value_font');
     if (font) font.value = '2';
     const entity = document.getElementById(tab + '_select_entity');
@@ -11245,6 +14127,7 @@ function normalizeTextValueFont(value) {
   }
 
   function loadDateTimeFields(tab, data) {
+    loadIconColorFields(tab, data);
     const font = document.getElementById(tab + '_datetime_value_font');
     if (font) font.value = String(data.sensor_value_font ?? 2);
     const entity = document.getElementById(tab + '_datetime_entity');
@@ -11269,9 +14152,12 @@ function normalizeTextValueFont(value) {
       popup.value = data.popup_open_mode !== undefined
         ? String(data.popup_open_mode) : '1';
     }
+    // The entity is known now: the state color section follows it.
+    syncIconColorFields(tab);
   }
 
   function saveDateTimeFields(tab, formData) {
+    saveIconColorFields(tab, formData);
     formData.append('sensor_value_font', document.getElementById(tab + '_datetime_value_font')?.value ?? '2');
     const entityEl = document.getElementById(tab + '_datetime_entity');
     const entity = entityEl
@@ -11284,6 +14170,7 @@ function normalizeTextValueFont(value) {
   }
 
   function resetDateTimeFields(tab) {
+    resetIconColorFields(tab);
     const font = document.getElementById(tab + '_datetime_value_font');
     if (font) font.value = '2';
     const entity = document.getElementById(tab + '_datetime_entity');

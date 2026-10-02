@@ -7,3 +7,4 @@ void append_navigate_fields_html(String& html,
                                  const String& tab_id,
                                  const String& navigateOptionsHtml,
                                  const std::vector<String>& sensorOptions);
+void append_back_fields_html(String& html, const String& tab_id);

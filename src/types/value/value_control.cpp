@@ -1,4 +1,7 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/value/value_control.h"
+#include "src/tiles/runtime/tile_icon_color_rules.h"
+#include "src/ui/tabs/tiles/tab_tiles_unified.h"
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <cmath>
@@ -138,8 +141,17 @@ void refresh_editable_tile(GridType grid, uint8_t index) {
   SensorTileWidgets* widgets = tile_renderer_get_sensor_widgets(grid);
   if (!widgets || !widgets[index].value_label) return;
   const EditableValue value = parse_editable_value(haBridgeConfig.findEditableValue(tile->sensor_entity));
+  const String display = editable_display_value(value);
   lv_label_set_long_mode(widgets[index].value_label, LV_LABEL_LONG_DOT);
-  lv_label_set_text(widgets[index].value_label, editable_display_value(value).c_str());
+  lv_label_set_text(widgets[index].value_label, display.c_str());
+  // Per-tile icon colors: Number uses the color bar on the raw number; Select
+  // and Date/Time state colors match the raw state or its displayed text.
+  if (widgets[index].icon_label && tile->icon_colors.length()) {
+    const bool known = value.valid && value.has_state && value.available && value.state != "unknown";
+    tiles_request_rule_refresh(grid, index);
+    tile_icon_color_rules::apply(widgets[index].icon_label, tile->icon_colors.c_str(), known,
+                                 value.state.c_str(), display.c_str(), lv_color_white());
+  }
 }
 
 void queue_editable_value(const String& entity, const char* payload) {
@@ -529,7 +541,7 @@ void style_panel(lv_obj_t* obj) {
   lv_obj_set_style_text_color(obj, lv_color_white(), 0);
   lv_obj_set_style_border_color(obj, lv_color_hex(0x555555), 0);
   lv_obj_set_style_border_width(obj, 0, 0);
-  lv_obj_set_style_radius(obj, popup_layout::scale(10), 0);
+  ui_surface_style::apply_radius(obj, popup_layout::scale(10), 0);
   lv_obj_set_style_pad_all(obj, 0, 0);
   lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
@@ -541,7 +553,7 @@ lv_obj_t* arrow_button(lv_obj_t* parent, bool up, EditableControl* c) {
   lv_obj_set_style_bg_color(button, lv_color_white(), LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(button, LV_OPA_20, LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(button, 0, LV_PART_MAIN);
-  lv_obj_set_style_radius(button, popup_layout::scale(12), 0);
+  ui_surface_style::apply_radius(button, popup_layout::scale(12), 0);
   lv_obj_set_style_pad_all(button, 0, 0);
   lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
   auto* icon = lv_label_create(button); lv_label_set_text(icon, LV_SYMBOL_DOWN);
@@ -601,6 +613,12 @@ void apply_control_colors(EditableControl* c) {
   c->colors = editable_colors::from(base);
   c->colors_initialized = true;
   editable_colors::dropdown(c->dropdown, c->colors);
+  // The white Apply button cuts its label out in the card color; pressed is
+  // the white mixed toward the card (0xBBBBBB on the default 0x2A2A2A card).
+  if (c->apply) {
+    lv_obj_set_style_text_color(c->apply, base, 0);
+    lv_obj_set_style_bg_color(c->apply, lv_color_mix(base, lv_color_white(), 81), LV_STATE_PRESSED);
+  }
   editable_colors::surface(c->number_box, c->colors.raised);
   editable_colors::surface(c->clock_box, c->colors.raised);
   for (auto& field : c->fields) {
@@ -633,7 +651,7 @@ void layout_controls(EditableControl* c) {
   lv_obj_set_size(c->number_box, number_width, number_height);
   lv_obj_set_style_bg_color(c->number_box, c->colors.raised, 0);
   lv_obj_set_style_bg_opa(c->number_box, slider ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(c->number_box, climate_layout::kControlRadius, 0);
+  ui_surface_style::apply_radius(c->number_box, climate_layout::kControlRadius, 0);
   lv_obj_align(c->number_box, LV_ALIGN_CENTER, 0, slider ? -(knob_height + value_gap) / 2 : 0);
   lv_obj_set_style_text_font(c->field, slider ? popup_layout::headerTitleFont() : popup_layout::font28(), 0);
   lv_obj_set_style_text_align(c->field, c->number_roller_enabled ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
@@ -712,7 +730,7 @@ EditableControl* editable_control_create(lv_obj_t* row, lv_obj_t* card) {
   lv_obj_add_event_cb(c->number_roller, input_event, LV_EVENT_ALL, c);
   c->clock_box = lv_obj_create(row); style_panel(c->clock_box);
   lv_obj_set_style_bg_color(c->clock_box, lv_color_hex(0x3A3A3A), 0);
-  lv_obj_set_style_radius(c->clock_box, popup_layout::scale(18), 0);
+  ui_surface_style::apply_radius(c->clock_box, popup_layout::scale(18), 0);
   for (int i = 0; i < 2; ++i) {
     c->separators[i] = lv_obj_create(c->clock_box); lv_obj_remove_style_all(c->separators[i]);
     auto* colon = lv_label_create(c->separators[i]); lv_label_set_text(colon, ":");
@@ -761,7 +779,7 @@ EditableControl* editable_control_create(lv_obj_t* row, lv_obj_t* card) {
   lv_obj_set_style_bg_color(c->apply, lv_color_white(), 0);
   lv_obj_set_style_text_color(c->apply, lv_color_hex(0x2A2A2A), 0);
   lv_obj_set_style_bg_color(c->apply, lv_color_hex(0xBBBBBB), LV_STATE_PRESSED);
-  lv_obj_set_style_radius(c->apply, popup_layout::scale(18), 0);
+  ui_surface_style::apply_radius(c->apply, popup_layout::scale(18), 0);
   lv_obj_set_style_shadow_width(c->apply, 0, 0);
   auto* apply_label = lv_label_create(c->apply); lv_label_set_text(apply_label, label(6));
   lv_obj_set_style_text_font(apply_label, popup_layout::font20(), 0); lv_obj_center(apply_label);
@@ -795,6 +813,8 @@ void editable_control_open(EditableControl* c, const String& entity) {
 
 void editable_control_refresh(EditableControl* c) {
   if (!c || !c->active) return;
+  // The card follows its tile's color while open; only a change restyles.
+  apply_control_colors(c);
   const bool online = networkManager.isMqttConnected();
   if (!online && c->online) { finish_editing(c); c->dragging = false; lv_dropdown_close(c->dropdown); c->payload = "\x01"; }
   if (c->command_id.length() && (!online || millis() - c->command_ms >= 30000)) {

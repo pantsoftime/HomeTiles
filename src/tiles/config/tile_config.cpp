@@ -288,6 +288,24 @@ struct PackedQuarterGridV7 {
   PackedTileV7 tiles[TILES_PER_QUARTER];
 };
 
+static void packGeometry(const Tile& tile, PackedQuarterGridV7& quarter, size_t index) {
+  const unsigned shift = (index % 2) * 4;
+  const unsigned bits = tile.type == TILE_EMPTY ? 0 :
+      tile_geometry::fraction_bits(tile.col, tile.row, tile.span_w, tile.span_h);
+  quarter.reserved[index / 2] |= static_cast<uint8_t>(bits << shift);
+}
+
+static void unpackGeometry(const PackedQuarterGridV7& quarter, size_t index, Tile& tile) {
+  const unsigned bits = (quarter.reserved[index / 2] >> ((index % 2) * 4)) & 15;
+  if (!bits || tile.type == TILE_EMPTY) return;
+  const float col = tile.col + ((bits & 1) ? 0.5f : 0);
+  const float row = tile.row + ((bits & 2) ? 0.5f : 0);
+  const float w = tile.span_w - ((bits & 4) ? 0.5f : 0);
+  const float h = tile.span_h - ((bits & 8) ? 0.5f : 0);
+  if (!tile_geometry::supported(tile.type, col, row, w, h)) return;
+  tile.col = col; tile.row = row; tile.span_w = w; tile.span_h = h;
+}
+
 struct FolderIndexHeader {
   uint32_t magic;
   uint16_t version;
@@ -333,6 +351,10 @@ TileConfig tileConfig;
 
 TileConfig::TileConfig() = default;
 
+uint32_t tileDefaultBgColor() {
+  return tile_color::normalize(configManager.getConfig().default_tile_color);
+}
+
 static void copyString(const String& src, char* dst, size_t max_len) {
   if (!dst || max_len == 0) return;
   memset(dst, 0, max_len);
@@ -349,8 +371,8 @@ static uint8_t clampDecimals(uint8_t val) {
 }
 
 static uint8_t clampSensorValueFont(uint8_t val) {
-  // 0-4 proportional, 5-6 monospace 20/24, 7-8 monospace bold 20/24.
-  if (val > 8) return 0;
+  val = sensor_value_font_from_legacy_fork(val);  // FORK, see tile_config.h
+  if (val > SENSOR_VALUE_FONT_MAX && !sensor_value_font_is_mono(val)) return 0;
   return val;
 }
 
@@ -358,6 +380,36 @@ static uint16_t clampImageSlideshowSeconds(uint16_t val) {
   if (val == 0) return IMAGE_SLIDESHOW_DEFAULT_SEC;
   if (val > IMAGE_SLIDESHOW_MAX_SEC) return IMAGE_SLIDESHOW_MAX_SEC;
   return val;
+}
+
+// Per-tile icon disc options live in the top bits of the V7 slideshow field.
+// Only the animation tile uses that field (at most 3600, 12 bits); every other
+// type stores its disc options there. Firmware without these bits clamps the
+// field to 3600 and ignores it, so the packed layout stays V7-compatible.
+static constexpr uint16_t kIconDiscModeShift = 13;
+static constexpr uint16_t kIconDiscModeMask = 0x3u << kIconDiscModeShift;
+// Stored inverted so zero keeps the default (glow on) for existing tiles.
+static constexpr uint16_t kIconGlowOffBit = 0x1u << 15;
+static constexpr uint16_t kSlideshowValueMask = 0x1FFFu;
+
+static bool tileStoresIconDiscOptions(TileType type) {
+  return type != TILE_PIXELANIM && type != TILE_EMPTY;
+}
+
+static uint16_t packIconDiscOptions(const Tile& tile) {
+  if (!tileStoresIconDiscOptions(tile.type)) return 0;
+  return static_cast<uint16_t>(
+      (normalizeTileIconDiscMode(tile.icon_disc_mode) << kIconDiscModeShift) |
+      (tile.icon_glow ? 0u : kIconGlowOffBit));
+}
+
+static void unpackIconDiscOptions(uint16_t packed, Tile& tile) {
+  tile.icon_disc_mode = TILE_ICON_DISC_GLOBAL;
+  tile.icon_glow = true;
+  if (!tileStoresIconDiscOptions(tile.type)) return;
+  tile.icon_disc_mode = normalizeTileIconDiscMode(
+      (packed & kIconDiscModeMask) >> kIconDiscModeShift);
+  tile.icon_glow = (packed & kIconGlowOffBit) == 0;
 }
 
 static uint16_t getNavigateTargetId(const Tile& tile) {
@@ -384,6 +436,7 @@ static bool looksLikeImagePath(const String& value);
 static const char* kImagePathDir = "/_tile_links";
 static const char* kEntityPathDir = "/_tile_entities";
 static const char* kTitlePathDir = "/_tile_titles";
+static const char* kIconColorPathDir = "/_tile_icon_colors";
 static const char* kTileGridDir = "/_tile_grids";
 static const char* kFolderIndexFile = "/_tile_grids/folders.bin";
 static constexpr uint32_t kFolderIndexMagic = 0x54464C44;  // 'TFLD'
@@ -520,6 +573,7 @@ static bool g_sidecar_index_built = false;
 static std::vector<uint32_t> g_image_sidecar_keys;
 static std::vector<uint32_t> g_entity_sidecar_keys;
 static std::vector<uint32_t> g_title_sidecar_keys;
+static std::vector<uint32_t> g_icon_color_sidecar_keys;
 
 static uint32_t sidecarKey(uint16_t folder_id, size_t index) {
   return (static_cast<uint32_t>(folder_id) << 8) | static_cast<uint8_t>(index);
@@ -558,6 +612,7 @@ static void ensureSidecarIndexBuilt() {
   scanSidecarDir(kImagePathDir, g_image_sidecar_keys);
   scanSidecarDir(kEntityPathDir, g_entity_sidecar_keys);
   scanSidecarDir(kTitlePathDir, g_title_sidecar_keys);
+  scanSidecarDir(kIconColorPathDir, g_icon_color_sidecar_keys);
 }
 
 static String entityPathFileLegacy(const char* prefix, size_t index) {
@@ -914,6 +969,76 @@ static void applyLongTitlesFromSd(uint16_t folder_id, TileGridConfig& grid) {
   }
 }
 
+// Icon color records (tile_icon_colors.h) do not fit PackedTileV7. They follow
+// the long-title sidecar pattern: written through .tmp, recovered from .tmp
+// or .bak, skipped when unchanged and removed when empty.
+static String iconColorPathFile(uint16_t folder_id, size_t index) {
+  char path[64];
+  snprintf(path, sizeof(path), "%s/f%u_%02u.txt", kIconColorPathDir,
+           static_cast<unsigned>(folder_id), static_cast<unsigned>(index));
+  return String(path);
+}
+
+static bool readIconColorsSd(uint16_t folder_id, size_t index, String& out) {
+  if (!storageReady()) return false;
+  ensureSidecarIndexBuilt();
+  if (!sidecarKeyPresent(g_icon_color_sidecar_keys, sidecarKey(folder_id, index))) return false;
+  const String path = iconColorPathFile(folder_id, index);
+  for (const String& candidate : {path, tmpPathFor(path), backupPathFor(path)}) {
+    File file = storageFS().open(candidate, FILE_READ);
+    if (!file) continue;
+    const size_t size = file.size();
+    if (size == 0 || size > tile_icon_colors::kMaxRecordBytes) { file.close(); continue; }
+    String value = file.readString();
+    file.close();
+    if (value.length() != size) continue;
+    out = value;
+    return true;
+  }
+  return false;
+}
+
+static bool writeIconColorsSd(uint16_t folder_id, size_t index, const String& record) {
+  if (!storageReady()) return false;
+  if (record.length() > tile_icon_colors::kMaxRecordBytes) return false;
+  ensureSidecarIndexBuilt();
+  const uint32_t key = sidecarKey(folder_id, index);
+  const String path = iconColorPathFile(folder_id, index);
+  const bool present = sidecarKeyPresent(g_icon_color_sidecar_keys, key);
+  if (record.length() == 0) {
+    if (!present) return true;
+    for (const String& candidate : {path, tmpPathFor(path), backupPathFor(path)})
+      if (storageFS().exists(candidate) && !storageFS().remove(candidate)) return false;
+    sidecarKeyRemove(g_icon_color_sidecar_keys, key);
+    return true;
+  }
+  String current;
+  if (readIconColorsSd(folder_id, index, current) && current == record) return true;
+  if (!storageFS().exists(kIconColorPathDir) && !storageFS().mkdir(kIconColorPathDir)) return false;
+  const String temporary = tmpPathFor(path);
+  if (storageFS().exists(temporary)) storageFS().remove(temporary);
+  File file = storageFS().open(temporary, FILE_WRITE);
+  if (!file) return false;
+  const size_t written = file.print(record);
+  file.flush(); file.close();
+  if (written != record.length() || !replaceFileWithPreparedTmp(temporary, path)) {
+    storageFS().remove(temporary);
+    return false;
+  }
+  sidecarKeyAdd(g_icon_color_sidecar_keys, key);
+  return true;
+}
+
+static void applyIconColorsFromSd(uint16_t folder_id, TileGridConfig& grid) {
+  for (size_t index = 0; index < TILES_PER_GRID; ++index) {
+    Tile& tile = grid.tiles[index];
+    String record;
+    if (!tileTypeHasIconColors(tile.type) || !readIconColorsSd(folder_id, index, record)) continue;
+    // Normalize again so a damaged or foreign file cannot reach the runtime.
+    tile.icon_colors = normalizeTileIconColors(tile.type, record.c_str());
+  }
+}
+
 #if defined(DEVICE_ESP32_S3_RGB_480)
 static bool sidecarTextMatches(bool has_sidecar, const String& file_path,
                                const String& expected,
@@ -947,6 +1072,11 @@ static bool gridSidecarsMatchStored(uint16_t folder_id,
     const bool title_required = tile.type != TILE_EMPTY && tile.title.length() >= TITLE_MAX;
     if (title_required ? (!readLongTitleSd(folder_id, index, stored_title) || stored_title != tile.title)
                        : sidecarKeyPresent(g_title_sidecar_keys, key)) return false;
+
+    String stored_colors;
+    if (tile.icon_colors.length()
+            ? (!readIconColorsSd(folder_id, index, stored_colors) || stored_colors != tile.icon_colors)
+            : sidecarKeyPresent(g_icon_color_sidecar_keys, key)) return false;
 
     const bool entity_required =
         entityTileStoresSensorEntity(tile.type) &&
@@ -1009,8 +1139,8 @@ static void packTile(const Tile& in, PackedTileV7& out) {
   out.bg_color = in.bg_color;
   out.col = (in.col < GRID_COLS) ? in.col : 0;
   out.row = (in.row < GRID_ROWS) ? in.row : 0;
-  uint8_t span_w = (in.span_w < 1) ? 1 : ((in.span_w > GRID_COLS) ? GRID_COLS : in.span_w);
-  uint8_t span_h = (in.span_h < 1) ? 1 : ((in.span_h > GRID_ROWS) ? GRID_ROWS : in.span_h);
+  uint8_t span_w = (in.span_w < 1) ? 1 : ((in.span_w > GRID_COLS) ? GRID_COLS : std::ceil(in.span_w));
+  uint8_t span_h = (in.span_h < 1) ? 1 : ((in.span_h > GRID_ROWS) ? GRID_ROWS : std::ceil(in.span_h));
   clamp_media_tile_layout(in.type, out.col, out.row, span_w, span_h);
   if (span_w > GRID_COLS - out.col) span_w = GRID_COLS - out.col;
   if (span_h > GRID_ROWS - out.row) span_h = GRID_ROWS - out.row;
@@ -1018,6 +1148,10 @@ static void packTile(const Tile& in, PackedTileV7& out) {
   out.span_h = span_h;
   out.sensor_value_font = clampSensorValueFont(in.sensor_value_font);
   out.image_slideshow_sec = clampImageSlideshowSeconds(in.image_slideshow_sec);
+  if (tileStoresIconDiscOptions(in.type)) {
+    out.image_slideshow_sec = static_cast<uint16_t>(
+        (out.image_slideshow_sec & kSlideshowValueMask) | packIconDiscOptions(in));
+  }
   out.sensor_gauge_enabled = (in.sensor_display_mode <= 2) ? in.sensor_display_mode : 0;
   out.sensor_gauge_min = in.sensor_gauge_min;
   out.sensor_gauge_max = in.sensor_gauge_max;
@@ -1212,7 +1346,10 @@ static void unpackTileV7(const PackedTileV7& in, Tile& out) {
     out.key_code = 0;
     out.key_modifier = 0;
   }
-  out.image_slideshow_sec = clampImageSlideshowSeconds(in.image_slideshow_sec);
+  uint16_t slideshow = in.image_slideshow_sec;
+  unpackIconDiscOptions(slideshow, out);
+  if (tileStoresIconDiscOptions(out.type)) slideshow &= kSlideshowValueMask;
+  out.image_slideshow_sec = clampImageSlideshowSeconds(slideshow);
   out.title = String(in.title);
   out.icon_name = String(in.icon_name);
   out.sensor_entity = String(in.sensor_entity);
@@ -1617,21 +1754,21 @@ static void unpackTileV1(const PackedTileV1& in, Tile& out, uint8_t index) {
     out.image_path = "";
   }
 }
-static bool get_tile_layout_clamped(const Tile& tile, uint8_t& col, uint8_t& row, uint8_t& span_w, uint8_t& span_h) {
+static bool get_tile_layout_clamped(const Tile& tile, float& col, float& row, float& span_w, float& span_h) {
   if (tile.col >= GRID_COLS || tile.row >= GRID_ROWS) return false;
   col = tile.col;
   row = tile.row;
-  span_w = tile.span_w < 1 ? 1 : tile.span_w;
-  span_h = tile.span_h < 1 ? 1 : tile.span_h;
+  span_w = tile.span_w < 0.5f ? 1 : tile.span_w;
+  span_h = tile.span_h < 0.5f ? 1 : tile.span_h;
   clamp_media_tile_layout(tile.type, col, row, span_w, span_h);
   if (span_w > GRID_COLS - col) span_w = GRID_COLS - col;
   if (span_h > GRID_ROWS - row) span_h = GRID_ROWS - row;
   return true;
 }
 
-static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], uint8_t col, uint8_t row, uint8_t span_w, uint8_t span_h) {
-  for (uint8_t r = row; r < row + span_h; ++r) {
-    for (uint8_t c = col; c < col + span_w; ++c) {
+static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], float col, float row, float span_w, float span_h) {
+  for (uint8_t r = static_cast<uint8_t>(row); r < row + span_h; ++r) {
+    for (uint8_t c = static_cast<uint8_t>(col); c < col + span_w; ++c) {
       if (r < GRID_ROWS && c < GRID_COLS) {
         occupied[r][c] = true;
       }
@@ -1649,15 +1786,15 @@ static void initGridDefaults(TileGridConfig& grid) {
   }
 }
 
-static bool find_free_cell_top_left(const TileGridConfig& grid, uint8_t& out_col, uint8_t& out_row) {
+static bool find_free_cell_top_left(const TileGridConfig& grid, float& out_col, float& out_row) {
   bool occupied[GRID_ROWS][GRID_COLS] = {};
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = grid.tiles[i];
     if (tile.type == TILE_EMPTY) continue;
-    uint8_t col = 0;
-    uint8_t row = 0;
-    uint8_t span_w = 1;
-    uint8_t span_h = 1;
+    float col = 0;
+    float row = 0;
+    float span_w = 1;
+    float span_h = 1;
     if (!get_tile_layout_clamped(tile, col, row, span_w, span_h)) continue;
     mark_occupied(occupied, col, row, span_w, span_h);
   }
@@ -1675,47 +1812,40 @@ static bool find_free_cell_top_left(const TileGridConfig& grid, uint8_t& out_col
 }
 
 static bool settings_tile_rect_is_free(const TileGridConfig& grid,
-                                       uint8_t col, uint8_t row,
-                                       uint8_t span_w, uint8_t span_h) {
-  if (span_w < 1 || span_h < 1 || col >= GRID_COLS || row >= GRID_ROWS ||
-      span_w > GRID_COLS - col || span_h > GRID_ROWS - row) {
+                                       float col, float row,
+                                       float span_w, float span_h) {
+  if (!tile_geometry::supported(TILE_SETTINGS, col, row, span_w, span_h)) {
     return false;
   }
-  bool occupied[GRID_ROWS][GRID_COLS] = {};
   for (const auto& tile : grid.tiles) {
     if (tile.type == TILE_EMPTY || tile.type == TILE_SETTINGS) continue;
-    uint8_t tile_col = 0;
-    uint8_t tile_row = 0;
-    uint8_t tile_span_w = 1;
-    uint8_t tile_span_h = 1;
+    float tile_col = 0;
+    float tile_row = 0;
+    float tile_span_w = 1;
+    float tile_span_h = 1;
     if (!get_tile_layout_clamped(tile, tile_col, tile_row, tile_span_w,
                                  tile_span_h)) {
       continue;
     }
-    mark_occupied(occupied, tile_col, tile_row, tile_span_w, tile_span_h);
-  }
-  for (uint8_t check_row = row; check_row < row + span_h; ++check_row) {
-    for (uint8_t check_col = col; check_col < col + span_w; ++check_col) {
-      if (occupied[check_row][check_col]) return false;
+    if (col < tile_col + tile_span_w && col + span_w > tile_col &&
+        row < tile_row + tile_span_h && row + span_h > tile_row) {
+      return false;
     }
   }
   return true;
 }
 
 static bool find_settings_tile_rect_bottom_right(
-    const TileGridConfig& grid, uint8_t span_w, uint8_t span_h,
-    uint8_t& out_col, uint8_t& out_row) {
-  if (span_w < 1 || span_h < 1 || span_w > GRID_COLS ||
-      span_h > GRID_ROWS) {
+    const TileGridConfig& grid, float span_w, float span_h,
+    float& out_col, float& out_row) {
+  if (!tile_geometry::supported(TILE_SETTINGS, 0, 0, span_w, span_h)) {
     return false;
   }
-  for (int row = GRID_ROWS - span_h; row >= 0; --row) {
-    for (int col = GRID_COLS - span_w; col >= 0; --col) {
-      if (settings_tile_rect_is_free(
-              grid, static_cast<uint8_t>(col), static_cast<uint8_t>(row),
-              span_w, span_h)) {
-        out_col = static_cast<uint8_t>(col);
-        out_row = static_cast<uint8_t>(row);
+  for (float row = GRID_ROWS - span_h; row >= 0; row -= 0.5f) {
+    for (float col = GRID_COLS - span_w; col >= 0; col -= 0.5f) {
+      if (settings_tile_rect_is_free(grid, col, row, span_w, span_h)) {
+        out_col = col;
+        out_row = row;
         return true;
       }
     }
@@ -1732,8 +1862,8 @@ static void collectFolderSubtree(const std::vector<FolderEntry>& entries, uint16
   }
 }
 
-bool TileConfig::ensureSettingsTile(TileGridConfig& grid, int target_col,
-                                    int target_row) {
+bool TileConfig::ensureSettingsTile(TileGridConfig& grid, float target_col,
+                                    float target_row) {
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = grid.tiles[i];
     if (tile.type == TILE_SETTINGS) {
@@ -1743,28 +1873,26 @@ bool TileConfig::ensureSettingsTile(TileGridConfig& grid, int target_col,
 
   const SettingsTileSnapshot& snapshot =
       configManager.getConfig().settings_tile_snapshot;
-  uint8_t span_w = snapshot.valid && snapshot.span_w >= 1
+  float span_w = snapshot.valid && snapshot.span_w >= 1
                        ? snapshot.span_w
                        : 1;
-  uint8_t span_h = snapshot.valid && snapshot.span_h >= 1
+  float span_h = snapshot.valid && snapshot.span_h >= 0.5f
                        ? snapshot.span_h
                        : 1;
   if (span_w > GRID_COLS) span_w = 1;
   if (span_h > GRID_ROWS) span_h = 1;
 
-  uint8_t col = 0;
-  uint8_t row = 0;
+  float col = 0;
+  float row = 0;
   const bool explicit_target = target_col >= 0 || target_row >= 0;
   if (explicit_target) {
     if (target_col < 0 || target_row < 0 || target_col >= GRID_COLS ||
         target_row >= GRID_ROWS ||
-        !settings_tile_rect_is_free(
-            grid, static_cast<uint8_t>(target_col),
-            static_cast<uint8_t>(target_row), span_w, span_h)) {
+        !settings_tile_rect_is_free(grid, target_col, target_row, span_w, span_h)) {
       return false;
     }
-    col = static_cast<uint8_t>(target_col);
-    row = static_cast<uint8_t>(target_row);
+    col = target_col;
+    row = target_row;
   } else if (snapshot.valid && snapshot.col < GRID_COLS &&
              snapshot.row < GRID_ROWS &&
              settings_tile_rect_is_free(grid, snapshot.col, snapshot.row,
@@ -1831,8 +1959,8 @@ bool TileConfig::ensureBackTile(uint16_t folder_id, TileGridConfig& grid) {
     }
   }
 
-  uint8_t col = 0;
-  uint8_t row = 0;
+  float col = 0;
+  float row = 0;
   if (!find_free_cell_top_left(grid, col, row)) {
     return false;
   }
@@ -2513,6 +2641,7 @@ bool TileConfig::loadFolderGridEntitiesOnly(uint16_t folder_id, TileEntitySlot* 
       out[i].type = full.tiles[i].type;
       out[i].sensor_entity = full.tiles[i].sensor_entity;
       out[i].caption_entity = full.tiles[i].key_macro;
+      out[i].rule_entity = tileIconSourceEntity(full.tiles[i].type, full.tiles[i].icon_colors);
     }
     return true;
   }
@@ -2538,6 +2667,12 @@ bool TileConfig::loadFolderGridEntitiesOnly(uint16_t folder_id, TileEntitySlot* 
       out[i].sensor_entity = full_entity;
     }
   }
+  // Rules on another entity subscribe to it as well (tile_icon_colors.h).
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    if (!tileTypeHasIconColors(out[i].type)) continue;
+    String record;
+    if (readIconColorsSd(folder_id, i, record)) out[i].rule_entity = tileIconSourceEntity(out[i].type, record);
+  }
   uint32_t sidecar_ms = millis() - t_sidecar0;
   if (read_ms + unpack_ms + sidecar_ms >= 5) {
     Serial.printf("[Bridge]     loadFolderGridEntitiesOnly(%u) split: read=%ums unpack=%ums sidecar=%ums\n",
@@ -2558,6 +2693,7 @@ struct FolderEntityCacheEntry {
   TileType types[TILES_PER_GRID];
   char* entities[TILES_PER_GRID];  // PSRAM copies; nullptr means empty.
   char* captions[TILES_PER_GRID];  // Same, for the caption entity.
+  char* rule_entities[TILES_PER_GRID];  // The rules' other entity, same rules.
 };
 
 // 128 entries x ~184 B = ~24 KB of PSRAM. Beyond 128 live folders,
@@ -2620,9 +2756,14 @@ FolderEntityCacheEntry* TileConfig::storeFolderEntityCache(uint16_t folder_id,
       heap_caps_free(e->captions[i]);
       e->captions[i] = nullptr;
     }
+    if (e->rule_entities[i]) {
+      heap_caps_free(e->rule_entities[i]);
+      e->rule_entities[i] = nullptr;
+    }
     e->types[i] = slots[i].type;
     e->entities[i] = psramStrdupLocal(slots[i].sensor_entity);
     e->captions[i] = psramStrdupLocal(slots[i].caption_entity);
+    e->rule_entities[i] = psramStrdupLocal(slots[i].rule_entity);
   }
   e->built_gen = built_gen;
   return e;
@@ -2648,6 +2789,7 @@ bool TileConfig::getFolderEntitiesCached(uint16_t folder_id, FolderEntitySlotVie
     out[i].type = e->types[i];
     out[i].entity = e->entities[i] ? e->entities[i] : "";
     out[i].caption = e->captions[i] ? e->captions[i] : "";
+    out[i].rule_entity = e->rule_entities[i] ? e->rule_entities[i] : "";
   }
   return true;
 }
@@ -2694,7 +2836,7 @@ bool TileConfig::saveFolderGrid(uint16_t folder_id, TileGridConfig& grid) {
   if (!folderExists(folder_id)) return false;
   bool ids_changed = false;
   if (!ensureNavigationIds(grid, ids_changed)) return false;
-  bool ok = saveGrid(folder_id, grid);
+  bool ok = saveGridInPlace(folder_id, grid);
   if (ok && folder_id == active_folder_id) {
     // Keep the runtime cache identical to the policy-normalized grid that was
     // written. Normalize the existing member in place so this storage call
@@ -3092,7 +3234,7 @@ bool TileConfig::createFolder(uint16_t parent_id, const String& name, const Stri
 
   initGridDefaults(*grid);
   ensureBackTile(next_id, *grid);
-  if (!saveGrid(next_id, *grid)) {
+  if (!saveGridInPlace(next_id, *grid)) {
     return false;
   }
 
@@ -3196,7 +3338,7 @@ bool TileConfig::getSettingsTile(Tile& out) {
 }
 
 SettingsTileVisibilityResult TileConfig::setSettingsTileVisible(
-    bool visible, int target_col, int target_row) {
+    bool visible, float target_col, float target_row) {
   TileGridConfig grid{};
   if (!loadGrid(kRootFolderId, grid, false)) {
     return SettingsTileVisibilityResult::StorageError;
@@ -3221,7 +3363,7 @@ SettingsTileVisibilityResult TileConfig::setSettingsTileVisible(
     changed = removeSettingsTiles(grid);
   }
 
-  if (changed && !saveGrid(kRootFolderId, grid, false)) {
+  if (changed && !saveGridInPlace(kRootFolderId, grid, false)) {
     return SettingsTileVisibilityResult::StorageError;
   }
   if (active_folder_id == kRootFolderId) active_grid = grid;
@@ -3229,7 +3371,7 @@ SettingsTileVisibilityResult TileConfig::setSettingsTileVisible(
 }
 
 SettingsTileVisibilityResult TileConfig::validateSettingsTileVisible(
-    bool visible, int target_col, int target_row) {
+    bool visible, float target_col, float target_row) {
   TileGridConfig grid{};
   if (!loadGrid(kRootFolderId, grid, false)) {
     return SettingsTileVisibilityResult::StorageError;
@@ -3298,6 +3440,7 @@ bool TileConfig::deleteFolder(uint16_t folder_id) {
       if (storageFS().exists(entity_path)) storageFS().remove(entity_path);
       sidecarKeyRemove(g_entity_sidecar_keys, sidecarKey(id, i));
       writeLongTitleSd(id, i, "");
+      writeIconColorsSd(id, i, "");
     }
   }
 
@@ -3332,6 +3475,7 @@ bool TileConfig::loadGrid(uint16_t folder_id, TileGridConfig& grid,
           continue;
         }
         unpackTileV7(packed_v7[q].tiles[i], grid.tiles[grid_idx]);
+        unpackGeometry(packed_v7[q], i, grid.tiles[grid_idx]);
         // Early V7 files could still carry TILE_IMAGE paths inline. Promote
         // them to the sidecar format once, under the same guarded migration
         // transaction used for V6, instead of writing LittleFS during an
@@ -3401,6 +3545,7 @@ bool TileConfig::loadGrid(uint16_t folder_id, TileGridConfig& grid,
   applyImagePathsFromSd(folder_id, grid);
   applyLongEntityIdsFromSd(folder_id, grid);
   applyLongTitlesFromSd(folder_id, grid);
+  applyIconColorsFromSd(folder_id, grid);
 
   // Retired tile types become empty without renumbering the persisted enum.
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
@@ -3413,24 +3558,41 @@ bool TileConfig::loadGrid(uint16_t folder_id, TileGridConfig& grid,
   if (folder_id != kScreensaverGridStorageId &&
       !ensureNavigationIds(grid, changed)) return false;
   if (needs_migration_save || changed) {
-    if (!saveGrid(folder_id, grid, ensure_navigation_tile)) return false;
+    if (!saveGridInPlace(folder_id, grid, ensure_navigation_tile)) return false;
   }
   return true;
 }
 
 bool TileConfig::saveGrid(uint16_t folder_id, const TileGridConfig& grid,
                           bool ensure_navigation_tile) {
+  // Only callers that cannot hand over their grid (the screensaver config)
+  // come here; the copy lives on the heap, never on a task stack.
+  std::unique_ptr<TileGridConfig> copy(new (std::nothrow) TileGridConfig(grid));
+  if (!copy) {
+    Serial.println("[TileConfig] ERROR: No memory for the grid save copy");
+    return false;
+  }
+  return saveGridInPlace(folder_id, *copy, ensure_navigation_tile);
+}
+
+// Normalizes the caller's grid in place (titles, retired types, icon colors,
+// navigation tile) and writes it. No second full grid copy: two copies on the
+// loop task stack overflowed it when the Web Admin saved a folder (b39).
+bool TileConfig::saveGridInPlace(uint16_t folder_id, TileGridConfig& grid,
+                                 bool ensure_navigation_tile) {
   if (!storageReady()) {
     Serial.println("[TileConfig] WARN: Storage unavailable, grid cannot be saved");
     return false;
   }
 
-  TileGridConfig working = grid;
+  TileGridConfig& working = grid;
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     working.tiles[i].title = hometiles_title::normalize(working.tiles[i].title.c_str()).c_str();
     if (isRetiredTileType(working.tiles[i].type)) {
       working.tiles[i] = Tile{};
     }
+    working.tiles[i].icon_colors = normalizeTileIconColors(
+        working.tiles[i].type, working.tiles[i].icon_colors.c_str());
   }
   if (ensure_navigation_tile) {
     if (folder_id == kRootFolderId) {
@@ -3459,6 +3621,7 @@ bool TileConfig::saveGrid(uint16_t folder_id, const TileGridConfig& grid,
         continue;
       }
       packTile(working.tiles[grid_idx], packed[q].tiles[i]);
+      packGeometry(working.tiles[grid_idx], packed[q], i);
     }
   }
 
@@ -3482,6 +3645,11 @@ bool TileConfig::saveGrid(uint16_t folder_id, const TileGridConfig& grid,
     const Tile& tile = working.tiles[grid_idx];
     if (!writeLongTitleSd(folder_id, grid_idx, tile.type == TILE_EMPTY ? String() : tile.title)) {
       Serial.println("[TileConfig] Error saving full tile title");
+      invalidateFolderEntityCache();
+      return false;
+    }
+    if (!writeIconColorsSd(folder_id, grid_idx, tile.icon_colors)) {
+      Serial.println("[TileConfig] Error saving tile icon colors");
       invalidateFolderEntityCache();
       return false;
     }

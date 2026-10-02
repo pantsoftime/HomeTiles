@@ -26,6 +26,7 @@
 #include "src/core/display/lvgl_tick_service.h"
 #include "src/io/hardware_io.h"
 #include "src/web/server/web_admin.h"
+#include "src/video/local_camera/local_camera.h"
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -1362,6 +1363,8 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
   auto add_grid_entities = [&](const FolderEntitySlotView* slots, size_t count) {
     for (size_t i = 0; i < count; ++i) {
       const FolderEntitySlotView& slot = slots[i];
+      // Rules on another entity (tile_icon_colors.h).
+      if (slot.rule_entity[0]) add_route(String(slot.rule_entity), -1, "state");
       if (tileTypeSubscribesDynamicState(slot.type) &&
           slot.entity[0]) {
         add_route(String(slot.entity), -1, tileTypeIsEditableValue(slot.type) ? "control" : "state");
@@ -1407,6 +1410,8 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
   const TileGridConfig& screensaver_grid = screensaverConfig.tileGrid();
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = screensaver_grid.tiles[i];
+    const String rule_entity = tileIconSourceEntity(tile.type, tile.icon_colors);
+    if (rule_entity.length()) add_route(rule_entity, -1, "state");
     if (!tileTypeSubscribesScreensaverState(tile.type) ||
         !tile.sensor_entity.length()) {
       continue;
@@ -1764,6 +1769,9 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
   if (hardwareIo.handleMqttMessage(topic, payload, length)) return;
 
   if (viewNavigationHandleMessage(topic, reinterpret_cast<const char*>(payload), length)) return;
+  // Built-in camera snapshot requests only validate and wake the camera
+  // worker here; capture and upload never run on the loop task.
+  if (local_camera::handleMqttMessage(topic, payload, length)) return;
   if (editable_handle_ack(topic, reinterpret_cast<const char*>(payload), length)) return;
   const char* apply_topic = networkManager.getBridgeApplyTopic();
   if (apply_topic && strcmp(topic, apply_topic) == 0) {
@@ -1936,6 +1944,13 @@ void mqttSubscribeTopics() {
     if (!tpc || !*tpc) continue;
     if (networkManager.mqttEnqueueSubscribe(tpc)) {
       Serial.printf("MQTT: subscribe queued %s\n", tpc);
+    }
+  }
+  // Explicit, capability-gated subscription: profiles without the built-in
+  // camera never subscribe to {base}/cmnd/local_camera.
+  if (const char* camera_topic = local_camera::commandTopic()) {
+    if (networkManager.mqttEnqueueSubscribe(camera_topic)) {
+      Serial.printf("MQTT: subscribe queued %s\n", camera_topic);
     }
   }
 
@@ -2745,6 +2760,8 @@ void mqttServicePostConnect() {
   mqttPublishDiscovery();
   mqttPublishDeviceSettings();
   mqttPublishHomeSnapshot();
+  // Retained {base}/stat/local_camera on camera profiles; no-op elsewhere.
+  local_camera::onMqttConnected();
   // Announce the exact MAC-based Bridge topic after every connection. Without
   // this retained message the HA integration cannot discover a new device or
   // repair an entry that still points at an older device ID. The publish uses

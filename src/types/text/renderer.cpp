@@ -1,6 +1,8 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/text/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include <Arduino.h>
 
@@ -13,7 +15,7 @@ lv_obj_t* render_text_tile(lv_obj_t* parent, int col, int row, const Tile& tile,
     return nullptr;
   }
 
-  uint32_t card_color = tileBgColorOrDefault(tile, 0x2A2A2A);
+  uint32_t card_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
 lv_obj_set_style_bg_grad_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
 lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -24,7 +26,7 @@ lv_obj_set_style_bg_grad_color(card, lv_color_hex(pressed_color), LV_PART_MAIN |
 lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
 
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_hor(card, tile_layout::scale_480(18), 0);
@@ -32,7 +34,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(card);
 
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   // Icon (optional)
   String iconChar;
@@ -40,6 +42,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     iconChar = getMdiChar(tile.icon_name);
   }
   const bool has_icon = iconChar.length() > 0;
+  lv_obj_t* header_icon = nullptr;
   if (has_icon) {
     lv_obj_t* icon_lbl = lv_label_create(card);
     if (icon_lbl) {
@@ -48,6 +51,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
       lv_obj_align(icon_lbl, LV_ALIGN_TOP_RIGHT,
                    tile_layout::scale_480(4),
                    tile_layout::scale_480(-8));
+      header_icon = icon_lbl;
     }
   }
 
@@ -63,6 +67,8 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
                    tile_layout::scale_480(4));
     }
   }
+  // After the title exists, so the disc can lift the whole header.
+  if (header_icon) tile_icon_disc::add_round(card, header_icon);
 
   auto get_text_font = [&](const Tile& t) -> const lv_font_t* {
     switch (t.sensor_value_font) {

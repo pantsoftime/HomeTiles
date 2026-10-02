@@ -33,7 +33,9 @@
 #include "src/types/energy/energy_data.h"
 #include "src/ui/screensaver/screensaver_config.h"
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/core/config/tile_radius.h"
 
 namespace {
 
@@ -50,8 +52,9 @@ constexpr uint32_t kMaxDecodePixels = 2048U * 2048U;
 // UI: the cover worker, popups and LVGL intermediate buffers.
 constexpr size_t kMaxPsramReserveBytes = 4U * 1024U * 1024U;
 constexpr size_t kPpaBufferAlignment = 64;
-constexpr uint16_t kImageRadius =
-    static_cast<uint16_t>(tile_layout::scale(26));
+uint16_t image_radius() {
+  return ui_surface_style::radius(tile_radius::kMinimum) + (GRID_PAD < 4 ? GRID_PAD : 4);
+}
 // After interaction, let visible tile/MQTT state settle first. Otherwise
 // a decode/composite pass due at the same time can block the loop before
 // LVGL has flushed the switch change to the panel.
@@ -76,6 +79,11 @@ struct ScreensaverState {
   // the first Bridge sync supplies HA metadata such as kWh. Comparing only
   // the payload would permanently miss the unit when it arrives later.
   String slot_units[TILES_PER_GRID];
+  // Rendered slot cards, for icon-and-title tiles that follow their icon
+  // colors' source entity. Cleared with every rebuild.
+  lv_obj_t* slot_objs[TILES_PER_GRID] = {};
+  // Last rule entity payload per slot (the rules reapply on changes only).
+  String slot_rule_payloads[TILES_PER_GRID];
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
   // Prepare a complete LVGL frame for smooth slide transitions: wallpaper,
   // clock, tiles and any open popup are rendered off-screen in PSRAM, then
@@ -89,6 +97,8 @@ struct ScreensaverState {
 };
 
 ScreensaverState* g_state = nullptr;
+// show_image_screensaver() is building the overlay (image_screensaver_covers_ui).
+bool g_opening = false;
 // Web Admin saves run in loopTask, but LVGL changes wait until the next
 // LVGL timer tick. The HTTP handler therefore never changes object
 // lifetimes directly, and the visible overlay state is never recreated.
@@ -116,6 +126,7 @@ uint16_t g_cache_h = 0;
 uint16_t g_cache_focus_x = 500;
 uint16_t g_cache_focus_y = 500;
 uint16_t g_cache_zoom = 1000;
+uint16_t g_cache_radius = 0;
 lv_image_dsc_t* g_cache_dsc = nullptr;
 
 // Preload the image a few seconds after tile construction so the first
@@ -577,6 +588,7 @@ struct S3DirectJpegCtx {
   uint32_t crop_w = 0;
   uint32_t crop_h = 0;
   uint32_t written_pixels = 0;
+  uint16_t corner_radius = 0;
 };
 
 size_t s3_direct_jpeg_input(JDEC* jd, uint8_t* buffer, size_t bytes) {
@@ -651,7 +663,7 @@ int s3_direct_jpeg_output(JDEC* jd, void* bitmap, JRECT* rect) {
           static_cast<uint16_t>((native >> 8) | (native << 8));
       destination[dx] = blend_swapped_rgb565_with_black(
           swapped, rounded_pixel_coverage(dx, dy, ctx->image_w,
-                                           ctx->image_h, kImageRadius));
+                                           ctx->image_h, ctx->corner_radius));
       ++ctx->written_pixels;
     }
   }
@@ -661,7 +673,7 @@ int s3_direct_jpeg_output(JDEC* jd, void* bitmap, JRECT* rect) {
 lv_image_dsc_t* s3_decode_jpeg_direct_cover(
     const uint8_t* data, size_t len, uint16_t target_w, uint16_t target_h,
     uint16_t focus_x, uint16_t focus_y, uint16_t zoom,
-    uint16_t& source_w, uint16_t& source_h) {
+    uint16_t& source_w, uint16_t& source_h, uint16_t corner_radius) {
   source_w = 0;
   source_h = 0;
   uint8_t* work =
@@ -669,6 +681,7 @@ lv_image_dsc_t* s3_decode_jpeg_direct_cover(
   if (!work) return nullptr;
 
   S3DirectJpegCtx ctx{};
+  ctx.corner_radius = corner_radius;
   ctx.data = data;
   ctx.len = len;
   JDEC decoder{};
@@ -784,13 +797,13 @@ lv_image_dsc_t* s3_decode_jpeg_direct_cover(
 
 // Build the final screen image with the same outer black border as the
 // normal tile grid. The image edge sits exactly 4 px outside the tiles
-// (GRID_PAD - 4), including a 26-px radius: the tiles' 22 px plus the
+// (GRID_PAD - 4), with the configured tile radius plus the
 // extra 4 px outside them. PPA and LVGL share this full-frame buffer,
 // so opening needs neither additional clipping nor rendering in bands.
 lv_image_dsc_t* make_cover_dsc(const uint16_t* src, uint16_t src_w,
                                uint16_t src_h, uint16_t target_w,
                                uint16_t target_h, uint16_t focus_x,
-                               uint16_t focus_y, uint16_t zoom) {
+                               uint16_t focus_y, uint16_t zoom, uint16_t corner_radius) {
   if (!src || src_w == 0 || src_h == 0 || target_w == 0 || target_h == 0) {
     return nullptr;
   }
@@ -840,7 +853,7 @@ lv_image_dsc_t* make_cover_dsc(const uint16_t* src, uint16_t src_w,
     for (uint16_t x = 0; x < image_w; ++x) {
       const uint32_t sx = x0 + (static_cast<uint32_t>(x) * crop_w) / image_w;
       const uint8_t coverage =
-          rounded_pixel_coverage(x, y, image_w, image_h, kImageRadius);
+          rounded_pixel_coverage(x, y, image_w, image_h, corner_radius);
       dst_row[x] = blend_swapped_rgb565_with_black(src_row[sx], coverage);
     }
   }
@@ -864,7 +877,7 @@ lv_image_dsc_t* make_cover_dsc(const uint16_t* src, uint16_t src_w,
 lv_image_dsc_t* decode_wallpaper_to_size(const String& file_name,
                                          uint16_t target_w, uint16_t target_h,
                                          uint16_t focus_x, uint16_t focus_y,
-                                         uint16_t zoom) {
+                                         uint16_t zoom, uint16_t corner_radius) {
   const uint32_t pipeline_started_ms = millis();
   size_t len = 0;
   uint8_t* file = read_wallpaper_file(file_name, len);
@@ -891,7 +904,7 @@ lv_image_dsc_t* decode_wallpaper_to_size(const String& file_name,
   uint16_t h = 0;
 #if defined(DEVICE_ESP32_S3_RGB_480)
   lv_image_dsc_t* dsc = s3_decode_jpeg_direct_cover(
-      file, len, target_w, target_h, focus_x, focus_y, zoom, w, h);
+      file, len, target_w, target_h, focus_x, focus_y, zoom, w, h, corner_radius);
   const uint32_t decode_ms = millis() - decode_started_ms;
   free(file);
   GuitionS3Diagnostics::logSlideshowDecode(
@@ -930,7 +943,7 @@ lv_image_dsc_t* decode_wallpaper_to_size(const String& file_name,
 
   const uint32_t cover_started_ms = millis();
   lv_image_dsc_t* dsc = make_cover_dsc(pixels, w, h, target_w, target_h,
-                                       focus_x, focus_y, zoom);
+                                       focus_x, focus_y, zoom, corner_radius);
   const uint32_t cover_ms = millis() - cover_started_ms;
   free(pixels);
   GuitionS3Diagnostics::logSlideshowDecode(
@@ -954,11 +967,12 @@ lv_image_dsc_t* get_or_decode_cached(const ScreensaverWallpaperConfig& wallpaper
   const String& name = wallpaper.file_name;
   if (g_cache_dsc && g_cache_name == name && g_cache_w == w && g_cache_h == h &&
       g_cache_focus_x == wallpaper.focus_x &&
-      g_cache_focus_y == wallpaper.focus_y && g_cache_zoom == wallpaper.zoom) {
+      g_cache_focus_y == wallpaper.focus_y && g_cache_zoom == wallpaper.zoom && g_cache_radius == image_radius()) {
     return g_cache_dsc;
   }
+  const uint16_t corner_radius = image_radius();
   lv_image_dsc_t* dsc = decode_wallpaper_to_size(
-      name, w, h, wallpaper.focus_x, wallpaper.focus_y, wallpaper.zoom);
+      name, w, h, wallpaper.focus_x, wallpaper.focus_y, wallpaper.zoom, corner_radius);
   if (!dsc) return nullptr;
   // Detach the old source from the visible LVGL object only now, immediately
   // before swapping caches. The previous slide stays visible during decoding
@@ -976,6 +990,7 @@ lv_image_dsc_t* get_or_decode_cached(const ScreensaverWallpaperConfig& wallpaper
   g_cache_focus_x = wallpaper.focus_x;
   g_cache_focus_y = wallpaper.focus_y;
   g_cache_zoom = wallpaper.zoom;
+  g_cache_radius = corner_radius;
   return dsc;
 }
 
@@ -1000,8 +1015,26 @@ bool sd_wallpaper_file_exists(const String& file_name) {
          Device::sdFS().exists(String(kLegacyWallpaperDir) + "/" + file_name);
 }
 
+// A slide is shown only when it is checked and its file is still on the card.
+// Entries of deleted files stay in the stored list until the next Web Admin
+// save; they must neither be shown nor stall the slideshow.
+bool wallpaper_usable(const ScreensaverWallpaperConfig& wallpaper) {
+  return wallpaper.enabled && sd_wallpaper_file_exists(wallpaper.file_name);
+}
+
+bool any_configured_wallpaper_on_card() {
+  for (const auto& wallpaper : screensaverConfig.get().wallpapers) {
+    if (sd_wallpaper_file_exists(wallpaper.file_name)) return true;
+  }
+  return false;
+}
+
+// The first-image fallback is only for a card whose images were never
+// configured or were all deleted since. Unchecked images stay hidden.
 bool find_first_sd_wallpaper(ScreensaverWallpaperConfig& out) {
-  if (!Device::sdReadyCached()) return false;
+  if (!Device::sdReadyCached() || any_configured_wallpaper_on_card()) {
+    return false;
+  }
   const char* directories[] = {kImageDir, kLegacyWallpaperDir};
   for (const char* directory : directories) {
     fs::File dir = Device::sdFS().open(directory, FILE_READ);
@@ -1032,9 +1065,7 @@ bool find_first_sd_wallpaper(ScreensaverWallpaperConfig& out) {
 int first_enabled_wallpaper() {
   const auto& wallpapers = screensaverConfig.get().wallpapers;
   for (size_t i = 0; i < wallpapers.size(); ++i) {
-    if (wallpapers[i].enabled && is_wallpaper_file(wallpapers[i].file_name)) {
-      return static_cast<int>(i);
-    }
+    if (wallpaper_usable(wallpapers[i])) return static_cast<int>(i);
   }
   return -1;
 }
@@ -1047,8 +1078,7 @@ int next_enabled_wallpaper(int current) {
     int choices[kMaxScreensaverWallpapers];
     size_t choice_count = 0;
     for (size_t i = 0; i < count; ++i) {
-      if (config.wallpapers[i].enabled &&
-          is_wallpaper_file(config.wallpapers[i].file_name) &&
+      if (wallpaper_usable(config.wallpapers[i]) &&
           (static_cast<int>(i) != current || count == 1)) {
         choices[choice_count++] = static_cast<int>(i);
       }
@@ -1057,9 +1087,7 @@ int next_enabled_wallpaper(int current) {
   }
   for (size_t step = 1; step <= count; ++step) {
     const size_t i = (static_cast<size_t>(current < 0 ? 0 : current) + step) % count;
-    if (config.wallpapers[i].enabled && is_wallpaper_file(config.wallpapers[i].file_name)) {
-      return static_cast<int>(i);
-    }
+    if (wallpaper_usable(config.wallpapers[i])) return static_cast<int>(i);
   }
   return first_enabled_wallpaper();
 }
@@ -1163,7 +1191,7 @@ bool apply_wallpaper(ScreensaverState* st, int index, bool allow_fallback,
                          g_cache_h == Device::kScreenHeight &&
                          g_cache_focus_x == wallpaper.focus_x &&
                          g_cache_focus_y == wallpaper.focus_y &&
-                         g_cache_zoom == wallpaper.zoom;
+                         g_cache_zoom == wallpaper.zoom && g_cache_radius == image_radius();
   lv_image_dsc_t* dsc = get_or_decode_cached(
       wallpaper, Device::kScreenWidth, Device::kScreenHeight, st->image);
   if (!dsc) {
@@ -1234,6 +1262,19 @@ void refresh_slot_values(ScreensaverState* st) {
   const TileGridConfig& grid = screensaverConfig.tileGrid();
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& tile = grid.tiles[i];
+    // Rules follow their entity (own or other) like the tile states below.
+    if (tile.icon_colors.length() && st->slot_objs[i]) {
+      const String rule_entity = tile_icon_source::rule_entity(tile);
+      if (rule_entity.length()) {
+        String rule_payload;
+        tile_icon_source::cached_payload(rule_entity, rule_payload);
+        if (rule_payload != st->slot_rule_payloads[i]) {
+          st->slot_rule_payloads[i] = rule_payload;
+          tile_icon_source::refresh_card(st->slot_objs[i], tile);
+        }
+      }
+    }
+    if (tileTypeHasFixedIconColorOnly(tile.type)) continue;
     if (!tile.sensor_entity.length()) continue;
     String payload;
     if (!tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) {
@@ -1330,6 +1371,8 @@ void rebuild_slot_grid(ScreensaverState* st) {
     lv_obj_clean(st->slot_grid);
   }
   for (String& payload : st->slot_payloads) payload = String();
+  for (lv_obj_t*& obj : st->slot_objs) obj = nullptr;
+  for (String& payload : st->slot_rule_payloads) payload = String();
 
   // Use exactly the normal tile system's tracks, gaps and outer padding.
   // The prepared full-frame image starts at GRID_PAD - 4, placing it
@@ -1351,7 +1394,11 @@ void rebuild_slot_grid(ScreensaverState* st) {
     lv_obj_set_pos(st->slot_grid, 0, 0);
     lv_obj_set_style_bg_opa(st->slot_grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(st->slot_grid, 0, 0);
-    lv_obj_set_style_pad_all(st->slot_grid, GRID_PAD, 0);
+    // Same margins as the tile grid, so screensaver tiles sit where tiles do.
+    lv_obj_set_style_pad_left(st->slot_grid, GRID_PAD_LEFT, 0);
+    lv_obj_set_style_pad_right(st->slot_grid, GRID_PAD_RIGHT, 0);
+    lv_obj_set_style_pad_top(st->slot_grid, GRID_PAD_TOP, 0);
+    lv_obj_set_style_pad_bottom(st->slot_grid, GRID_PAD_BOTTOM, 0);
     lv_obj_set_style_pad_column(st->slot_grid, GRID_GAP, 0);
     lv_obj_set_style_pad_row(st->slot_grid, GRID_GAP, 0);
     lv_obj_set_layout(st->slot_grid, LV_LAYOUT_GRID);
@@ -1368,6 +1415,7 @@ void rebuild_slot_grid(ScreensaverState* st) {
                                      static_cast<uint8_t>(i),
                                      GridType::SCREENSAVER, g_scene_callback);
     if (!tile_obj) continue;
+    st->slot_objs[i] = tile_obj;
     const lv_opa_t opacity = tile.background_opacity;
     lv_obj_set_style_bg_opa(tile_obj, opacity,
                             LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -1441,7 +1489,7 @@ void refresh_live_background_and_clock(ScreensaverState* st,
                              g_cache_h == Device::kScreenHeight &&
                              g_cache_focus_x == wallpaper.focus_x &&
                              g_cache_focus_y == wallpaper.focus_y &&
-                             g_cache_zoom == wallpaper.zoom &&
+                             g_cache_zoom == wallpaper.zoom && g_cache_radius == image_radius() &&
                              !lv_obj_has_flag(st->image, LV_OBJ_FLAG_HIDDEN);
     if (same_pixels) {
       // Clock settings and slide duration may change live without rewriting
@@ -1572,6 +1620,9 @@ void show_image_screensaver() {
                     configManager.getConfig().screensaver_brightness_pct));
   ScreensaverState* st = new ScreensaverState();
   if (!st) return;
+  // Covers the UI from the overlay's creation on, before g_state is set after
+  // the ~0.5 s setup: the camera pill leaves as soon as the overlay appears.
+  g_opening = true;
 
 #if defined(DEVICE_ESP32_S3_RGB_480)
   // Everything created below becomes visible in one completed RGB frame.
@@ -1604,6 +1655,7 @@ void show_image_screensaver() {
   rebuild_slot_grid(st);
 
   g_state = st;
+  g_opening = false;
   g_live_config_refresh_requested = false;
   g_live_grid_refresh_requested = false;
   g_live_preview_wallpaper = String();
@@ -1668,6 +1720,10 @@ void hide_image_screensaver() {
 
 bool is_image_screensaver_visible() {
   return g_state != nullptr;
+}
+
+bool image_screensaver_covers_ui() {
+  return g_opening || g_state != nullptr;
 }
 
 void image_screensaver_brightness_changed() {

@@ -5,7 +5,11 @@
 #include <vector>
 
 #include "src/devices/device.h"
+#include "src/tiles/config/tile_geometry.h"
+#include "src/tiles/config/sensor_value_font_fork.h"
 #include "src/core/config/pin_access.h"
+#include "src/core/config/tile_color.h"
+#include "src/tiles/config/tile_icon_colors.h"
 #include "src/types/tile_type_policy.h"
 
 static constexpr uint8_t GRID_COLS = Device::kGridCols;
@@ -17,6 +21,22 @@ static constexpr int GRID_PAD = Device::kGridPad;
 static constexpr int GRID_CELL_W = Device::kGridCellW;
 static constexpr int GRID_CELL_H = Device::kGridCellH;
 
+// The fixed tracks rarely fill the screen exactly (1280x800 with 7x5 cells
+// leaves 3 px vertically). The rest is split between both outer margins, the
+// top and left margins taking the smaller half, instead of collecting at the
+// bottom or right edge; opposite margins then differ by at most one pixel.
+static constexpr int GRID_EXTRA_X =
+    static_cast<int>(Device::kScreenWidth) -
+    (GRID_COLS * GRID_CELL_W + (GRID_COLS - 1) * GRID_GAP + 2 * GRID_PAD);
+static constexpr int GRID_EXTRA_Y =
+    static_cast<int>(Device::kScreenHeight) -
+    (GRID_ROWS * GRID_CELL_H + (GRID_ROWS - 1) * GRID_GAP + 2 * GRID_PAD);
+static_assert(GRID_EXTRA_X >= 0 && GRID_EXTRA_Y >= 0, "The tile grid must fit the screen");
+static constexpr int GRID_PAD_LEFT = GRID_PAD + GRID_EXTRA_X / 2;
+static constexpr int GRID_PAD_RIGHT = GRID_PAD + GRID_EXTRA_X - GRID_EXTRA_X / 2;
+static constexpr int GRID_PAD_TOP = GRID_PAD + GRID_EXTRA_Y / 2;
+static constexpr int GRID_PAD_BOTTOM = GRID_PAD + GRID_EXTRA_Y - GRID_EXTRA_Y / 2;
+
 // A media tile renders its (often long) title as a horizontally scrolling band the
 // full width of the tile. On the 8-inch device every flush is PPA-rotated, and a
 // band wider than the safe rotate width jams the single-slot SRM engine (see
@@ -26,7 +46,8 @@ static constexpr int GRID_CELL_H = Device::kGridCellH;
 static constexpr uint8_t MEDIA_TILE_MIN_SPAN = 2;
 static constexpr uint8_t MEDIA_TILE_MAX_SPAN = 3;
 
-static inline void clamp_media_tile_span(TileType type, uint8_t& span_w, uint8_t& span_h) {
+template <typename T>
+static inline void clamp_media_tile_span(TileType type, T& span_w, T& span_h) {
   if (type != TILE_MEDIA) return;
   const uint8_t min_w = GRID_COLS >= MEDIA_TILE_MIN_SPAN
                             ? MEDIA_TILE_MIN_SPAN
@@ -43,9 +64,10 @@ static inline void clamp_media_tile_span(TileType type, uint8_t& span_w, uint8_t
 // A media tile must not be clipped back below its 2x2 minimum at the right or
 // bottom edge. Move its position inwards in that case; the layout of every other
 // tile type stays as it is.
+template <typename P, typename S>
 static inline void clamp_media_tile_layout(TileType type,
-                                           uint8_t& col, uint8_t& row,
-                                           uint8_t& span_w, uint8_t& span_h) {
+                                           P& col, P& row,
+                                           S& span_w, S& span_h) {
   clamp_media_tile_span(type, span_w, span_h);
   if (type != TILE_MEDIA) return;
   if (span_w > GRID_COLS) span_w = GRID_COLS;
@@ -65,6 +87,17 @@ enum SwitchPopupOpenModeStorage : uint8_t {
   TILE_SWITCH_POPUP_MODE_LONG = 2
 };
 
+// Value size choices (Tile::sensor_value_font): 0 = default (28 px, the title
+// size in half-height tiles), 1 = 20, 2 = 24, 3 = 32, 4 = 40, 5 = 28 (sizes on
+// the 1280x800 layouts). Half-height tiles show at most 28.
+static constexpr uint8_t SENSOR_VALUE_FONT_MAX = 5;
+
+// FORK: the monospace choices (200-203) are in sensor_value_font_fork.h.
+static_assert(SENSOR_VALUE_FONT_MAX < 6,
+              "Upstream now uses value font 6 or higher, which the fork reads as a legacy "
+              "monospace number (sensor_value_font_from_legacy_fork). Re-save every mono "
+              "tile on every panel, then drop that mapping.");
+
 struct Tile {
   TileType type;
   // Stable navigation identity, stored in the two unused V7 reserved bytes.
@@ -77,10 +110,10 @@ struct Tile {
   // Persisted in the reserved byte V7 already carries.
   uint8_t background_opacity;
 
-  uint8_t col;
-  uint8_t row;
-  uint8_t span_w;
-  uint8_t span_h;
+  float col;
+  float row;
+  float span_w;
+  float span_h;
 
   String sensor_entity;
   String sensor_unit;
@@ -110,6 +143,14 @@ struct Tile {
   String image_path;
   uint16_t image_slideshow_sec;
 
+  // Icon disc override: TILE_ICON_DISC_GLOBAL follows the global option.
+  uint8_t icon_disc_mode = 0;
+  // Glow: a colored icon tints its disc with the same hue.
+  bool icon_glow = true;
+  // Fixed icon color, color bar and state colors (tile_icon_colors.h), kept
+  // in the /_tile_icon_colors sidecar. Empty = the type's default icon colors.
+  String icon_colors;
+
   Tile()
       : type(TILE_EMPTY),
         bg_color(0),
@@ -133,6 +174,52 @@ struct Tile {
         key_modifier(0),
         image_slideshow_sec(10) {}
 };
+
+enum TileIconDiscMode : uint8_t {
+  TILE_ICON_DISC_GLOBAL = 0,
+  TILE_ICON_DISC_ON = 1,
+  TILE_ICON_DISC_OFF = 2
+};
+
+static inline uint8_t normalizeTileIconDiscMode(int mode) {
+  return (mode >= TILE_ICON_DISC_GLOBAL && mode <= TILE_ICON_DISC_OFF)
+             ? static_cast<uint8_t>(mode)
+             : TILE_ICON_DISC_GLOBAL;
+}
+
+// Canonical icon color record for a type: numeric types keep only the color
+// bar, text types only the state lines, Sensor keeps both; icon-and-title
+// tiles keep the fixed color and a source entity (with the bar and state
+// lines for a "rules" source); types without icon colors keep none.
+static inline String normalizeTileIconColors(int type, const char* record) {
+  if (!tileTypeHasIconColors(type) || !record || !*record) return String();
+  char out[tile_icon_colors::kMaxRecordBytes + 1];
+  const size_t length = tile_icon_colors::normalize(
+      record, out, sizeof(out), tileTypeIconColorsByValue(type), tileTypeIconColorsByState(type),
+      true, tileTypeRulesUseOwnEntity(type));
+  return length ? String(out) : String();
+}
+
+// The other entity of a tile's enabled rules (subscriptions), or "".
+static inline String tileIconSourceEntity(int type, const String& record) {
+  if (!tileTypeHasIconColors(type) || !record.length()) return String();
+  const char* entity = nullptr;
+  size_t length = 0;
+  if (tile_icon_colors::source(record.c_str(), entity, length) == tile_icon_colors::SourceMode::None) {
+    return String();
+  }
+  String out;
+  out.reserve(length);
+  for (size_t i = 0; i < length; ++i) out += entity[i];
+  return out;
+}
+
+// Clock/Text/Back use the otherwise unused display mode byte: 0 inherits
+// borders, 1 hides them.
+static inline bool tileBorderEnabled(const Tile& tile) {
+  return (tile.type != TILE_CLOCK && tile.type != TILE_TEXT && tile.type != TILE_BACK) ||
+         tile.sensor_display_mode != 1;
+}
 
 // Climate tile content is packed into sensor_gauge_min. Climate tiles do not
 // use the sensor gauge range, so this preserves the existing V7 storage layout
@@ -165,12 +252,14 @@ static inline uint8_t climateTileGridColumns(const Tile& tile) {
              : span_w;
 }
 
+// One mini-grid row per half cell below the header row, so half steps add a
+// row: 1 -> 1, 1.5 -> 2, 2 -> 3, 2.5 -> 4. Whole sizes keep their rows.
 static inline uint8_t climateTileGridRows(const Tile& tile) {
-  const uint8_t span_h =
+  const float span_h =
       tile.span_h < 1
-          ? 1
-          : (tile.span_h > GRID_ROWS ? GRID_ROWS : tile.span_h);
-  return static_cast<uint8_t>(span_h * 2u - 1u);
+          ? 1.0f
+          : (tile.span_h > GRID_ROWS ? static_cast<float>(GRID_ROWS) : tile.span_h);
+  return static_cast<uint8_t>(static_cast<uint8_t>(span_h * 2.0f + 0.5f) - 1u);
 }
 
 // Adjustable climate values consume two cells. Their preferred orientation is
@@ -336,6 +425,7 @@ static inline bool parseClimateTileGeometry(
   return true;
 }
 
+// Stored position of one mini tile; build_slot_kinds clamps it to the grid.
 static inline ClimateTileItemGeometry getClimateTileItemGeometry(
     const Tile& tile, uint8_t item_index) {
   const uint8_t columns = climateTileGridColumns(tile);
@@ -402,16 +492,9 @@ static inline ClimateTileItemGeometry getClimateTileItemGeometry(
       }
     }
   }
-  if (geometry.col >= columns) geometry.col = columns - 1;
-  if (geometry.row >= rows) geometry.row = rows - 1;
-  if (geometry.span_w < 1) geometry.span_w = 1;
-  if (geometry.span_h < 1) geometry.span_h = 1;
-  if (geometry.span_w > columns - geometry.col) {
-    geometry.span_w = columns - geometry.col;
-  }
-  if (geometry.span_h > rows - geometry.row) {
-    geometry.span_h = rows - geometry.row;
-  }
+  // Deliberately not clamped into the current grid: placement orders the
+  // items by where they were stored and clamps afterwards, so an item from a
+  // row that no longer exists cannot jump ahead of the items above it.
   return geometry;
 }
 
@@ -470,8 +553,20 @@ static inline uint32_t tileBgColorRgb(const Tile& tile) {
   return tile.bg_color & TILE_BG_COLOR_RGB_MASK;
 }
 
+// Background of tiles without their own color: the global default tile color
+// from the display settings (tile_color::kDefault until the user picks one).
+uint32_t tileDefaultBgColor();
+
+// A stored built-in default grey (saved explicitly by older editors) counts
+// as "no own color" and follows the global default tile color like an unset
+// color. Every other stored color is kept.
+static inline bool tileBgColorFollowsDefault(uint32_t stored) {
+  return stored == 0 || tile_color::isDefaultGrey(stored);
+}
+
 static inline uint32_t tileBgColorOrDefault(const Tile& tile, uint32_t default_color) {
-  return tileBgColorIsSet(tile) ? tileBgColorRgb(tile) : (default_color & TILE_BG_COLOR_RGB_MASK);
+  if (!tileBgColorIsSet(tile)) return default_color & TILE_BG_COLOR_RGB_MASK;
+  return tileBgColorFollowsDefault(tile.bg_color) ? tileDefaultBgColor() : tileBgColorRgb(tile);
 }
 
 struct FolderEntry {
@@ -503,6 +598,8 @@ struct TileEntitySlot {
   // caption only ever showed whatever value the last full bridge config
   // snapshot happened to carry, which could be hours stale.
   String caption_entity;
+  // The other entity of the tile's rules (tile_icon_colors.h), or "".
+  String rule_entity;
 };
 
 // Read-only view of one slot of the PSRAM folder entity cache, see
@@ -511,8 +608,9 @@ struct TileEntitySlot {
 // the same folder: use them right away, do not keep them.
 struct FolderEntitySlotView {
   TileType type = TILE_EMPTY;
-  const char* entity = "";   // Never nullptr.
-  const char* caption = "";  // Never nullptr.
+  const char* entity = "";       // Never nullptr.
+  const char* caption = "";      // Never nullptr.
+  const char* rule_entity = "";  // Never nullptr; the rules' other entity.
 };
 
 struct FolderEntityCacheEntry;
@@ -563,9 +661,9 @@ public:
   bool getFolderPin(uint16_t folder_id, String& out) const;
   bool getSettingsTile(Tile& out);
   SettingsTileVisibilityResult validateSettingsTileVisible(
-      bool visible, int target_col = -1, int target_row = -1);
+      bool visible, float target_col = -1, float target_row = -1);
   SettingsTileVisibilityResult setSettingsTileVisible(
-      bool visible, int target_col = -1, int target_row = -1);
+      bool visible, float target_col = -1, float target_row = -1);
 
 private:
   volatile uint32_t view_revision_ = 1;
@@ -597,10 +695,13 @@ private:
                 bool ensure_navigation_tile = true);
   bool saveGrid(uint16_t folder_id, const TileGridConfig& grid,
                 bool ensure_navigation_tile = true);
+  // Normalizes and saves the caller's grid without another full copy.
+  bool saveGridInPlace(uint16_t folder_id, TileGridConfig& grid,
+                       bool ensure_navigation_tile = true);
   uint16_t nextFolderId() const;
   void ensureRootFolder();
-  bool ensureSettingsTile(TileGridConfig& grid, int target_col = -1,
-                          int target_row = -1);
+  bool ensureSettingsTile(TileGridConfig& grid, float target_col = -1,
+                          float target_row = -1);
   bool removeSettingsTiles(TileGridConfig& grid);
   bool applySettingsTilePolicy(TileGridConfig& grid);
   bool ensureBackTile(uint16_t folder_id, TileGridConfig& grid);

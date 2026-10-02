@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/pixelanim/renderer.h"
 
 #include <Arduino.h>
@@ -435,10 +436,10 @@ lv_obj_t* render_pixelanim_tile(lv_obj_t* parent, int col, int row, const Tile& 
   } else {
     lv_obj_set_style_bg_color(card, lv_color_hex(tileBgColorOrDefault(tile, 0x000000)), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, tile_layout::scale_480(22), 0);
+    ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
     lv_obj_set_style_clip_corner(card, true, 0);
   }
-  set_tile_grid_cell(card, col, row, tile.span_w, tile.span_h);
+  place_tile_card(card, col, row, tile);
 
   const bool has_title = tile.title.length() > 0;
   if (has_title) {
@@ -459,8 +460,8 @@ lv_obj_t* render_pixelanim_tile(lv_obj_t* parent, int col, int row, const Tile& 
     return card;  // no animation chosen yet
   }
 
-  const uint16_t card_w = static_cast<uint16_t>(GRID_CELL_W * tile.span_w + GRID_GAP * (tile.span_w - 1));
-  const uint16_t card_h = static_cast<uint16_t>(GRID_CELL_H * tile.span_h + GRID_GAP * (tile.span_h - 1));
+  const uint16_t card_w = static_cast<uint16_t>(tile_geometry::extent(tile.col, tile.span_w, GRID_CELL_W, GRID_GAP));
+  const uint16_t card_h = static_cast<uint16_t>(tile_geometry::extent(tile.row, tile.span_h, GRID_CELL_H, GRID_GAP));
   uint16_t avail_w = card_w;
   uint16_t avail_h = card_h;
   int16_t image_y_offset = 0;

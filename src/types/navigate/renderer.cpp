@@ -1,6 +1,10 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/types/navigate/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
+#include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/tiles/runtime/compact_sensor_layout.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/ui/ui_manager.h"
@@ -23,43 +27,26 @@ static uint16_t navFolderIdFromTile(const Tile& tile) {
 // Sensor-Kacheln (sensor_value_font), nur mit kleinerem Default, weil sich der
 // Wert die Kachel mit Icon und Titel teilt.
 static const lv_font_t* get_navigate_value_font(const Tile& tile) {
-  switch (tile.sensor_value_font) {
-    case 1:
-      return tile_layout::content_font_20();
-    case 2:
-      return tile_layout::content_font_24();
-    case 3:
-      return tile_layout::content_font_32();
-    case 4:
-      return tile_layout::content_font_40();
-    case 5:
-      return tile_layout::mono_font_20();
-    case 6:
-      return tile_layout::mono_font_24();
-    case 7:
-      return tile_layout::mono_bold_font_20();
-    case 8:
-      return tile_layout::mono_bold_font_24();
-    default:
-      return tile_layout::content_font_28();
-  }
+  return tile_layout::value_font_for_choice(tile.sensor_value_font,
+                                            tile_layout::content_font_28());
 }
 
 bool navigate_settings_shows_battery(const Tile& tile, GridType grid_type) {
+  // A half-height Settings tile has no room for the caption line.
   return tile.type == TILE_SETTINGS && grid_type != GridType::SCREENSAVER &&
+         !tile_geometry::compact_icon_title(tile.type, tile.span_w, tile.span_h) &&
          batteryStateSupportsMeasurement();
 }
 
 lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index,
                                GridType grid_type) {
   lv_obj_t* btn = lv_button_create(parent);
-  lv_obj_set_style_radius(btn, tile_layout::scale_480(22), 0);
+  ui_surface_style::apply_radius(btn, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(btn, 0, 0);
 
-  // Without an explicit color, all navigation types use the same neutral
-  // background as the other HomeTiles tiles.
-  const uint32_t default_color = 0x2A2A2A;
-  uint32_t btn_color = tileBgColorOrDefault(tile, default_color);
+  // Without an explicit color, all navigation types use the global default
+  // tile color like the other HomeTiles tiles.
+  uint32_t btn_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
   lv_obj_set_style_bg_color(btn, lv_color_hex(btn_color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn, lv_color_hex(btn_color), LV_PART_MAIN | LV_STATE_FOCUSED);
   lv_obj_set_style_bg_grad_color(btn, lv_color_hex(btn_color), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -88,7 +75,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
   disable_pressed_button_animation(btn);
 
-  set_tile_grid_cell(btn, col, row, tile.span_w, tile.span_h);
+  place_tile_card(btn, col, row, tile);
 
   // Optional icon label when icon_name is set.
   lv_obj_t* icon_lbl = nullptr;
@@ -98,6 +85,9 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   }
   bool has_icon = iconChar.length() > 0;
   bool has_title = tile.title.length() > 0;
+  // A half-height navigation tile uses the half-height Sensor header: the
+  // icon in the concentric corner disc and the title, if any, beside it.
+  const bool compact = tile_geometry::compact_icon_title(tile.type, tile.span_w, tile.span_h);
   // Optionaler Live-Wert: Ordner-Kacheln legen ihr Navigationsziel in
   // key_code/key_modifier ab, sensor_entity ist daher frei und wird hier fuer
   // eine mitlaufende Sensor-Anzeige genutzt (z.B. ein Ordner, der zusaetzlich
@@ -105,16 +95,33 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   //
   // A Settings tile on a battery-measuring device takes the same value slot for
   // its battery caption, so it inherits the folder layout unchanged.
+  //
+  // A half-height tile has no room for a third line, so it shows neither; the
+  // same rule keeps captions off half-height Sensor tiles.
   const bool has_battery = navigate_settings_shows_battery(tile, grid_type);
-  bool has_value = (tile.sensor_entity.length() > 0 &&
-                    grid_type != GridType::SCREENSAVER) ||
-                   has_battery;
+  bool has_value = !compact &&
+                   ((tile.sensor_entity.length() > 0 &&
+                     grid_type != GridType::SCREENSAVER) ||
+                    has_battery);
+
+  // This tile owns its slot in the sensor widget table. The table is static and
+  // nothing clears it when a grid is rebuilt, so every field a previously
+  // rendered tile left at this index is a dangling lv_obj_t. Naming fields
+  // individually is how the 86-panels came to crash on opening a folder that
+  // contains folder tiles: subtitle_label survived from a caption-bearing
+  // sensor tile at the same index, and update_sensor_tile_value() called
+  // lv_label_set_text() on freed memory (load fault, MCAUSE=5). The slot is
+  // cleared even without a value: a half-height folder tile keeps its
+  // sensor_entity, so live updates are still routed to this index.
+  SensorTileWidgets* widgets = tile_renderer_get_sensor_widgets(grid_type);
+  if (widgets && index < TILES_PER_GRID) widgets[index] = SensorTileWidgets{};
 
   if (has_icon) {
     icon_lbl = lv_label_create(btn);
     if (icon_lbl) {
       set_label_style(icon_lbl, lv_color_white(), FONT_MDI_ICONS);
       lv_label_set_text(icon_lbl, iconChar.c_str());
+      tile_icon_source::apply_initial(icon_lbl, tile);
 
       // Center icon and title on two lines, or the icon alone on one line.
       // A third line appears when the tile also shows a value.
@@ -124,14 +131,17 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       // bottom), not above the value: lifting the value visibly pushed tiles
       // with a short value off-centre even though they never had the problem.
       // So only the title moves down.
-      if (has_value) {
-        lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
-                     tile_layout::scale_i16(-48));
-      } else if (has_title) {
-        lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
-                     tile_layout::scale_i16(-20));
-      } else {
-        lv_obj_center(icon_lbl);  // Center the icon when there is no title.
+      if (!compact) {
+        if (has_value) {
+          lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
+                       tile_layout::scale_i16(-48));
+        } else if (has_title) {
+          lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
+                       tile_layout::scale_i16(-20));
+        } else {
+          lv_obj_center(icon_lbl);  // Center the icon when there is no title.
+        }
+        tile_icon_disc::add_round(btn, icon_lbl);
       }
     }
   }
@@ -163,34 +173,24 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
 
       // Register in the same widget table the sensor tiles update through --
       // update_sensor_tile_value() works purely off the grid index and is
-      // therefore type-independent.
-      //
-      // Reset the whole record instead of naming fields. This table is static
-      // and nothing clears it when a grid is rebuilt, so every field a
-      // previously rendered tile left at this slot index is a dangling
-      // lv_obj_t. Naming fields individually is how the 86-panels came to crash
-      // on opening a folder that contains folder tiles: subtitle_label survived
-      // from a caption-bearing sensor tile at the same index, and
-      // update_sensor_tile_value() called lv_label_set_text() on freed memory
-      // (load fault, MCAUSE=5). Default-constructing also means a field added
-      // to SensorTileWidgets later cannot reintroduce the same bug here.
-      SensorTileWidgets* target = tile_renderer_get_sensor_widgets(grid_type);
-      if (target && index < TILES_PER_GRID) {
-        target[index] = SensorTileWidgets{};
-        target[index].value_label = v;
-      }
+      // therefore type-independent. The record was reset above.
+      if (widgets && index < TILES_PER_GRID) widgets[index].value_label = v;
     }
   }
 
   // Show the title label only when a title is set.
+  lv_obj_t* title_lbl = nullptr;
   if (has_title) {
     lv_obj_t* l = lv_label_create(btn);
+    title_lbl = l;
     if (l) {
       set_label_style(l, lv_color_white(), tile_layout::header_title_font());
       hometiles_title::tile(l, tile.title.c_str(), false);
 
       // Position below the icon, or center when there is no icon.
-      if (has_value) {
+      if (compact) {
+        // compact_sensor_layout places it beside the disc below.
+      } else if (has_value) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(55));
       } else if (icon_lbl) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
@@ -199,6 +199,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       }
     }
   }
+  if (compact) compact_sensor_layout::apply(btn, icon_lbl, title_lbl, nullptr, tile);
 
   // Event handler for tab navigation.
   static constexpr uint8_t NAV_KIND_FOLDER = 0;
@@ -246,9 +247,19 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
         } else {
           Serial.printf("[Tile] Navigation CLICKED! Folder %u, title: %s\n",
                         static_cast<unsigned>(data->target_folder_id), data->title.c_str());
+          // A PIN popup shows the icon in the color the tile shows right now
+          // (fixed or from the source entity).
+          lv_obj_t* icon = tile_icon_source::card_icon(
+              static_cast<lv_obj_t*>(lv_event_get_current_target(e)));
+          const uint32_t icon_color =
+              icon ? lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFF
+                   : 0xFFFFFF;
+          // The PIN popup also inherits a rules tint of the tile.
+          const uint32_t popup_color = tile_icon_source::popup_background(
+              static_cast<lv_obj_t*>(lv_event_get_current_target(e)), data->bg_color);
           uiManager.requestFolderAccess(data->target_folder_id, data->title,
                                         data->icon_name,
-                                        data->bg_color);
+                                        popup_color, icon_color);
         }
       },
       LV_EVENT_CLICKED,
@@ -265,5 +276,4 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
 
   return btn;
 }
-
 

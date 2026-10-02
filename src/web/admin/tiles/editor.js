@@ -6,6 +6,10 @@
     }
     currentTileIndex = index;
     currentTileTab = tab;
+    // A new tile keeps the spot it was picked at (see layoutTiles).
+    newTileSpot = Number(getTilesData(tab)?.[index]?.type || 0) === 0
+      ? { tab, index, layout: getTileElementLayout(tab, index) }
+      : null;
     document.getElementById('settingsHiddenTile')?.classList.remove('active');
     persistSelectedTileState();
     document.querySelectorAll(
@@ -62,6 +66,7 @@
     if (specific) {
       specific.classList.remove('hidden');
     }
+    applyFolderTypeLock('folder0', false);
     const snapshot = normalizeHiddenSettingsSnapshot();
     if (!applyDraft('folder0', HIDDEN_SETTINGS_TILE_INDEX)) {
       applyTileFormData('folder0', snapshot);
@@ -205,6 +210,8 @@
       updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
     });
     bindLive(iconInput, 'input', 'tileIcon', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(document.getElementById(prefix + '_tile_icon_disc'), 'change', 'tileIconDisc', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(document.getElementById(prefix + '_tile_icon_glow'), 'change', 'tileIconGlow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colorInput, 'input', 'tileColor', () => { markTileColorInputExplicit(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(opacityInput, 'input', 'tileOpacity', () => { updateTilePreview(tab); updateDraft(tab); });
     bindLive(opacityInput, 'change', 'tileOpacitySave', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
@@ -216,6 +223,19 @@
       const tileEl = document.getElementById(tab + '-tile-' + currentTileIndex);
       const previousType = Number(tileEl?.dataset.type ?? 0);
       const nextType = Number(typeSelect.value);
+      let currentLayout = getTileElementLayout(tab, currentTileIndex);
+      // A new tile grows from 1x0.5 to the smallest size the chosen type needs.
+      const grown = previousType === 0 && nextType !== 0 ? grownNewTileLayout(tab, nextType) : null;
+      if (grown && currentLayout && (grown.span_w !== currentLayout.span_w || grown.span_h !== currentLayout.span_h)) {
+        applyLayoutInputsFromLayout(tab, grown, false);
+        newTileSpot.layout = grown;
+        if (tileEl) setTileGridPosition(tileEl, grown.col, grown.row, grown.span_w, grown.span_h);
+        currentLayout = grown;
+      }
+      if (nextType !== 0 && currentLayout && !supportedTileLayout(nextType, currentLayout)) {
+        typeSelect.value = String(previousType);
+        return;
+      }
       // A freshly created tile must start with the selected type's real
       // default colour. Do not inherit an explicit colour state from the empty
       // editor placeholder.
@@ -229,6 +249,19 @@
         opacityInput.value = String(SCREENSAVER_TILE_DEFAULT_OPACITY);
       }
       updateTileType(tab);
+      // New tiles start in the HomeTiles look: a type with icon colors tints
+      // the tile with the color its icon shows at 20 % (Tile color "From
+      // icon"). Existing tiles and the screensaver keep their own style.
+      if (previousType === 0 && nextType !== 0 && !isScreensaverTileTab(tab) &&
+          typeof tileTypeHasIconColors === 'function' &&
+          tileTypeHasIconColors(String(nextType))) {
+        const strength = document.getElementById(tab + '_tile_icon_fill_strength');
+        if (strength) strength.value = '20';
+        const fill = document.getElementById(tab + '_tile_icon_fill');
+        if (fill) fill.checked = true;
+        syncTileColorMode(tab);
+        if (typeof syncIconColorFields === 'function') syncIconColorFields(tab);
+      }
       normalizeLayoutInputs(tab);
       updateLayoutFromInputs(tab);
       updateTilePreview(tab);
@@ -262,6 +295,7 @@
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
+    bindLive(document.getElementById(prefix + '_binary_sensor_value_font'), 'change', 'binarySensorValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(binarySensorPopupModeSelect, 'change', 'binarySensorPopupMode', () => {
       updateDraft(tab);
       scheduleAutoSave(tab);
@@ -375,6 +409,9 @@
     bindLive(animationFpsInput, 'input', 'animationFps', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(animationFitSelect, 'change', 'animationFit', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(animationZoomInput, 'input', 'animationZoom', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    for (const kind of ['clock','text','back']) {
+      bindLive(document.getElementById(prefix + '_' + kind + '_tile_border'), 'change', kind + 'TileBorder', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    }
     bindLive(clockTimeCheck, 'change', 'clockShowTime', () => {
       ensureClockSelection(prefix);
       updateTilePreview(tab);

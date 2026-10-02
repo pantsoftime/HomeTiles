@@ -19,6 +19,9 @@
 #elif defined(DEVICE_GUITION_JC1060P470C_V2)
 #define FW_META_TARGET_DEVICE_KEY "guition_jc1060p470c_v2"
 #define FW_META_TARGET_DISPLAY_NAME "Guition JC1060P470C V2"
+#elif defined(DEVICE_GUITION_JC4880P443_PORTRAIT)
+#define FW_META_TARGET_DEVICE_KEY "guition_jc4880p443_portrait"
+#define FW_META_TARGET_DISPLAY_NAME "Guition JC4880P443 Portrait"
 #elif defined(DEVICE_GUITION_ESP32_4848S040)
 #define FW_META_TARGET_DEVICE_KEY "guition_esp32_4848s040"
 #define FW_META_TARGET_DISPLAY_NAME "GUITION ESP32-4848S040"
@@ -82,6 +85,16 @@
 #define FW_META_SILICON_VARIANT "rev3_1"
 #define FW_META_SILICON_MIN_REV 301
 #define FW_META_SILICON_MAX_REV 301
+#elif CONFIG_ESP_REV_MIN_FULL >= 300 && defined(DEVICE_WAVESHARE_TOUCH_LCD_10_1)
+// Arduino-ESP32 3.3.7 "v3.00 or newer" builds boot ESP32-P4 v3.1 to v3.99.
+// Keep the HomeTiles contract identical to that image header so an installed
+// v3 panel can still accept a later image through the subset range check.
+#if CONFIG_ESP_REV_MIN_FULL != 301 || CONFIG_ESP_REV_MAX_FULL != 399
+#error "The Waveshare 10.1 v3 build must target ESP32-P4 revisions 3.1 to 3.99"
+#endif
+#define FW_META_SILICON_VARIANT "post_v3"
+#define FW_META_SILICON_MIN_REV 301
+#define FW_META_SILICON_MAX_REV 399
 #else
 #error "Every ESP32-P4 build must target one unambiguous silicon generation"
 #endif

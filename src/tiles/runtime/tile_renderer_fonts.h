@@ -6,6 +6,7 @@
 
 #include "src/devices/device_select.h"
 #include "src/fonts/ui_fonts.h"
+#include "src/tiles/config/sensor_value_font_fork.h"
 
 #if defined(DEVICE_LAYOUT_480X480)
 #define FONT_SMALL (&ui_font_12)
@@ -164,6 +165,22 @@ inline const lv_font_t* content_font_40() {
 #else
   return &ui_font_40;
 #endif
+}
+
+inline const lv_font_t* value_font_for_choice(uint8_t choice, const lv_font_t* fallback) {
+  switch (choice) {
+    case 1: return content_font_20();
+    case 2: return content_font_24();
+    case 3: return content_font_32();
+    case 4: return content_font_40();
+    case 5: return content_font_28();
+    // FORK: monospace choices, numbered clear of upstream's sizes (tile_config.h).
+    case SENSOR_VALUE_FONT_MONO_20: return mono_font_20();
+    case SENSOR_VALUE_FONT_MONO_24: return mono_font_24();
+    case SENSOR_VALUE_FONT_MONO_BOLD_20: return mono_bold_font_20();
+    case SENSOR_VALUE_FONT_MONO_BOLD_24: return mono_bold_font_24();
+    default: return fallback;
+  }
 }
 
 }  // namespace tile_layout

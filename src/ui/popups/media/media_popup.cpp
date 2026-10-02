@@ -1,3 +1,4 @@
+#include "src/ui/shared/ui_surface_style.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/ui/popups/popup_shell.h"
 #include "src/ui/popups/popup_open.h"
@@ -376,7 +377,11 @@ static void apply_init_to_context(MediaPopupContext* ctx, const MediaPopupInit& 
     icon_char = getMdiChar(icon_name);
     if (!icon_char.length()) icon_char = getMdiChar("television");
   }
-  if (ctx->icon_label) lv_label_set_text(ctx->icon_label, icon_char.c_str());
+  if (ctx->icon_label) {
+    lv_label_set_text(ctx->icon_label, icon_char.c_str());
+    // The header icon takes the tile icon's color; the shell tints its disc.
+    lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(init.icon_color), 0);
+  }
   if (ctx->fallback_icon) lv_label_set_text(ctx->fallback_icon, icon_char.c_str());
   popup_layout::alignHeader(ctx->card, ctx->title_label, ctx->icon_label);
 
@@ -582,6 +587,7 @@ static void prepare_media_popup_open(const MediaPopupInit& init) {
   if (!icon.length()) icon = getMdiChar(init.icon_name);
   if (!icon.length()) icon = getMdiChar("television");
   lv_label_set_text(ctx->icon_label, icon.c_str());
+  lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(init.icon_color), 0);
   lv_obj_set_style_bg_color(ctx->card,
       lv_color_hex(init.bg_color ? init.bg_color : 0x2A2A2A), 0);
   MediaPopupInit pending = init;
@@ -633,7 +639,7 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_set_style_border_width(ctx->cover_clip, 0, 0);
   lv_obj_set_style_shadow_width(ctx->cover_clip, 0, 0);
   lv_obj_set_style_pad_all(ctx->cover_clip, 0, 0);
-  lv_obj_set_style_radius(ctx->cover_clip, popup_layout::scale480(18), 0);
+  ui_surface_style::apply_radius(ctx->cover_clip, popup_layout::scale480(18), 0);
   lv_obj_set_style_clip_corner(ctx->cover_clip, true, 0);
   lv_obj_remove_flag(ctx->cover_clip, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(ctx->cover_clip, LV_OBJ_FLAG_CLICKABLE);
