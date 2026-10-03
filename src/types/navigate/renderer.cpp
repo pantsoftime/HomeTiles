@@ -31,6 +31,24 @@ static const lv_font_t* get_navigate_value_font(const Tile& tile) {
                                             tile_layout::content_font_28());
 }
 
+// Icon offset (from the card centre) for a tile that also shows a value. The
+// icon sits high to leave room for the value line, and v0.7.0 draws a disc of
+// header_diameter() centred on it. Place the icon so that disc starts inset()
+// below the card top -- the same gap the corner discs of Sensor tiles keep.
+// The fixed -48 it replaced left the disc flush with the card edge on the Tab5
+// and the 4B. Measured from the one-cell height so a taller tile keeps the
+// icon, value and title together around its centre, as before.
+static lv_coord_t navigate_value_icon_y(const String& icon_char) {
+  lv_point_t icon_size{};
+  lv_text_get_size(&icon_size, icon_char.c_str(), FONT_MDI_ICONS, 0, 0, LV_COORD_MAX,
+                   LV_TEXT_FLAG_NONE);
+  if (icon_size.x <= 0) {
+    icon_size.x = lv_font_get_glyph_width(FONT_MDI_ICONS, tile_icon_disc::kMdiReferenceGlyph, 0);
+  }
+  const int disc = tile_icon_disc::header_diameter(icon_size.x);
+  return static_cast<lv_coord_t>((2 * tile_icon_disc::inset() + disc - GRID_CELL_H) / 2);
+}
+
 bool navigate_settings_shows_battery(const Tile& tile, GridType grid_type) {
   // A half-height Settings tile has no room for the caption line.
   return tile.type == TILE_SETTINGS && grid_type != GridType::SCREENSAVER &&
@@ -126,15 +144,15 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       // Center icon and title on two lines, or the icon alone on one line.
       // A third line appears when the tile also shows a value.
       //
-      // Icon and value stay where they always sat. Value and title looked
-      // cramped, but the free space is BELOW the title (~23 px unused at the
-      // bottom), not above the value: lifting the value visibly pushed tiles
-      // with a short value off-centre even though they never had the problem.
-      // So only the title moves down.
+      // With a value the icon sits as high as its disc allows
+      // (navigate_value_icon_y) and the value follows just below the disc.
+      // Value and title looked cramped, but the free space is BELOW the title
+      // (~20 px unused at the bottom), not above the value: lifting the value
+      // visibly pushed tiles with a short value off-centre even though they
+      // never had the problem. So only the title moves down.
       if (!compact) {
         if (has_value) {
-          lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
-                       tile_layout::scale_i16(-48));
+          lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0, navigate_value_icon_y(iconChar));
         } else if (has_title) {
           lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
                        tile_layout::scale_i16(-20));
@@ -169,7 +187,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       }
       lv_label_set_text(v, seed);
       lv_obj_align(v, LV_ALIGN_CENTER, 0,
-                   tile_layout::scale(has_icon ? 2 : -12));
+                   tile_layout::scale(has_icon ? 6 : -12));
 
       // Register in the same widget table the sensor tiles update through --
       // update_sensor_tile_value() works purely off the grid index and is

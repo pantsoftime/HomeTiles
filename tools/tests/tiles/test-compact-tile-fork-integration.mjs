@@ -164,4 +164,18 @@ assert.match(noIconRule, /right:calc\(2 \* var\(--compact-inset\)\);/,
 assert.match(noIconRule, /text-align:center;/,
   'the Web preview must centre icon-less compact text like the device');
 
+// --- 5. Folder/Settings value tiles keep their icon disc inside the card --------
+// v0.7.0 draws a header_diameter() disc centred on every centred icon. The fork
+// lifts the icon of a tile with a value line, and the old fixed -48 left that
+// disc flush with the card's top edge (Tab5, 4B). The offset now comes from the
+// disc itself, so its top gap is inset() -- the corner discs' gap -- everywhere.
+const iconY = between(navigate, 'static lv_coord_t navigate_value_icon_y(', '\n}\n');
+assert.match(iconY, /tile_icon_disc::header_diameter\(icon_size\.x\)/,
+  'use the disc size add_round() will use for a centred icon');
+assert.match(iconY, /\(2 \* tile_icon_disc::inset\(\) \+ disc - GRID_CELL_H\) \/ 2/,
+  'the disc top must sit inset() below the card top');
+assert.match(navRender, /if \(has_value\) \{\s*lv_obj_align\(icon_lbl, LV_ALIGN_CENTER, 0, navigate_value_icon_y\(iconChar\)\);/,
+  'the value layout must place its icon from the disc geometry');
+assert.doesNotMatch(navRender, /scale_i16\(-48\)/, 'the fixed lift that clipped the disc is gone');
+
 console.log('Compact-tile fork integration regressions passed.');
