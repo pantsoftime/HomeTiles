@@ -131,8 +131,9 @@ struct Tile {
   // Optional folder a sensor tile navigates to. It fires on whichever gesture
   // is NOT opening the popup (see popup_open_mode), so one tile can show its
   // history on one press and open a related page on the other -- the same
-  // two-gestures-two-actions shape the switch tile already uses.
-  uint16_t sensor_navigate_target;
+  // two-gestures-two-actions shape the switch tile already uses. 0 = none;
+  // the constructor never set it, so a fresh Tile carried stack garbage here.
+  uint16_t sensor_navigate_target = 0;
   uint8_t popup_open_mode;
 
   String scene_alias;
