@@ -112,7 +112,7 @@ void legacy_tile_from_json(JsonObjectConst in, Tile& tile, size_t index) {
   tile.scene_alias = String(in["scene_alias"] | "");
   if (tile.type == TILE_SWITCH) {
     tile.sensor_decimals = static_cast<uint8_t>(
-        constrain(in["switch_style"] | 0, 0, 1));
+        constrain(in["switch_style"] | 0, 0, 3));
   }
   setTilePopupOpenMode(tile, static_cast<uint8_t>(
       in["popup_open_mode"] | TILE_POPUP_OPEN_LONG_PRESS));
@@ -139,7 +139,17 @@ bool replace_file_atomically(fs::FS& fs) {
 ScreensaverConfigStore screensaverConfig;
 
 ScreensaverConfigStore::ScreensaverConfigStore() {
-  resetDefaults();
+  // The tile grid is created with its defaults on first use; see
+  // gridStorage().
+  resetSettings();
+}
+
+TileGridConfig& ScreensaverConfigStore::gridStorage() const {
+  if (!tile_grid_) {
+    tile_grid_ = allocateTileGridStorage("screensaver");
+    resetGrid(*tile_grid_, true);
+  }
+  return *tile_grid_;
 }
 
 void ScreensaverConfigStore::resetGrid(TileGridConfig& grid,
@@ -154,12 +164,16 @@ void ScreensaverConfigStore::resetGrid(TileGridConfig& grid,
   }
 }
 
-void ScreensaverConfigStore::resetDefaults() {
+void ScreensaverConfigStore::resetSettings() {
   data_ = ScreensaverConfigData{};
-  resetGrid(tile_grid_, true);
   for (size_t i = 0; i < GRID_COLS; ++i) legacy_tiles_[i] = Tile{};
   legacy_slot_count_ = 0;
   legacy_slots_loaded_ = false;
+}
+
+void ScreensaverConfigStore::resetDefaults() {
+  resetSettings();
+  resetGrid(gridStorage(), true);
 }
 
 void ScreensaverConfigStore::normalize() {
@@ -240,6 +254,12 @@ bool ScreensaverConfigStore::loadPath(const char* path) {
   loaded.shuffle = doc["shuffle"] | false;
   loaded.tile_shadow = doc["tile_shadow"] | false;
   loaded.tile_border = doc["tile_border"] | true;
+  // A file without the global opacity keeps the current one until load()
+  // takes the tiles' former per-tile value.
+  tile_opacity_stored_ = doc["tile_opacity"].is<int>();
+  loaded.tile_opacity = tile_opacity_stored_
+                            ? static_cast<uint8_t>(constrain(doc["tile_opacity"].as<int>(), 0, 255))
+                            : data_.tile_opacity;
   loaded.show_time = doc["show_time"] | true;
   loaded.show_date = doc["show_date"] | true;
   loaded.show_weekday = doc["show_weekday"] | false;
@@ -326,27 +346,43 @@ bool ScreensaverConfigStore::load() {
     Serial.println("[ScreensaverConfig] No configuration, defaults active");
   }
 
-  const bool grid_ok = tileConfig.loadScreensaverGrid(tile_grid_);
-  normalizeTileGrid(tile_grid_);
+  const bool grid_ok = tileConfig.loadScreensaverGrid(gridStorage());
+  normalizeTileGrid(gridStorage());
 
   bool grid_has_tiles = false;
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
-    if (tile_grid_.tiles[i].type != TILE_EMPTY) {
+    if (gridStorage().tiles[i].type != TILE_EMPTY) {
       grid_has_tiles = true;
       break;
     }
   }
   if (!grid_has_tiles && legacy_slots_loaded_) {
-    resetGrid(tile_grid_, true);
+    resetGrid(gridStorage(), true);
     for (size_t i = 0; i < legacy_slot_count_ && i < GRID_COLS; ++i) {
-      tile_grid_.tiles[i] = legacy_tiles_[i];
+      gridStorage().tiles[i] = legacy_tiles_[i];
     }
-    normalizeTileGrid(tile_grid_);
-    if (tileConfig.saveScreensaverGrid(tile_grid_)) {
+    normalizeTileGrid(gridStorage());
+    if (tileConfig.saveScreensaverGrid(gridStorage())) {
       // One-time migration from the discarded JSON slot format.
       config_needs_migration = true;
       Serial.println("[ScreensaverConfig] Migrated legacy JSON slots into TileGrid");
     }
+  }
+  if (!tile_opacity_stored_) {
+    // Older configurations kept an opacity per tile: the most common one
+    // becomes the global value, so the screensaver looks as before.
+    uint16_t counts[256] = {};
+    uint16_t best = 0;
+    for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+      const Tile& tile = gridStorage().tiles[i];
+      if (tile.type == TILE_EMPTY) continue;
+      const uint16_t count = ++counts[tile.background_opacity];
+      if (count > best) {
+        best = count;
+        data_.tile_opacity = tile.background_opacity;
+      }
+    }
+    if (best && config_ok) config_needs_migration = true;
   }
   if (config_ok && config_needs_migration) {
     if (save()) {
@@ -365,6 +401,7 @@ String ScreensaverConfigStore::toJson(bool include_device_meta) const {
   doc["shuffle"] = data_.shuffle;
   doc["tile_shadow"] = data_.tile_shadow;
   doc["tile_border"] = data_.tile_border;
+  doc["tile_opacity"] = data_.tile_opacity;
   doc["show_time"] = data_.show_time;
   doc["show_date"] = data_.show_date;
   doc["show_weekday"] = data_.show_weekday;
@@ -515,12 +552,18 @@ bool ScreensaverConfigStore::replaceTileGrid(const TileGridConfig& grid) {
   if (!candidate) return false;
   normalizeTileGrid(*candidate);
   const bool saved = tileConfig.saveScreensaverGrid(*candidate);
-  if (saved) tile_grid_ = *candidate;
+  if (saved) gridStorage() = *candidate;
   delete candidate;
   return saved;
 }
 
+void ScreensaverConfigStore::previewTileGrid(const TileGridConfig& grid) {
+  TileGridConfig& storage = gridStorage();
+  storage = grid;
+  normalizeTileGrid(storage);
+}
+
 const Tile* ScreensaverConfigStore::tile(size_t index) const {
   if (index >= TILES_PER_GRID) return nullptr;
-  return &tile_grid_.tiles[index];
+  return &gridStorage().tiles[index];
 }

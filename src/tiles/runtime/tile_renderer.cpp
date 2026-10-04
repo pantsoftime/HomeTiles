@@ -10,9 +10,12 @@
 #include "src/tiles/config/tile_config.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/types/climate/visuals.h"
+#include "src/types/weather/weather_icons.h"
+#include "src/types/weather/tile_layout.h"
 #include "src/types/climate/renderer.h"
 #include "src/types/binary_sensor/renderer.h"
 #include "src/types/sensor/renderer.h"
+#include "src/types/switch/renderer.h"
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"  // tiles_get_cached_entity_payload
 
 // Defined further down, next to the sensor tile's caption handling; the climate
@@ -29,6 +32,7 @@ static void caption_append_unit(String& text, const String& unit);
 #include "src/tiles/runtime/tile_icon_disc.h"
 #include "src/tiles/runtime/tile_icon_color_rules.h"
 #include "src/tiles/runtime/tile_icon_source.h"
+#include "src/types/media/cover_color.h"
 #include "src/core/config/config_manager.h"
 #include "src/core/display/dma2d_arbiter.h"
 #include "src/core/i18n/i18n.h"
@@ -66,15 +70,18 @@ static void caption_append_unit(String& text, const String& unit);
 /* === Layout constants === */
 
 /* === Global update state === */
-SensorTileWidgets g_tab0_sensors[TILES_PER_GRID];
-SensorTileWidgets g_tab1_sensors[TILES_PER_GRID];
-SensorTileWidgets g_tab2_sensors[TILES_PER_GRID];
-SensorTileWidgets g_screensaver_sensors[TILES_PER_GRID];
+// Per-slot renderer bookkeeping of every grid lives in one PSRAM block
+// (TileRendererStorage below); these names point into it once
+// tile_renderer_init_cold_storage() ran in setup().
+SensorTileWidgets* g_tab0_sensors = nullptr;
+SensorTileWidgets* g_tab1_sensors = nullptr;
+SensorTileWidgets* g_tab2_sensors = nullptr;
+SensorTileWidgets* g_screensaver_sensors = nullptr;
 
-SwitchTileWidgets g_tab0_switches[TILES_PER_GRID];
-SwitchTileWidgets g_tab1_switches[TILES_PER_GRID];
-SwitchTileWidgets g_tab2_switches[TILES_PER_GRID];
-SwitchTileWidgets g_screensaver_switches[TILES_PER_GRID];
+SwitchTileWidgets* g_tab0_switches = nullptr;
+SwitchTileWidgets* g_tab1_switches = nullptr;
+SwitchTileWidgets* g_tab2_switches = nullptr;
+SwitchTileWidgets* g_screensaver_switches = nullptr;
 
 static constexpr uint8_t SWITCH_GRID_COUNT = 4;
 static uint32_t g_switch_layout_generation[SWITCH_GRID_COUNT] = {1, 1, 1, 1};
@@ -95,7 +102,6 @@ static void advance_switch_layout_generation(GridType grid_type) {
 static void invalidate_queued_switch_slot(GridType grid_type,
                                           uint8_t grid_index);
 
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
 WeatherTileWidgets* g_tab0_weather = nullptr;
 WeatherTileWidgets* g_tab1_weather = nullptr;
 WeatherTileWidgets* g_tab2_weather = nullptr;
@@ -104,40 +110,48 @@ MediaTileWidgets* g_tab0_media = nullptr;
 MediaTileWidgets* g_tab1_media = nullptr;
 MediaTileWidgets* g_tab2_media = nullptr;
 MediaTileWidgets* g_screensaver_media = nullptr;
+
+SwitchState* g_tab0_switch_states = nullptr;
+SwitchState* g_tab1_switch_states = nullptr;
+SwitchState* g_tab2_switch_states = nullptr;
+SwitchState* g_screensaver_switch_states = nullptr;
+
+CoverTileWidgets* g_tab0_covers = nullptr;
+CoverTileWidgets* g_tab1_covers = nullptr;
+CoverTileWidgets* g_tab2_covers = nullptr;
+CoverTileWidgets* g_screensaver_covers = nullptr;
+CoverState* g_tab0_cover_states = nullptr;
+CoverState* g_tab1_cover_states = nullptr;
+CoverState* g_tab2_cover_states = nullptr;
+CoverState* g_screensaver_cover_states = nullptr;
+
+ClimateTileWidgets* g_tab0_climate = nullptr;
+ClimateTileWidgets* g_tab1_climate = nullptr;
+ClimateTileWidgets* g_tab2_climate = nullptr;
+
+// The slot state changes only with tile state updates, so PSRAM is fast
+// enough, and internal RAM is scarce on both P4 and S3. Index 3 is the
+// screensaver grid; Weather and Climate exist only on the three tab grids.
+struct TileRendererStorage {
+  SensorTileWidgets sensors[4][TILES_PER_GRID];
+  SwitchTileWidgets switches[4][TILES_PER_GRID];
+  SwitchState switch_states[4][TILES_PER_GRID];
+  CoverTileWidgets covers[4][TILES_PER_GRID];
+  CoverState cover_states[4][TILES_PER_GRID];
+  ClimateTileWidgets climate[3][TILES_PER_GRID];
+  WeatherTileWidgets weather[3][TILES_PER_GRID];
+  MediaTileWidgets media[4][TILES_PER_GRID];
+};
+static TileRendererStorage* g_renderer_storage = nullptr;
 static bool g_cold_state_init_attempted = false;
-#else
-WeatherTileWidgets g_tab0_weather[TILES_PER_GRID];
-WeatherTileWidgets g_tab1_weather[TILES_PER_GRID];
-WeatherTileWidgets g_tab2_weather[TILES_PER_GRID];
 
-MediaTileWidgets g_tab0_media[TILES_PER_GRID];
-MediaTileWidgets g_tab1_media[TILES_PER_GRID];
-MediaTileWidgets g_tab2_media[TILES_PER_GRID];
-MediaTileWidgets g_screensaver_media[TILES_PER_GRID];
-#endif
-
-SwitchState g_tab0_switch_states[TILES_PER_GRID];
-SwitchState g_tab1_switch_states[TILES_PER_GRID];
-SwitchState g_tab2_switch_states[TILES_PER_GRID];
-SwitchState g_screensaver_switch_states[TILES_PER_GRID];
-
-CoverTileWidgets g_tab0_covers[TILES_PER_GRID];
-CoverTileWidgets g_tab1_covers[TILES_PER_GRID];
-CoverTileWidgets g_tab2_covers[TILES_PER_GRID];
-CoverTileWidgets g_screensaver_covers[TILES_PER_GRID];
-CoverState g_tab0_cover_states[TILES_PER_GRID];
-CoverState g_tab1_cover_states[TILES_PER_GRID];
-CoverState g_tab2_cover_states[TILES_PER_GRID];
-CoverState g_screensaver_cover_states[TILES_PER_GRID];
-
-ClimateTileWidgets g_tab0_climate[TILES_PER_GRID];
-ClimateTileWidgets g_tab1_climate[TILES_PER_GRID];
-ClimateTileWidgets g_tab2_climate[TILES_PER_GRID];
 static ClimateState* g_tab0_climate_states = nullptr;
 static ClimateState* g_tab1_climate_states = nullptr;
 static ClimateState* g_tab2_climate_states = nullptr;
-static ClimateState g_climate_emergency_states[TILES_PER_GRID];
+static uint32_t g_climate_state_alloc_failures = 0;
 
+// Returns nullptr when neither PSRAM nor internal RAM has room. Callers then
+// skip the Climate state; the next access retries the allocation.
 static ClimateState* allocate_climate_states(const char* grid_name) {
   void* memory = heap_caps_malloc(
       sizeof(ClimateState) * TILES_PER_GRID,
@@ -150,10 +164,13 @@ static ClimateState* allocate_climate_states(const char* grid_name) {
     internal_fallback = memory != nullptr;
   }
   if (!memory) {
-    Serial.printf(
-        "[Climate] WARN: No state storage for %s, using emergency buffer\n",
-        grid_name ? grid_name : "?");
-    return g_climate_emergency_states;
+    if ((g_climate_state_alloc_failures++ % 50) == 0) {
+      Serial.printf("[Climate] ERROR: No state storage for %s (%u bytes)\n",
+                    grid_name ? grid_name : "?",
+                    static_cast<unsigned>(sizeof(ClimateState) *
+                                          TILES_PER_GRID));
+    }
+    return nullptr;
   }
   ClimateState* states = static_cast<ClimateState*>(memory);
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
@@ -169,54 +186,54 @@ static ClimateState* allocate_climate_states(const char* grid_name) {
 }
 
 bool tile_renderer_init_cold_storage() {
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
-  if (g_tab0_weather && g_tab0_media) return true;
+  if (g_renderer_storage) return binary_sensor_init_storage();
   if (g_cold_state_init_attempted) return false;
   g_cold_state_init_attempted = true;
 
-  constexpr size_t kWeatherCount = TILES_PER_GRID * 3U;
-  constexpr size_t kMediaCount = TILES_PER_GRID * 4U;
-  auto* weather = static_cast<WeatherTileWidgets*>(heap_caps_malloc(
-      sizeof(WeatherTileWidgets) * kWeatherCount,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!weather) {
+  void* memory = heap_caps_malloc(sizeof(TileRendererStorage),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!memory) {
     Serial.printf(
-        "[Tiles/Mem] ERROR: Weather state (%u bytes) not allocated in PSRAM\n",
-        static_cast<unsigned>(sizeof(WeatherTileWidgets) * kWeatherCount));
+        "[Tiles/Mem] ERROR: Renderer state (%u bytes) not allocated in PSRAM\n",
+        static_cast<unsigned>(sizeof(TileRendererStorage)));
     return false;
   }
-  for (size_t i = 0; i < kWeatherCount; ++i) {
-    new (&weather[i]) WeatherTileWidgets();
-  }
+  auto* storage = new (memory) TileRendererStorage();
 
-  auto* media = static_cast<MediaTileWidgets*>(heap_caps_malloc(
-      sizeof(MediaTileWidgets) * kMediaCount,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!media) {
-    Serial.printf(
-        "[Tiles/Mem] ERROR: Media state (%u bytes) not allocated in PSRAM\n",
-        static_cast<unsigned>(sizeof(MediaTileWidgets) * kMediaCount));
-    for (size_t i = 0; i < kWeatherCount; ++i) weather[i].~WeatherTileWidgets();
-    heap_caps_free(weather);
-    return false;
-  }
-  for (size_t i = 0; i < kMediaCount; ++i) {
-    new (&media[i]) MediaTileWidgets();
-  }
-
-  g_tab0_weather = weather;
-  g_tab1_weather = weather + TILES_PER_GRID;
-  g_tab2_weather = weather + TILES_PER_GRID * 2U;
-  g_tab0_media = media;
-  g_tab1_media = media + TILES_PER_GRID;
-  g_tab2_media = media + TILES_PER_GRID * 2U;
-  g_screensaver_media = media + TILES_PER_GRID * 3U;
-  Serial.printf(
-      "[Tiles/Mem] Weather=%u bytes Media=%u bytes in PSRAM\n",
-      static_cast<unsigned>(sizeof(WeatherTileWidgets) * kWeatherCount),
-      static_cast<unsigned>(sizeof(MediaTileWidgets) * kMediaCount));
-#endif
-  return true;
+  g_tab0_sensors = storage->sensors[0];
+  g_tab1_sensors = storage->sensors[1];
+  g_tab2_sensors = storage->sensors[2];
+  g_screensaver_sensors = storage->sensors[3];
+  g_tab0_switches = storage->switches[0];
+  g_tab1_switches = storage->switches[1];
+  g_tab2_switches = storage->switches[2];
+  g_screensaver_switches = storage->switches[3];
+  g_tab0_switch_states = storage->switch_states[0];
+  g_tab1_switch_states = storage->switch_states[1];
+  g_tab2_switch_states = storage->switch_states[2];
+  g_screensaver_switch_states = storage->switch_states[3];
+  g_tab0_covers = storage->covers[0];
+  g_tab1_covers = storage->covers[1];
+  g_tab2_covers = storage->covers[2];
+  g_screensaver_covers = storage->covers[3];
+  g_tab0_cover_states = storage->cover_states[0];
+  g_tab1_cover_states = storage->cover_states[1];
+  g_tab2_cover_states = storage->cover_states[2];
+  g_screensaver_cover_states = storage->cover_states[3];
+  g_tab0_climate = storage->climate[0];
+  g_tab1_climate = storage->climate[1];
+  g_tab2_climate = storage->climate[2];
+  g_tab0_weather = storage->weather[0];
+  g_tab1_weather = storage->weather[1];
+  g_tab2_weather = storage->weather[2];
+  g_tab0_media = storage->media[0];
+  g_tab1_media = storage->media[1];
+  g_tab2_media = storage->media[2];
+  g_screensaver_media = storage->media[3];
+  g_renderer_storage = storage;
+  Serial.printf("[Tiles/Mem] Renderer state=%u bytes in PSRAM\n",
+                static_cast<unsigned>(sizeof(TileRendererStorage)));
+  return binary_sensor_init_storage();
 }
 
 SensorTileWidgets* tile_renderer_get_sensor_widgets(GridType grid_type) {
@@ -253,6 +270,7 @@ void tile_renderer_forget_media_widgets(const MediaCoverRef* ref) {
   MediaTileWidgets* const grids[] = {
       g_tab0_media, g_tab1_media, g_tab2_media, g_screensaver_media};
   for (MediaTileWidgets* grid : grids) {
+    if (!grid) continue;
     for (uint8_t i = 0; i < TILES_PER_GRID; ++i) {
       if (grid[i].cover_ref == ref) {
         // Every lv_obj pointer in this slot belongs to the same card and is
@@ -374,7 +392,7 @@ static void clear_switch_widgets(GridType grid_type) {
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     target[i].icon_label = nullptr;
     target[i].title_label = nullptr;
-    target[i].switch_obj = nullptr;
+    target[i].view = nullptr;
     state_target[i] = {};
   }
 }
@@ -422,7 +440,7 @@ void reset_climate_widget(GridType grid_type, uint8_t grid_index) {
   ClimateTileWidgets* widgets = tile_renderer_get_climate_widgets(grid_type);
   ClimateState* states = tile_renderer_get_climate_states(grid_type);
   widgets[grid_index] = {};
-  states[grid_index] = {};
+  if (states) states[grid_index] = {};
 }
 
 void reset_climate_widgets(GridType grid_type) {
@@ -430,7 +448,7 @@ void reset_climate_widgets(GridType grid_type) {
   ClimateState* states = tile_renderer_get_climate_states(grid_type);
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     widgets[i] = {};
-    states[i] = {};
+    if (states) states[i] = {};
   }
 }
 
@@ -494,7 +512,11 @@ void tile_renderer_snapshot_tab0(TileWidgetCache* out) {
   memcpy(out->switch_states, g_tab0_switch_states,
          sizeof(out->switch_states));
   memcpy(out->climate, g_tab0_climate, sizeof(out->climate));
-  memcpy(out->climate_states, climate_states, sizeof(out->climate_states));
+  if (climate_states) {
+    memcpy(out->climate_states, climate_states, sizeof(out->climate_states));
+  } else {
+    for (ClimateState& state : out->climate_states) state = ClimateState{};
+  }
   memcpy(out->covers, g_tab0_covers, sizeof(out->covers));
   memcpy(out->cover_states, g_tab0_cover_states,
          sizeof(out->cover_states));
@@ -518,7 +540,9 @@ void tile_renderer_restore_tab0(const TileWidgetCache* in) {
   memcpy(g_tab0_switch_states, in->switch_states,
          sizeof(in->switch_states));
   memcpy(g_tab0_climate, in->climate, sizeof(in->climate));
-  memcpy(climate_states, in->climate_states, sizeof(in->climate_states));
+  if (climate_states) {
+    memcpy(climate_states, in->climate_states, sizeof(in->climate_states));
+  }
   memcpy(g_tab0_covers, in->covers, sizeof(in->covers));
   memcpy(g_tab0_cover_states, in->cover_states,
          sizeof(in->cover_states));
@@ -1000,17 +1024,9 @@ static void position_tile_value_unit_centered(
   if (x < 0) x = 0;
   if (x + total_w > wrap_w) x = wrap_w - total_w;
   lv_obj_set_pos(val_label, x, y);
-#if defined(DEVICE_LAYOUT_1024X600)
-  const lv_coord_t unit_y_offset = 0;
-#elif defined(DEVICE_LAYOUT_480X480)
-  // The compact unit font must share the value's top edge. A baseline-style
-  // offset makes the value/unit pair look low and no longer centered below
-  // the day icon.
-  const lv_coord_t unit_y_offset = 0;
-#else
-  const lv_coord_t unit_y_offset = 5;
-#endif
-  lv_obj_set_pos(unit_label, x + val_w, y + unit_y_offset);
+  // The compact unit fonts share the value's top edge; a baseline-style
+  // offset made the 480x480 pair look low below the day icon.
+  lv_obj_set_pos(unit_label, x + val_w, y + weather_tile::kUnitYOffset);
 }
 
 static void decode_basic_json_escapes(String& text) {
@@ -1262,10 +1278,6 @@ static bool is_color_mode(const String& mode) {
          mode == "rgbww";
 }
 
-static bool is_switch_widget_style(const Tile& tile) {
-  return tile.sensor_decimals == 1;
-}
-
 static LightPopupInit build_popup_init_from_state(
     GridType grid_type,
     uint8_t tile_index,
@@ -1283,7 +1295,7 @@ static LightPopupInit build_popup_init_from_state(
   init.icon_name = icon_name;
   init.is_light = is_light_entity_id(tile.sensor_entity);
   init.available = state.available;
-  init.keep_icon_white = is_switch_widget_style(tile);
+  init.keep_icon_white = false;
   init.has_tile_ref = true;
   init.tile_grid = static_cast<uint8_t>(grid_type);
   init.tile_index = tile_index;
@@ -1436,6 +1448,8 @@ static SwitchState parse_switch_payload(const char* payload) {
       if (normalized_state == "unavailable") {
         state_unavailable = true;
         out.available = false;
+      } else if (normalized_state == "unknown") {
+        out.unknown = true;
       } else {
         out.has_state = parse_on_off(state, out.is_on);
       }
@@ -1718,11 +1732,12 @@ static bool switch_tile_visual_state_equal(const SwitchState& left,
          left.supports_brightness == right.supports_brightness &&
          left.supports_temperature == right.supports_temperature &&
          left.supported_modes_known == right.supported_modes_known &&
-         left.supported_onoff_only == right.supported_onoff_only;
+         left.supported_onoff_only == right.supported_onoff_only &&
+         left.unknown == right.unknown;
 }
 
 static bool switch_state_has_update(const SwitchState& state) {
-  return !state.available || state.has_state || state.has_color ||
+  return !state.available || state.has_state || state.unknown || state.has_color ||
          state.has_brightness || state.has_color_temp || state.supports_color ||
          state.supports_brightness || state.supports_temperature;
 }
@@ -1730,7 +1745,7 @@ static bool switch_state_has_update(const SwitchState& state) {
 // The Switch tile's icon color for a state: the light color (or the Kelvin
 // color of CCT-only lights, else amber) while on, grey while off or
 // unavailable.
-static uint32_t switch_state_icon_color(const SwitchState& state) {
+uint32_t switch_state_icon_color(const SwitchState& state) {
   if (!state.available || (state.has_state && !state.is_on)) return 0xB0B0B0;
   if (state.supports_temperature && !state.supports_color && state.has_color_temp) {
     return lv_color_to_u32(light_color_from_temperature_kelvin(state.color_temp_kelvin)) & 0xFFFFFF;
@@ -1796,7 +1811,6 @@ static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
   const Tile& tile = *tile_ptr;
   const String& entity_id = tile.sensor_entity;
   const bool is_light_entity = is_light_entity_id(entity_id);
-  const bool use_switch_widget = is_switch_widget_style(tile);
   if (is_light_entity) {
     if (state.supported_modes_known && state.supported_onoff_only) {
       state.supports_color = false;
@@ -1805,11 +1819,16 @@ static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
     }
   }
 
-  // Brightness-only state echoes do not alter the visible tile. This matters
+  // Brightness-only state echoes do not alter an icon button. This matters
   // when the same entity is present several times: keep every state cache and
   // the bound popup current, but do not invalidate every duplicate tile.
+  // Header layouts show the brightness in their state line and dimmer.
+  SwitchTileWidgets& widgets = target[grid_index];
+  const bool shows_level = widgets.view != nullptr;
   const bool tile_visual_unchanged =
-      switch_tile_visual_state_equal(prev, state);
+      switch_tile_visual_state_equal(prev, state) &&
+      (!shows_level || (prev.has_brightness == state.has_brightness &&
+                        (!state.has_brightness || prev.brightness_pct == state.brightness_pct)));
   state_target[grid_index] = state;
 
   if (tile.sensor_entity.length()) {
@@ -1817,53 +1836,18 @@ static void apply_switch_tile_state(GridType grid_type, uint8_t grid_index,
     update_light_popup(init);
   }
   if (tile_visual_unchanged) return;
+  if (!widgets.icon_label && !widgets.title_label && !widgets.view) return;
 
-  SwitchTileWidgets& widgets = target[grid_index];
-  if (!widgets.icon_label && !widgets.title_label && !widgets.switch_obj) return;
-
-  static const uint32_t kIconOff = 0xB0B0B0;
-  static const uint32_t kIconNeutral = 0xFFFFFF;
-  static const uint32_t kSwitchOff = 0xFFFFFF;
-  static const uint32_t kSwitchOn = 0x3B82F6;
-
-  const bool control_unavailable = !state.available;
   // CCT-only lights use the same Kelvin color as the popup instead of the
-  // fixed yellow default used for simple on/off lights.
-  const uint32_t icon_color = switch_state_icon_color(state);
-
-  uint32_t label_color =
-      control_unavailable
-          ? kIconOff
-          : (use_switch_widget ? kIconNeutral : icon_color);
-  lv_color_t lv_color = lv_color_hex(label_color);
-  if (widgets.icon_label) {
-    tile_icon_disc::set_icon_color(widgets.icon_label, lv_color);
-  } else if (widgets.title_label) {
-    lv_obj_set_style_text_color(widgets.title_label, lv_color, 0);
+  // fixed yellow default used for simple on/off lights. A held tile colors
+  // its icon for its own on/off, like its bar.
+  SwitchState shown = state;
+  bool held_on = false;
+  if (state.available && switch_tile_held_on(widgets, held_on)) {
+    shown.has_state = true;
+    shown.is_on = held_on;
   }
-
-  if (widgets.switch_obj) {
-    if (control_unavailable) {
-      lv_obj_remove_state(widgets.switch_obj, LV_STATE_CHECKED);
-      lv_obj_add_state(widgets.switch_obj, LV_STATE_DISABLED);
-    } else if (!state.has_state || state.is_on) {
-      lv_obj_add_state(widgets.switch_obj, LV_STATE_CHECKED);
-      lv_obj_clear_state(widgets.switch_obj, LV_STATE_DISABLED);
-    } else {
-      lv_obj_remove_state(widgets.switch_obj, LV_STATE_CHECKED);
-      lv_obj_clear_state(widgets.switch_obj, LV_STATE_DISABLED);
-    }
-    uint32_t tile_color = tileBgColorOrDefault(tile, tileDefaultBgColor());
-    lv_obj_set_style_bg_color(widgets.switch_obj, lv_color_hex(tile_color), LV_PART_KNOB);
-    lv_obj_set_style_bg_color(
-        widgets.switch_obj,
-        lv_color_hex(use_switch_widget ? kSwitchOff : kIconOff),
-        LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(
-        widgets.switch_obj,
-        lv_color_hex(use_switch_widget ? kSwitchOn : icon_color),
-        LV_PART_INDICATOR | LV_STATE_CHECKED);
-  }
+  switch_tile_show_state(widgets, tile, state, switch_state_icon_color(shown));
 }
 
 void update_switch_tile_state(GridType grid_type, uint8_t grid_index,
@@ -2408,6 +2392,7 @@ static void update_climate_tile_state(
   if (grid_index >= TILES_PER_GRID || !payload) return;
   ClimateTileWidgets* widgets = tile_renderer_get_climate_widgets(grid_type);
   ClimateState* states = tile_renderer_get_climate_states(grid_type);
+  if (!states) return;
   ClimateTileWidgets& widget = widgets[grid_index];
 
   const uint32_t payload_hash = fnv1a_hash(payload);
@@ -2592,6 +2577,15 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
   if (!icon_name.length() && condition.length()) {
     icon_name = weather_icon_from_condition(condition);
   }
+  // Home Assistant reports partly cloudy and sunny at night too; the bridge
+  // sun times switch them to their night icons.
+  weather_icons::SunTimes sun;
+  weather_icons::parse_sun(json.c_str(), sun);
+  icon_name = weather_icons::for_now(icon_name, sun);
+
+  const TileGridConfig& grid = tileConfig.getActiveGrid();
+  const Tile& tile = grid.tiles[grid_index];
+  const bool colored_icons = weatherColoredIcons(tile);
 
   float temperature = 0.0f;
   bool has_temp = extract_json_number_or_string_field(json, "temperature", temperature);
@@ -2637,9 +2631,21 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
   if (widgets.icon_label) {
     // The icon disc follows the icon; an empty disc never shows.
     if (icon_name.length()) {
-      String iconChar = getMdiChar(icon_name);
+      // A rule's icon color draws the layers in that color; otherwise the
+      // icon carries its weather color, which Tile color "From icon" and the
+      // icon disc follow.
+      lv_color_t forced;
+      const bool icon_forced = tile_icon_disc::forced_color(widgets.icon_label, forced);
+      String iconChar = weather_icons::text(
+          icon_name, !colored_icons ? weather_icons::Style::Outline
+                     : icon_forced  ? weather_icons::Style::Single
+                                    : weather_icons::Style::Colored);
       if (iconChar.length()) {
         lv_label_set_text(widgets.icon_label, iconChar.c_str());
+        if (colored_icons) {
+          const uint32_t tint = weather_icons::tint(icon_name);
+          tile_icon_disc::set_icon_color(widgets.icon_label, lv_color_hex(tint ? tint : 0xFFFFFF));
+        }
         tile_icon_disc::set_icon_hidden(widgets.icon_label, false);
       } else {
         tile_icon_disc::set_icon_hidden(widgets.icon_label, true);
@@ -2651,8 +2657,6 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
 
   String condition_text = weather_condition_display_label(condition);
 
-  const TileGridConfig& grid = tileConfig.getActiveGrid();
-  const Tile& tile = grid.tiles[grid_index];
   const bool has_condition_text = condition_text.length() && condition_text != "--";
   const lv_coord_t card_w = tile_geometry::extent(
       tile.col, tile.span_w < 1 ? 1.0f : tile.span_w, GRID_CELL_W, GRID_GAP);
@@ -2857,7 +2861,8 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
     }
     if (fw.icon_label) {
       if (slot.has_data && slot.icon_name.length()) {
-        String icon_char = getMdiChar(slot.icon_name);
+        String icon_char = weather_icons::text(
+            slot.icon_name, colored_icons ? weather_icons::Style::Colored : weather_icons::Style::Outline);
         if (icon_char.length()) {
           lv_label_set_text(fw.icon_label, icon_char.c_str());
           lv_obj_set_style_text_color(fw.icon_label, forecast_active_color, 0);
@@ -2872,10 +2877,8 @@ static void update_weather_tile_state(GridType grid_type, uint8_t grid_index, co
       }
     }
     if (fw.temp_high_label) {
-      constexpr lv_coord_t kTileForecastTempTop =
-          tile_layout::scale(52 + 54);
-      constexpr lv_coord_t kTileForecastLowTop =
-          kTileForecastTempTop + tile_layout::scale(30);
+      constexpr lv_coord_t kTileForecastTempTop = weather_tile::kForecastTempTop;
+      constexpr lv_coord_t kTileForecastLowTop = weather_tile::kForecastLowTop;
       constexpr lv_coord_t kTileColContentW =
           WEATHER_FORECAST_COL_W -
           (2 * tile_layout::scale_480(20));
@@ -3000,6 +3003,10 @@ static String media_empty_title_label(String state) {
   state.trim();
   state.toLowerCase();
   const auto& tr = i18n::strings(configManager.getConfig().language);
+  // Like Home Assistant: "Unavailable" and "Unknown", not "No playback".
+  if (state == "unavailable" || state == "unknown") {
+    return i18n::entity_state_label(configManager.getConfig().language, state);
+  }
   if (state == "playing") return tr.media_state_playing;
   if (state == "paused") return tr.media_state_paused;
   if (state == "idle") return tr.media_state_idle;
@@ -3136,6 +3143,21 @@ const lv_image_dsc_t* tile_renderer_find_media_cover(const String& entity_id, ui
   return nullptr;
 }
 
+bool tile_renderer_media_cover_color(const String& entity_id, uint32_t& rgb) {
+  const GridType types[] = {GridType::TAB0, GridType::TAB1, GridType::TAB2, GridType::SCREENSAVER};
+  MediaTileWidgets* const grids[] = {g_tab0_media, g_tab1_media, g_tab2_media, g_screensaver_media};
+  for (size_t grid = 0; grid < 4; ++grid) {
+    if (!grids[grid]) continue;
+    for (uint8_t i = 0; i < TILES_PER_GRID; ++i) {
+      lv_obj_t* clip = grids[grid][i].cover_clip;
+      if (!clip || lv_obj_has_flag(clip, LV_OBJ_FLAG_HIDDEN)) continue;
+      if (!media_entity_for_grid_index(types[grid], i).equalsIgnoreCase(entity_id)) continue;
+      if (tile_icon_source::card_cover_color(lv_obj_get_parent(clip), rgb)) return true;
+    }
+  }
+  return false;
+}
+
 static void update_media_popup_from_widgets(GridType grid_type,
                                             uint8_t grid_index,
                                             MediaTileWidgets& widgets,
@@ -3147,6 +3169,11 @@ static void update_media_popup_from_widgets(GridType grid_type,
   if (!tile_ptr || tile_ptr->type != TILE_MEDIA ||
       !tile_ptr->sensor_entity.length()) return;
   const Tile& tile = *tile_ptr;
+  // Only an open Media popup of this entity takes the update. popup_background
+  // below also makes this tile the popup source: run on every player update,
+  // it let the next "From cover" retint recolor whatever popup was open, such
+  // as Settings after a language save (V2, 2026-10-03).
+  if (!media_popup_showing(tile.sensor_entity)) return;
 
   MediaPopupInit init;
   init.entity_id = tile.sensor_entity;
@@ -3169,6 +3196,7 @@ static void update_media_popup_from_widgets(GridType grid_type,
   init.has_volume = widgets.has_media_volume;
   init.volume_level = widgets.media_volume_level;
   init.is_muted = widgets.media_is_muted;
+  init.available = widgets.available;
   const bool cover_visible = widgets.cover_ref &&
                              widgets.cover_ref->dsc &&
                              widgets.cover_clip &&
@@ -3605,6 +3633,7 @@ static const MediaCoverRef* find_decoded_media_cover_sibling(const MediaCoverRef
   MediaTileWidgets* const grids[] = {
       g_tab0_media, g_tab1_media, g_tab2_media, g_screensaver_media};
   for (MediaTileWidgets* grid : grids) {
+    if (!grid) continue;
     for (uint8_t i = 0; i < TILES_PER_GRID; ++i) {
       const MediaCoverRef* ref = grid[i].cover_ref;
       if (!ref || ref == self) continue;
@@ -3896,6 +3925,27 @@ static bool media_widgets_are_visible(const MediaTileWidgets& widgets) {
          media_obj_is_visible(widgets.play_pause_label);
 }
 
+// "From cover" (icon color and tile color): reports the color of the cover a
+// Media card shows, or no color when it hides the cover. Sampled once per
+// cover change, at most 32 x 32 pixels (media/cover_color.h).
+static void report_media_cover_color(MediaTileWidgets& widgets, bool visible) {
+  lv_obj_t* card = widgets.cover_clip ? lv_obj_get_parent(widgets.cover_clip) : nullptr;
+  if (!card) return;
+  uint32_t rgb = 0;
+  bool known = false;
+  const void* src = visible && widgets.cover_image ? lv_image_get_src(widgets.cover_image) : nullptr;
+  if (src && lv_image_src_get_type(src) == LV_IMAGE_SRC_VARIABLE) {
+    const lv_image_dsc_t* dsc = static_cast<const lv_image_dsc_t*>(src);
+    const uint32_t stride = dsc->header.stride ? dsc->header.stride : dsc->header.w * 2U;
+    if (dsc->data && dsc->header.cf == LV_COLOR_FORMAT_RGB565_SWAPPED && dsc->header.w && dsc->header.h &&
+        stride >= dsc->header.w * 2U &&
+        dsc->data_size >= stride * (dsc->header.h - 1U) + dsc->header.w * 2U) {
+      known = media_cover_color::pick(dsc->data, dsc->header.w, dsc->header.h, stride, rgb);
+    }
+  }
+  tile_icon_source::set_cover_color(card, known, rgb);
+}
+
 static bool set_media_cover_visible(MediaTileWidgets& widgets, bool visible) {
   bool changed = false;
   if (widgets.cover_clip) {
@@ -3918,6 +3968,7 @@ static bool set_media_cover_visible(MediaTileWidgets& widgets, bool visible) {
       changed = true;
     }
   }
+  report_media_cover_color(widgets, visible);
   return changed;
 }
 
@@ -4448,6 +4499,14 @@ void update_media_tile_state(GridType grid_type, uint8_t grid_index, const char*
   // Artwork is independent of title/state. Lightweight payloads omit it;
   // explicit empty/null fields clear it, and URL changes must always apply.
   const bool should_update_cover = is_json_payload && media_artwork::has_fields(payload_start);
+  // Home Assistant disables the controls of an unavailable player.
+  widgets.available = !state.equalsIgnoreCase("unavailable");
+  for (lv_obj_t* label : {widgets.previous_label, widgets.play_pause_label, widgets.next_label}) {
+    lv_obj_t* button = label ? lv_obj_get_parent(label) : nullptr;
+    if (!button || lv_obj_has_state(button, LV_STATE_DISABLED) == !widgets.available) continue;
+    if (widgets.available) lv_obj_remove_state(button, LV_STATE_DISABLED);
+    else lv_obj_add_state(button, LV_STATE_DISABLED);
+  }
   if (widgets.play_pause_label) {
     String icon = getMdiChar(media_icon_for_state(state));
     if (icon.length()) {
@@ -4922,6 +4981,7 @@ lv_obj_t* render_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint
     // discs take the icon color and the background.
     tile_icon_source::refresh_card(tile_obj, tile);
     tile_icon_disc::apply_tile_options(tile_obj, tile.icon_disc_mode, tile.icon_glow);
+    disable_pressed_recolor(tile_obj);
     if (!tileBorderEnabled(tile)) ui_surface_style::disable_tile_border(tile_obj);
     // Normal grids use the global display option. The screensaver has its
     // own setting and applies it after rendering in image_screensaver.cpp.

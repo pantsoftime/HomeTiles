@@ -15,6 +15,7 @@ const out=path.join(root,'build/tests/popup-shell-lvgl');fs.mkdirSync(out,{recur
 const withoutIncludes=s=>s.replace(/^#include.*$/gm,'').replaceAll('#pragma once','');
 const cpp=String.raw`
 #include <lvgl.h>
+#include <lvgl_private.h>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +48,9 @@ ${withoutIncludes(read('src/ui/popups/popup_layout.h'))}
 ${withoutIncludes(read('src/ui/popups/popup_open.h'))}
 ${withoutIncludes(read('src/ui/popups/popup_shell.h'))}
 ${withoutIncludes(read('src/ui/popups/popup_open.cpp'))}
+${withoutIncludes(read('src/ui/shared/ui_pulse.h'))}
+${withoutIncludes(read('src/tiles/icons/mdi_bar_icons.h'))}
+${withoutIncludes(read('src/ui/shared/icon_lock_mark.h'))}
 ${withoutIncludes(read('src/ui/popups/popup_shell.cpp'))}
 struct Popup{lv_obj_t*owner,*body,*title,*icon,*close,*content;bool allow_close=true,back=false;int closed=0;};
 Popup make(){
@@ -59,14 +63,15 @@ Popup make(){
 Popup* disposable=nullptr;int dismissed=0;
 void dismiss_form(){++dismissed;hide_popup_shell(disposable->body);lv_obj_delete(disposable->owner);}
 void wire(Popup&p){lv_obj_add_event_cb(p.close,[](lv_event_t*e){auto*p=static_cast<Popup*>(lv_event_get_user_data(e));if(p->back){p->back=false;lv_label_set_text(lv_obj_get_child(p->close,0),"X");return;}if(!p->allow_close)return;++p->closed;hide_popup_shell(p->body);lv_obj_add_flag(p->body,LV_OBJ_FLAG_HIDDEN);},LV_EVENT_CLICKED,&p);}
-struct Init{Popup*p;std::string value;};int applied=0,flushed=0;
+struct Init{Popup*p;std::string value;};int applied=0,flushed=0,first_flush_y=-2;
 void apply(const Init&i){assert(flushed>0);++applied;assert(!lv_obj_has_flag(i.p->content,LV_OBJ_FLAG_HIDDEN));}
 void show(Popup&p,const char*title,bool cached=false){hometiles_title::set(p.title,title);lv_obj_remove_flag(p.body,LV_OBJ_FLAG_HIDDEN);assert(defer_popup_body(p.body,p.title,p.icon,p.close,Init{&p,title},apply,cached));show_popup_shell(p.owner,p.body,p.title,p.icon,p.close);}
 // Execute Weather's actual deferred opener with the shared shell. Transport
 // and forecast parsing are injected; temporary body hiding and ownership are real.
 struct String:std::string{using std::string::string;using std::string::operator=;String()=default;String(const std::string&s):std::string(s){}bool equalsIgnoreCase(const String&s)const{return *this==s;}void remove(size_t i){erase(i);}};
-struct WeatherPopupInit{String entity_id;};
-struct WeatherPopupContext{lv_obj_t*overlay=nullptr,*card=nullptr;bool has_rendered_data=false;String rendered_entity_id,rendered_language;uint32_t rendered_payload_hash=0;size_t rendered_payload_length=0;};
+struct WeatherPopupInit{String entity_id;bool colored_icons=true,icon_forced=false;};
+struct WeatherPopupContext{lv_obj_t*overlay=nullptr,*card=nullptr;bool has_rendered_data=false;String rendered_entity_id,rendered_language;uint32_t rendered_payload_hash=0;size_t rendered_payload_length=0;uint8_t rendered_icon_key=1;};
+uint8_t icon_style_key(bool colored,bool forced){return (colored?1:0)|(forced?2:0);}
 WeatherPopupContext*g_weather_popup_ctx=nullptr;bool g_weather_open_pending=false;WeatherPopupInit g_pending_weather_init;PopupBody g_weather_body;
 struct WeatherPending{bool valid=false,parse_hourly_pending=false,build_ui_pending=false;String entity_id,build_entity_id;int pending_day_nav=-1;}g_pending_weather;
 struct Logger{template<class...T>void printf(const char*,T...){}}Serial;
@@ -94,14 +99,17 @@ int settings_built=0,settings_closed=0;
 void reset_popup_refs(){}
 const char* popup_icon_for_kind(SettingsPopupKind){return "wifi";}
 const char* popup_title_for_kind(SettingsPopupKind){return "Wi-Fi";}
+uint32_t settings_tile_color(){return 0x2A2A2A;}  // The global tile color in production.
 void style_plain_container(lv_obj_t*o){lv_obj_remove_style_all(o);lv_obj_remove_flag(o,LV_OBJ_FLAG_SCROLLABLE);}
 void build_popup_content(SettingsPopupKind,lv_obj_t*parent){++settings_built;wifi_entry_view=lv_obj_create(parent);lv_obj_set_size(wifi_entry_view,100,100);}
 void close_settings_popup(){++settings_closed;hide_popup_shell(settings_popup_card);lv_obj_delete(settings_popup_overlay);settings_popup_overlay=nullptr;settings_popup_card=nullptr;settings_popup_content=nullptr;wifi_entry_view=nullptr;}
 void hide_settings_popup(){if(settings_popup_overlay)close_settings_popup();}
 void wifi_show_list_view(){lv_obj_add_flag(wifi_entry_view,LV_OBJ_FLAG_HIDDEN);lv_label_set_text(settings_popup_close_icon,"X");}
+// The production body also forgets the last tile opener (tile_icon_source.cpp).
+namespace tile_icon_source {int opened_without_tile=0;void open_popup_without_tile(){++opened_without_tile;popup_shell_use_no_tile_disc();}}
 ${['on_settings_popup_close_clicked','finish_settings_popup_open','open_settings_popup'].map(name=>cppFunctionDefinitions(read('src/ui/tabs/settings/tab_settings.cpp')).find(f=>f.name===name).source).join('\n')}
 void save_frame(const std::string&path,const std::vector<uint32_t>&pixels){std::ofstream f(path,std::ios::binary);f<<"P6\n"<<SCREEN_WIDTH<<" "<<SCREEN_HEIGHT<<"\n255\n";for(auto p:pixels){const char rgb[]={char(p>>16),char(p>>8),char(p)};f.write(rgb,3);}}
-int main(int argc,char**argv){lv_init();auto*d=lv_display_create(SCREEN_WIDTH,SCREEN_HEIGHT);std::vector<uint32_t>pixels(SCREEN_WIDTH*SCREEN_HEIGHT),band(SCREEN_WIDTH*16);lv_display_set_color_format(d,LV_COLOR_FORMAT_XRGB8888);lv_display_set_buffers(d,band.data(),nullptr,band.size()*4,LV_DISPLAY_RENDER_MODE_PARTIAL);lv_display_set_user_data(d,&pixels);lv_display_set_flush_cb(d,[](lv_display_t*d,const lv_area_t*area,uint8_t*data){++flushed;auto&pixels=*static_cast<std::vector<uint32_t>*>(lv_display_get_user_data(d));auto*source=reinterpret_cast<uint32_t*>(data);for(int y=area->y1;y<=area->y2;++y)for(int x=area->x1;x<=area->x2;++x)pixels[y*SCREEN_WIDTH+x]=*source++;lv_display_flush_ready(d);});
+int main(int argc,char**argv){lv_init();auto*d=lv_display_create(SCREEN_WIDTH,SCREEN_HEIGHT);std::vector<uint32_t>pixels(SCREEN_WIDTH*SCREEN_HEIGHT),band(SCREEN_WIDTH*16);lv_display_set_color_format(d,LV_COLOR_FORMAT_XRGB8888);lv_display_set_buffers(d,band.data(),nullptr,band.size()*4,LV_DISPLAY_RENDER_MODE_PARTIAL);lv_display_set_user_data(d,&pixels);lv_display_set_flush_cb(d,[](lv_display_t*d,const lv_area_t*area,uint8_t*data){++flushed;if(first_flush_y==-1)first_flush_y=area->y1;auto&pixels=*static_cast<std::vector<uint32_t>*>(lv_display_get_user_data(d));auto*source=reinterpret_cast<uint32_t*>(data);for(int y=area->y1;y<=area->y2;++y)for(int x=area->x1;x<=area->x2;++x)pixels[y*SCREEN_WIDTH+x]=*source++;lv_display_flush_ready(d);});
  int outside_draws=0;auto*outside=lv_obj_create(lv_screen_active());lv_obj_set_size(outside,100,100);lv_obj_set_pos(outside,30,30);lv_obj_add_event_cb(outside,[](lv_event_t*e){++*static_cast<int*>(lv_event_get_user_data(e));},LV_EVENT_DRAW_MAIN,&outside_draws);
  auto a=make(),b=make();wire(a);wire(b);
  show(a,"Number\nLiving room");auto*frame=shell.frame;auto*header=shell.header;auto*button=shell.close;
@@ -125,6 +133,52 @@ int main(int argc,char**argv){lv_init();auto*d=lv_display_create(SCREEN_WIDTH,SC
  lv_obj_remove_state(button,LV_STATE_PRESSED);
  ui_surface_style::request_global_radius_refresh();ui_surface_style::process_pending_updates();
  lv_obj_update_layout(shell.overlay);assert(lv_obj_get_width(shell.frame)==lv_obj_get_width(a.body));assert(strcmp(hometiles_title::text(shell.title),"Number\nLiving room")==0);
+ // One rule for the pressed close button and the footer controls: the
+ // circle's color (tone_color::fill) in the icon hue only with tile color
+ // "From icon" and "Circle in icon color"; Global, Custom and popups without
+ // a tile take the neutral step; no theme darkening on the press.
+ auto close_press=[&](uint32_t&rgb,lv_opa_t&opa){lv_style_value_t v;
+   assert(lv_obj_get_local_style_prop(button,LV_STYLE_BG_COLOR,&v,LV_STATE_PRESSED)==LV_STYLE_RES_FOUND);rgb=lv_color_to_u32(v.color)&0xFFFFFF;
+   assert(lv_obj_get_local_style_prop(button,LV_STYLE_BG_OPA,&v,LV_STATE_PRESSED)==LV_STYLE_RES_FOUND);opa=static_cast<lv_opa_t>(v.num);};
+ auto footer_fill=[&](uint32_t card,uint32_t icon,uint32_t&rgb,lv_opa_t&opa){lv_color_t c;popup_shell_control_fill(card,icon,c,opa);rgb=lv_color_to_u32(c)&0xFFFFFF;};
+ // Controls take the circle color whenever it is tinted (user 2026-10-01);
+ // only a popup showing the tile color From icon computes it for its own
+ // card, every other one for the From icon card (tone_color::g_from_icon_card).
+ // A tile with "From icon" at 40 % passes its strength (the Light popup).
+ tone_color::g_from_icon_card=[](uint32_t,bool,uint8_t percent)->uint32_t{return percent==40?0x3A2410:0x2B1A10;};
+ struct ControlCase{bool tile,glow,from_icon;uint32_t card,icon;bool tinted,family;const char*what;uint8_t strength=0;};
+ for(const ControlCase&c:std::vector<ControlCase>{
+     {false,true,false,0x482F10,0xEF8402,true,true,"no tile"},
+     {true,true,false,0x1B1B1B,0xC62828,true,true,"Global with the circle color"},
+     {true,true,false,0x3E1717,0xC62828,true,true,"Custom in the icon's hue"},
+     {true,true,true,0x482F10,0xEF8402,true,false,"From icon with the circle color"},
+     {true,false,true,0x482F10,0xEF8402,false,false,"From icon without the circle color"},
+     {true,true,false,0x1B1B1B,0xEF8402,true,true,"Global card, From icon tile at 40 %",40}}){
+   if(c.tile)popup_shell_use_tile_disc(false,false,c.glow,c.from_icon,c.strength);
+   lv_obj_set_style_bg_color(b.body,lv_color_hex(c.card),0);lv_obj_set_style_text_color(b.icon,lv_color_hex(c.icon),0);show(b,"Sonos");sync_popup_shell();
+   uint32_t close_rgb,footer_rgb;lv_opa_t close_opa,footer_opa;close_press(close_rgb,close_opa);footer_fill(c.card,c.icon,footer_rgb,footer_opa);
+   const tone_color::Fill expected=tone_color::fill(c.family?(c.strength==40?0x3A2410:0x2B1A10):c.card,c.icon,c.tinted,configManager.cfg.icon_glow);
+   if(!lv_color_eq(lv_obj_get_style_bg_color(shell.icon_disc,LV_PART_MAIN),lv_color_hex(expected.disc_color)))std::cerr<<"header circle: "<<c.what<<"\n";
+   assert(lv_color_eq(lv_obj_get_style_bg_color(shell.icon_disc,LV_PART_MAIN),lv_color_hex(expected.disc_color))&&"header circle = the tile's circle");
+   if(close_rgb!=expected.control_color)std::cerr<<"close press color: "<<c.what<<"\n";
+   assert(close_rgb==expected.control_color&&close_opa==expected.control_opa&&close_opa==LV_OPA_COVER&&"close press: the circle's color, opaque");
+   assert(close_rgb==footer_rgb&&close_opa==footer_opa&&"close press and footer controls look the same");
+   {lv_style_value_t v;assert(lv_obj_get_local_style_prop(button,LV_STYLE_COLOR_FILTER_OPA,&v,LV_STATE_PRESSED)==LV_STYLE_RES_FOUND&&v.num==LV_OPA_TRANSP&&"no theme darkening");}
+   hide_popup_shell(b.body);
+ }
+ // A drag (Light popup color wheel) holds the invisible close press color;
+ // it follows once the finger lifts, so a drag step draws no extra area.
+ {lv_obj_set_style_bg_color(b.body,lv_color_hex(0x1B1B1B),0);lv_obj_set_style_text_color(b.icon,lv_color_hex(0xC62828),0);show(b,"Hold");sync_popup_shell();
+  uint32_t before,after;lv_opa_t o;close_press(before,o);popup_shell_hold_close_fill(true);
+  lv_obj_set_style_text_color(b.icon,lv_color_hex(0x2E7D32),0);sync_popup_shell();close_press(after,o);
+  assert(after==before&&"close press color held during a drag");
+  popup_shell_hold_close_fill(false);sync_popup_shell();close_press(after,o);
+  assert(after!=before&&after==tone_color::fill(0x2B1A10,0x2E7D32,true,configManager.cfg.icon_glow).control_color&&"close press color follows on release");
+  hide_popup_shell(b.body);}
+ tone_color::g_from_icon_card=nullptr;
+ configManager.cfg.icon_glow=0;popup_shell_use_tile_disc(false,false,true,true);
+ {uint32_t rgb;lv_opa_t opa;footer_fill(0x482F10,0xEF8402,rgb,opa);assert(opa==LV_OPA_COVER&&rgb==tone_color::fill(0x482F10,0xEF8402,true,0).control_color&&"Circle strength 0 keeps presses visible");}
+ configManager.cfg.icon_glow=icon_glow::kDefault;g_next_disc={};
  lv_obj_set_style_bg_color(b.body,lv_color_hex(0x885522),0);lv_obj_set_style_text_color(b.icon,lv_color_hex(0x00FF00),0);show(b,"Weather");assert(lv_color_eq(lv_obj_get_style_bg_color(shell.frame,LV_PART_MAIN),lv_color_hex(0x885522)));assert(lv_color_eq(lv_obj_get_style_text_color(shell.icon,LV_PART_MAIN),lv_color_hex(0x00FF00)));assert(shell.frame==frame&&shell.header==header&&shell.close==button);assert(lv_obj_get_parent(a.body)==a.owner);assert(lv_obj_has_flag(a.body,LV_OBJ_FLAG_HIDDEN));assert(strcmp(hometiles_title::text(shell.title),"Weather")==0);
  hometiles_title::set(a.title,"Hidden background update");lv_obj_set_style_bg_color(a.body,lv_color_hex(0xEE0000),0);sync_popup_shell();assert(lv_color_eq(lv_obj_get_style_bg_color(shell.frame,LV_PART_MAIN),lv_color_hex(0x885522)));assert(strcmp(hometiles_title::text(shell.title),"Weather")==0);
  lv_obj_send_event(button,LV_EVENT_CLICKED,nullptr);assert(b.closed==1&&!PopupFirstFrame::any_pending());process_popup_open();assert(applied==2);
@@ -140,14 +194,41 @@ int main(int argc,char**argv){lv_init();auto*d=lv_display_create(SCREEN_WIDTH,SC
   assert(shell.active&&shell.active->body==b.body&&lv_obj_get_parent(b.body)==shell.overlay);assert(!lv_obj_has_flag(b.body,LV_OBJ_FLAG_HIDDEN));hide_popup_shell(b.body);
  }
  g_weather_popup_ctx=nullptr;
+ // A folder click without a PIN leaves tile disc options and opens no popup;
+ // Settings, no tile popup, must not take them (V2 2026-10-03).
+ popup_shell_use_tile_disc(true,false,false);
  open_settings_popup(SettingsPopupKind::Wifi);assert(settings_built==0);assert(shell.frame==frame&&shell.close==button);
+ assert(tile_icon_source::opened_without_tile==1&&!shell.disc.from_tile&&"Settings is no tile popup");
  auto*settings_card=settings_popup_card;lv_refr_now(d);process_popup_open();lv_obj_update_layout(shell.overlay);assert(settings_built==1);
  assert(lv_obj_get_width(shell.frame)==lv_obj_get_width(settings_card));assert(lv_obj_get_width(settings_card)>popup_layout::kCardWidth||SCREEN_WIDTH==SCREEN_HEIGHT);
  assert(lv_obj_has_flag(settings_popup_title,LV_OBJ_FLAG_IGNORE_LAYOUT));
  lv_obj_send_event(shell.active->close,LV_EVENT_RELEASED,nullptr);assert(settings_closed==0&&!lv_obj_has_flag(wifi_entry_view,LV_OBJ_FLAG_HIDDEN));
  lv_obj_send_event(button,LV_EVENT_CLICKED,nullptr);assert(settings_closed==0&&lv_obj_has_flag(wifi_entry_view,LV_OBJ_FLAG_HIDDEN));
  lv_obj_send_event(button,LV_EVENT_CLICKED,nullptr);assert(settings_closed==1&&!shell.active);assert(allocations==2);
+ // The next tile popup after the full-screen Settings card resizes the shared
+ // frame; that must not repaint the tiles outside the new frame (P4 ~100 ms).
+ lv_refr_now(d);outside_draws=0;show(a,"After Settings",true);lv_refr_now(d);process_popup_open();lv_refr_now(d);
+ if(SCREEN_WIDTH>SCREEN_HEIGHT)assert(outside_draws==0&&"A popup after Settings must not repaint tiles outside its frame");
+ lv_obj_update_layout(shell.overlay);assert(lv_obj_get_width(shell.frame)==lv_obj_get_width(a.body));hide_popup_shell(a.body);lv_refr_now(d);
 
+ // A tapped tile under the popup's edge marks itself on release, before its
+ // popup opens. The popup's area is drawn first; drawn first, the tile's area
+ // showed a flat, popup-colored square until the popup reached it (V2 video).
+ {auto*tile=lv_obj_create(lv_screen_active());lv_obj_set_size(tile,160,120);
+  lv_obj_set_pos(tile,(SCREEN_WIDTH+popup_layout::kCardWidth)/2-60,SCREEN_HEIGHT/2);lv_refr_now(d);
+  lv_obj_invalidate(tile);show(a,"Tapped edge tile",true);first_flush_y=-1;lv_refr_now(d);
+  assert(first_flush_y>=0&&first_flush_y<SCREEN_HEIGHT/2&&"The popup is drawn before the tapped tile");
+  process_popup_open();hide_popup_shell(a.body);lv_obj_delete(tile);lv_refr_now(d);}
+ // A cover or icon change recolors that tile first and the open popup follows.
+ // Drawn in marking order, the tile's part under the popup showed a flat
+ // square in the new color until the popup's bands reached it (V2 video).
+ {auto*tile=lv_obj_create(lv_screen_active());lv_obj_set_size(tile,160,120);
+  lv_obj_set_pos(tile,(SCREEN_WIDTH+popup_layout::kCardWidth)/2-60,SCREEN_HEIGHT/2);
+  show(a,"Recolored edge tile",true);process_popup_open();lv_refr_now(d);
+  lv_obj_set_style_bg_color(tile,lv_color_hex(0x3355AA),0);popup_shell_follow_tile_color(0x3355AA);sync_popup_shell();
+  first_flush_y=-1;lv_refr_now(d);
+  assert(first_flush_y>=0&&first_flush_y<SCREEN_HEIGHT/2&&"The recolored popup is drawn before its tile");
+  hide_popup_shell(a.body);lv_obj_delete(tile);lv_refr_now(d);}
  show(a,"Screen replacement");auto*old=lv_screen_active();auto*next=lv_obj_create(nullptr);lv_screen_load(next);lv_obj_delete(old);assert(!shell.overlay&&!PopupFirstFrame::any_pending());assert(lv_obj_is_valid(a.body)&&lv_obj_get_parent(a.body)==a.owner);
  show(a,"Owner deletion");lv_obj_delete(a.owner);assert(!shell.active&&!PopupFirstFrame::any_pending());assert(allocations==1);lv_obj_delete(b.owner);assert(allocations==0);
  lv_deinit();assert(allocations==0&&!PopupFirstFrame::any_pending());std::cout<<"Shared frame identity, header, cache reuse, no redraw on unchanged sync, first-frame gate, close/back/PIN, cancellation, screen/owner deletion and allocation failure passed\n";

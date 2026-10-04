@@ -21,11 +21,10 @@ for (const marker of [
   'inline int diameter() { return row_height() - inset() * 2; }',
   'inline int radius_baseline() { return tile_layout::scale_480(22) - inset(); }',
   'inline int round_diameter() { return diameter() + inset(); }',
-  'inline constexpr lv_opa_t kOpa = icon_glow::kNeutralOpa;',
   'const int size = shape == Shape::Round ? round_diameter() : diameter();',
   'lv_obj_set_size(disc, size, size);',
   'ui_surface_style::apply_radius(disc, radius_baseline(), 0);',
-  'ui_surface_style::apply_icon_disc(disc, false, 3, false, true);',
+  'ui_surface_style::apply_icon_disc(disc, false, true);',
   'lv_obj_t* disc = create(card, Shape::Concentric);',
   'lv_obj_t* disc = create(card, Shape::Round);',
   'lv_obj_move_to_index(disc, lv_obj_get_index(icon));',
@@ -87,13 +86,13 @@ assert.match(addRound, /icon_size\.y, size\)/);
 const styles = read('src/web/server/render/web_admin_styles.cpp');
 for (const marker of [
   'const tile_icon_disc::CornerHeader header = tile_icon_disc::corner_header(',
-  'emit_exact("icon-disc-corner", header.disc);',
+  'emit_scaled("icon-disc-corner", header.disc);',
   'tile_layout::scale_480(24) + tile_layout::scale_480(4) + header.shift);',
-  'emit_exact("tile-header-icon-top", tile_layout::scale_480(24) + header.icon_top);',
-  'emit_exact("tile-header-icon-left", tile_layout::scale_480(20) + header.icon_side);',
+  'emit_scaled("tile-header-icon-top", tile_layout::scale_480(24) + header.icon_top);',
+  'emit_scaled("tile-header-icon-left", tile_layout::scale_480(20) + header.icon_side);',
 ]) assert.ok(styles.includes(marker), `web styles: ${marker}`);
 assert.ok(read('src/web/assets/admin.css').includes(
-  '.tile:is(.scene, .navigate, .camera, .switch:not(.switch-toggle)):not(.empty):not(.sensor-compact) > .tile-icon::after {'),
+  '.tile:is(.scene, .navigate, .camera, .switch:not(.switch-bar)):not(.empty):not(.sensor-compact) > .tile-icon::after {'),
   'Centered preview icons use the corner disc size');
 assert.ok(read('src/web/assets/admin.css').includes('width:var(--icon-disc-corner, var(--icon-disc-round, 30px));'));
 

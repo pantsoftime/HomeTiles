@@ -10,6 +10,7 @@
 #include "src/ui/popups/media/media_popup.h"
 #include "src/ui/popups/climate/climate_popup.h"
 #include "src/ui/popups/cover/cover_popup.h"
+#include "src/ui/popups/device/device_popup.h"
 #include "src/ui/popups/pin/pin_popup.h"
 #include "src/ui/popups/camera/camera_popup.h"
 #include "src/core/display/display_manager.h"
@@ -143,6 +144,7 @@ void UIManager::buildUI(scene_publish_cb_t scene_cb, hotspot_start_cb_t hotspot_
   preload_media_popup();
   preload_climate_popup();
   preload_cover_popup();
+  preload_device_popup();
   preload_pin_popup();
   preload_camera_popup();
 
@@ -422,12 +424,6 @@ void UIManager::switchToFolder(uint16_t folder_id) {
   switchToTab(0);
 }
 
-static String make_unlock_title(const char* format, const String& tile_title) {
-  String result = format ? String(format) : String("%s");
-  result.replace("%s", tile_title);
-  return result;
-}
-
 static constexpr int kSettingsGestureCaptureWidth = popup_layout::scale(56);
 static constexpr int kSettingsGestureThreshold = popup_layout::scale(48);
 
@@ -446,9 +442,11 @@ void UIManager::requestSettingsAccess(const String& title,
   const String source_title =
       title.length() ? title : String(tr.tile_type_settings);
   PinPopupInit init;
-  init.title = make_unlock_title(tr.pin_popup_unlock_format, source_title);
+  // The header shows the protected tile's name and the state "Locked".
+  init.title = source_title;
   init.icon_name = icon_name.length() ? icon_name : String("cog");
   init.bg_color = bg_color;
+  init.lock_mark = true;
   init.verify = verify_pending_access;
   init.success = complete_pending_access;
   init.context = this;
@@ -469,10 +467,11 @@ void UIManager::requestFolderAccess(uint16_t folder_id, const String& title,
   const String source_title =
       title.length() ? title : String(tr.tile_type_folder);
   PinPopupInit init;
-  init.title = make_unlock_title(tr.pin_popup_unlock_format, source_title);
+  init.title = source_title;
   init.icon_name = icon_name.length() ? icon_name : String("folder");
   init.bg_color = bg_color;
   init.icon_color = icon_color;
+  init.lock_mark = true;
   init.hide_on_success = false;
   init.verify = verify_pending_access;
   init.success = complete_pending_access;

@@ -142,8 +142,6 @@
     const spanWInput = document.getElementById(prefix + '_tile_span_w');
     const spanHInput = document.getElementById(prefix + '_tile_span_h');
     const typeSelect = document.getElementById(prefix + '_tile_type');
-    const opacityInput = isScreensaverTileTab(tab)
-      ? document.getElementById('screensaver_tile_opacity') : null;
     const entitySelect = document.getElementById(prefix + '_sensor_entity');
     const binarySensorSelect = document.getElementById(
       prefix + '_binary_sensor_entity');
@@ -163,6 +161,7 @@
       const graphHeightInput = document.getElementById(prefix + '_sensor_graph_height');
       const weatherSelect = document.getElementById(prefix + '_weather_entity');
       const weatherPopupModeSelect = document.getElementById(prefix + '_weather_popup_open_mode');
+      const weatherColoredIconsCheck = document.getElementById(prefix + '_weather_colored_icons');
       const energySelect = document.getElementById(prefix + '_energy_entity');
       const energyUnitInput = document.getElementById(prefix + '_energy_unit');
       const energyDecimalsInput = document.getElementById(prefix + '_energy_decimals');
@@ -213,8 +212,6 @@
     bindLive(document.getElementById(prefix + '_tile_icon_disc'), 'change', 'tileIconDisc', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(document.getElementById(prefix + '_tile_icon_glow'), 'change', 'tileIconGlow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colorInput, 'input', 'tileColor', () => { markTileColorInputExplicit(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
-    bindLive(opacityInput, 'input', 'tileOpacity', () => { updateTilePreview(tab); updateDraft(tab); });
-    bindLive(opacityInput, 'change', 'tileOpacitySave', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colInput, 'input', 'tileCol', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(rowInput, 'input', 'tileRow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(spanWInput, 'input', 'tileSpanW', () => { syncClimateSlotFields(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
@@ -243,10 +240,6 @@
         const nextMeta = getTileTypeMeta(typeSelect.value);
         setTileColorInputFromStored(
           tab, 0, nextMeta.defaultBg || '#2A2A2A');
-      }
-      if (isScreensaverTileTab(tab) && previousType === 0 &&
-          nextType !== 0 && opacityInput) {
-        opacityInput.value = String(SCREENSAVER_TILE_DEFAULT_OPACITY);
       }
       updateTileType(tab);
       // New tiles start in the HomeTiles look: a type with icon colors tints
@@ -296,12 +289,14 @@
       scheduleAutoSave(tab);
     });
     bindLive(document.getElementById(prefix + '_binary_sensor_value_font'), 'change', 'binarySensorValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(document.getElementById(prefix + '_switch_value_font'), 'change', 'switchValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(binarySensorPopupModeSelect, 'change', 'binarySensorPopupMode', () => {
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
     bindLive(weatherSelect, 'change', 'weatherEntity', () => { maybeFillTitleFromWeather(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(weatherPopupModeSelect, 'change', 'weatherPopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(weatherColoredIconsCheck, 'change', 'weatherColoredIcons', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(energySelect, 'change', 'energyEntity', () => {
       energySelect.dataset.configuredValue = energySelect.value || '';
       maybeFillTitleFromEnergy(tab);
@@ -364,6 +359,12 @@
       scheduleAutoSave(tab);
     });
     bindLive(climatePopupModeSelect, 'change', 'climatePopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    // Layout "with value" drops the current temperature from the automatic
+    // mini fields (climateAutomaticEditorKinds).
+    bindLive(document.getElementById(prefix + '_climate_view'), 'change', 'climateView', () => {
+      syncClimateSlotFields(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+    });
+    bindLive(document.getElementById(prefix + '_cover_value_font'), 'change', 'coverValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(coverSelect, 'change', 'coverEntity', () => {
       if (coverSelect.value) {
         coverSelect.dataset.configuredValue = coverSelect.value;
@@ -379,6 +380,25 @@
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
+    // Lock, Alarm panel and Fan: entity, state size and popup gesture.
+    for (const kind of ['lock', 'alarm', 'fan']) {
+      const select = document.getElementById(prefix + '_' + kind + '_entity');
+      bindLive(document.getElementById(prefix + '_' + kind + '_value_font'), 'change', kind + 'ValueFont', () => {
+        updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+      });
+      bindLive(select, 'change', kind + 'Entity', () => {
+        if (select.value) select.dataset.configuredValue = select.value;
+        else delete select.dataset.configuredValue;
+        maybeFillTitleFromEntity(tab, '_' + kind + '_entity');
+        updateTilePreview(tab);
+        updateDraft(tab);
+        scheduleAutoSave(tab);
+      });
+      bindLive(document.getElementById(prefix + '_' + kind + '_popup_open_mode'), 'change', kind + 'PopupMode', () => {
+        updateDraft(tab);
+        scheduleAutoSave(tab);
+      });
+    }
     bindLive(cameraSelect, 'change', 'cameraEntity', () => {
       if (cameraSelect.value) {
         cameraSelect.dataset.configuredValue = cameraSelect.value;

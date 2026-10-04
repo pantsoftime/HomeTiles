@@ -13,8 +13,15 @@ inline bool sensor(int type) { return type == TILE_SENSOR || type == TILE_BINARY
 inline bool icon_title(int type) {
   return type == TILE_SCENE || type == TILE_FOLDER || type == TILE_BACK || type == TILE_CAMERA || type == TILE_SETTINGS;
 }
+// Number, Select and Date/Time render through the Sensor tile.
+inline bool editable(int type) { return type == TILE_NUMBER || type == TILE_SELECT || type == TILE_DATETIME; }
+// Lock, Alarm panel and Fan: the Switch tile's header with their control bar.
+inline bool device_control(int type) { return type == TILE_LOCK || type == TILE_ALARM || type == TILE_FAN; }
 // Types that may use half-cell sizes (mirrors supportsHalfSize in layout.js).
-inline bool half_size(int type) { return sensor(type) || type == TILE_CLOCK || icon_title(type); }
+inline bool half_size(int type) {
+  return sensor(type) || type == TILE_CLOCK || icon_title(type) || type == TILE_SWITCH || type == TILE_COVER ||
+         type == TILE_CLIMATE || editable(type) || device_control(type);
+}
 inline bool fractional(float value) { return value != std::floor(value); }
 // Every type resizes in half steps from 1x1; only half-size types may be half
 // a row high (mirrors supportedTileLayout in layout.js).
@@ -25,6 +32,31 @@ inline bool supported(int type, float col, float row, float w, float h) {
 }
 inline bool compact(int type, float w, float h) {
   return sensor(type) && w >= 1 && h == 0.5f;
+}
+// A half-height Switch tile: the Sensor compact layout (icon, title, state),
+// without a control bar, for every Switch layout.
+inline bool compact_switch(int type, float w, float h) {
+  return type == TILE_SWITCH && w >= 1 && h == 0.5f;
+}
+// A half-height Cover tile: the Sensor compact layout (icon, title, state
+// and position), without the position bar.
+inline bool compact_cover(int type, float w, float h) {
+  return type == TILE_COVER && w >= 1 && h == 0.5f;
+}
+// A half-height Climate tile: the Sensor compact layout (icon, title,
+// "Cooling · 20.5 °C"), without mini fields; a tap opens the popup.
+inline bool compact_climate(int type, float w, float h) {
+  return type == TILE_CLIMATE && w >= 1 && h == 0.5f;
+}
+// A half-height Lock, Alarm panel or Fan tile: the Sensor compact layout
+// (icon, title, state), without the control bar, like the Switch tile.
+inline bool compact_device_control(int type, float w, float h) {
+  return device_control(type) && w >= 1 && h == 0.5f;
+}
+// A half-height Number, Select or Date/Time tile: the Sensor compact layout
+// (icon, title, value).
+inline bool compact_editable(int type, float w, float h) {
+  return editable(type) && w >= 1 && h == 0.5f;
 }
 inline bool compact_clock(int type, float w, float h) {
   return type == TILE_CLOCK && w >= 1 && h == 0.5f;

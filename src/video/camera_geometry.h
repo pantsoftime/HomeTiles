@@ -6,39 +6,33 @@
 
 namespace camera_geometry {
 
-constexpr uint16_t evenCeil(uint32_t numerator, uint32_t denominator) {
-  const uint32_t rounded = (numerator + denominator - 1U) / denominator;
-  return static_cast<uint16_t>((rounded + 1U) & ~1U);
+// Nearest even value of numerator / denominator.
+constexpr uint16_t evenRound(uint32_t numerator, uint32_t denominator) {
+  return static_cast<uint16_t>(
+      (numerator + denominator) / (2U * denominator) * 2U);
 }
 
-// The camera frame always fills the popup width. A 16:9 height is rounded up
-// to an even value so FFmpeg can produce yuv420 JPEG frames without padding
-// the visible image differently on each display profile.
+// The camera frame fills the popup width, rounded down to a multiple of 8:
+// the ESP32-P4 JPEG decoder rejects frames whose width * height is not
+// divisible by 8 (IDF jpeg_parse_marker.c), which hit the 1024x600 layout
+// (558x314, issue #63). The 16:9 height is the nearest even value so FFmpeg
+// can produce yuv420 frames and the Bridge's 16:9 check (|w*9 - h*16| <= 16)
+// accepts it. 1280x800 752x424, 1280x720 672x378 and 480x480 448x252 are
+// unchanged; 1024x600 is 552x310, centred in its 558 px content width.
 inline constexpr uint16_t kWidth =
-    static_cast<uint16_t>(popup_layout::kContentWidth & ~1);
-inline constexpr uint16_t kHeight = evenCeil(
+    static_cast<uint16_t>(popup_layout::kContentWidth & ~7);
+inline constexpr uint16_t kHeight = evenRound(
     static_cast<uint32_t>(kWidth) * 9U, 16U);
 inline constexpr uint16_t kCornerRadius =
     static_cast<uint16_t>(popup_layout::scale480(18));
-// Target for the bounded low-latency camera path. 24 FPS leaves enough time
-// for JPEG decode plus the synchronized PPA/DSI presentation while MQTT keeps
-// running on the other core.
-// Requested stream rate, sent to the bridge in the camera "open" payload and
-// used to validate its reply. This is the panel asking for what it can
-// actually absorb, not a cap on the source.
-//
-// 24 was more than these panels can present. Measured on a Waveshare 4B
-// watching a PTZ camera: ffmpeg produced 24 fps, the panel acknowledged only
-// 8-12, and the bridge discarded 58-86 frames per five-second interval. Wire
-// rate was ~1 Mbit/s, so the limit is decode and present latency, not network:
-// a single 8 KB chunk took 32-57 ms to acknowledge, spiking past 1000 ms. The
-// bridge's ACK timeout is 5 s, and when the panel's DMA headroom guard aborts
-// a frame mid-transfer the two ends desync and the stream dies with
-// camera_invalid_ack ("Invalid camera response" on the tile).
-//
-// Asking for 15 keeps a margin above the ~10 fps actually presented while
-// removing the frames that were only ever going to be dropped.
-inline constexpr uint8_t kFps = 15;
+// Target for the bounded low-latency camera path. The PPA rotation takes
+// about 17 ms per frame on the 800x1280 panels; since the UI loop no longer
+// waits for the panel refresh after each swap, 30 FPS keeps about the loop
+// share 24 FPS had before.
+inline constexpr uint8_t kFps = 30;
+// Bridges before v0.7.1b9 reject more than 24 FPS; the popup then asks again
+// at this rate.
+inline constexpr uint8_t kFallbackFps = 24;
 
 // ESP32-P4's JPEG hardware decoder writes in 16-pixel-aligned dimensions.
 // LVGL still receives the visible width/height and the aligned row stride.
@@ -49,5 +43,11 @@ static_assert(kWidth >= 320 && kWidth <= 752,
               "Camera popup width is outside the supported P4 range");
 static_assert(kHeight >= 180 && kHeight <= 424,
               "Camera popup height is outside the supported P4 range");
+static_assert((static_cast<uint32_t>(kWidth) * kHeight) % 8U == 0U,
+              "The P4 JPEG decoder needs width * height divisible by 8");
+static_assert(kHeight % 2U == 0U, "yuv420 JPEG frames need an even height");
+static_assert(static_cast<int32_t>(kWidth) * 9 - static_cast<int32_t>(kHeight) * 16 <= 16 &&
+                  static_cast<int32_t>(kHeight) * 16 - static_cast<int32_t>(kWidth) * 9 <= 16,
+              "The Bridge accepts 16:9 frames within 16 of w*9 == h*16");
 
 }  // namespace camera_geometry

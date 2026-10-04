@@ -78,7 +78,7 @@ assert.match(up('setEndpoint'), /strcmp\(g_endpoint\.session, endpoint\.session\
 assert.match(up('runConnection'), /if \(g_generation\.load\(\) != generation\) \{\s*end = ConnectionEnd::Reconnect;/);
 // A snapshot while the stream owns the pipeline (or storage work holds the
 // camera off) is answered as busy.
-assert.match(svc('handleMqttMessage'), /g_capture_busy\.load\(\) \|\|\s*g_stream_running\.load\(\) \|\| g_stream_wanted\.load\(\) \|\|\s*storageHoldActive\(\)\) \{[\s\S]*?code = ErrorCode::Busy;/);
+assert.match(svc('handleCommandPayload'), /g_capture_busy\.load\(\) \|\|\s*g_stream_running\.load\(\) \|\| g_stream_wanted\.load\(\) \|\|\s*storageHoldActive\(\)\) \{[\s\S]*?code = ErrorCode::Busy;/);
 assert.match(svc('streamWait'), /publishErrorReply\(g_pending\.id, ErrorCode::Busy\);/);
 
 // --- Mode changes reconnect within the same session -----------------------------------
@@ -191,7 +191,7 @@ assert.match(svc('applyGainLimit'), /if \(g_exposure\.gain_x16 > limits\.sensor_
 assert.match(svc('captureJpeg'), /stages\.max_total_gain_x16 = kMode\.max_total_gain_x16;\s*applyGainLimit\(stages\);/);
 assert.match(svc('applyStreamSettings'), /run\.stages\.max_total_gain_x16 = kMode\.max_total_gain_x16;\s*applyGainLimit\(run\.stages\);/);
 assert.match(svc('streamAutoTune'), /run\.last_tune_ms = now_ms;\s*\/\/[^\n]*\n\s*applyGainLimit\(run\.stages\);/);
-assert.match(svc('stepDigitalGain'), /sensor_at_brighter_limit, g_max_digital_step\);/);
+assert.match(svc('stepDigitalGain'), /sensor_at_brighter_limit, g_max_digital_step, max_jump\);/);
 assert.match(service, /if \(g_digital_step > currentGainLimits\(\)\.max_digital_step\) \{\s*g_digital_step = currentGainLimits\(\)\.max_digital_step;\s*\}\s*err = loadGammaCurve\(image\.contrast, g_digital_step\);/,
   'A new pipeline starts inside the limit');
 assert.match(run, /if \(run\.pacer\.consume\(now_us\)\) \+\+run\.window\.late;/);

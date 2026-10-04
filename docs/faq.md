@@ -31,6 +31,15 @@ The hotspot password is `12345678`, also shown with a QR code. It switches off a
 
 The display keeps running and reconnects automatically when the broker returns. Entity states resync after reconnection.
 
+<a id="states-arrive-but-commands-or-updates-fail"></a>
+
+**States arrive, but commands or updates fail**
+
+New values still appear, but lights do not react, the Web Admin does not load, or an OTA update stops partway. The Wi-Fi connection is stuck, and a restart from the menu may not clear it:
+
+1. Unplug the display for 10 seconds, then power it on again.
+2. If that does not help, restart the Wi-Fi router.
+
 ## Tiles & camera
 
 <a id="the-camera-tile-asks-for-a-newer-bridge-or-never-shows-video"></a>
@@ -57,6 +66,12 @@ Save the assignment in the panel's **I/O** tab. It should become selectable by t
 Configure Home Assistant's Energy Dashboard and enable the matching electricity, gas, or water category in the [Bridge options](bridge.md#energy-dashboard).
 
 ## Display behavior
+
+<a id="forgot-the-settings-or-folder-pin"></a>
+
+**Forgot the Settings or folder PIN**
+
+Enter the factory PIN **466384537** (HOMETILES on a phone keypad). It unlocks Settings and every protected folder; then change the PIN in the Web Admin. See [Settings access](web-admin.md#settings-tile-and-access).
 
 <a id="the-esp32-s3-screen-briefly-goes-black-while-saving"></a>
 

@@ -175,6 +175,11 @@ struct ClimateTileWidgets {
   // is the whole content -- larger climate tiles fill that space with mini
   // slots.
   lv_obj_t* caption_label = nullptr;
+  // Layout "with value" and half height: "Cooling · 20.5 °C" beside the disc
+  // (tile_header.h), its largest font (null at half height) and width.
+  lv_obj_t* state_label = nullptr;
+  const lv_font_t* state_font = nullptr;
+  int16_t state_width = 0;
   static constexpr uint8_t kMaxSlots = 6;
   lv_obj_t* slot_roots[kMaxSlots] = {};
   uint8_t slot_kinds[kMaxSlots] = {};

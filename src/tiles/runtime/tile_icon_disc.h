@@ -4,6 +4,7 @@
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/core/config/icon_glow.h"
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/ui/shared/tone_color.h"
 
 // One translucent disc behind every tile icon. Half-height tiles hold the icon
 // in a disc that is concentric with the tile corner. Taller tiles keep their
@@ -23,11 +24,11 @@ inline int round_diameter() { return diameter() + inset(); }
 // Tile radius baseline minus the inset keeps the half-height disc concentric
 // with the tile corner; the shared radius style follows global radius changes.
 inline int radius_baseline() { return tile_layout::scale_480(22) - inset(); }
-inline constexpr lv_opa_t kOpa = icon_glow::kNeutralOpa;
-// With glow, a colored icon tints its disc with its hue over the tile (a color
-// between icon and tile). The global Glow setting (icon_glow.h) sets the
-// strength of every disc: the glowing hue and the white disc of other icons. The tile border takes only
-// a hint of the icon hue (ui_surface_style::set_tile_border_tint).
+// With glow, a colored icon tints its disc with its hue (tone_color.h: a
+// fixed lightness step above the tile); the global Circle strength
+// (icon_glow.h) sets the step of every disc, glowing and white. The tile
+// border takes only a hint of the icon hue
+// (ui_surface_style::set_tile_border_tint).
 // MDI icon fonts give every glyph this glyph's advance width.
 inline constexpr uint32_t kMdiReferenceGlyph = 0xF0001;
 
@@ -56,6 +57,21 @@ inline uintptr_t tag_index(lv_obj_t* disc) {
 inline Mode mode_of(lv_obj_t* disc) { return static_cast<Mode>(tag_index(disc) / 2); }
 inline bool glow_of(lv_obj_t* disc) { return (tag_index(disc) % 2) != 0; }
 
+// Tile controls carry one of these addresses as user data, and
+// tile_icon_source::refresh_controls gives them the popup control fill:
+// [0] a press fill (Media previous and next, Climate - and +), [1] a resting
+// surface (the Climate target pill). Their owner keeps deciding with a local
+// opacity where a control shows no fill.
+inline constexpr char kControlTags[2] = {};
+inline void mark_control(lv_obj_t* btn) {
+  if (btn) lv_obj_set_user_data(btn, const_cast<char*>(&kControlTags[0]));
+}
+inline void mark_surface(lv_obj_t* obj) {
+  if (obj) lv_obj_set_user_data(obj, const_cast<char*>(&kControlTags[1]));
+}
+inline bool is_control(lv_obj_t* obj) { return obj && lv_obj_get_user_data(obj) == &kControlTags[0]; }
+inline bool is_surface(lv_obj_t* obj) { return obj && lv_obj_get_user_data(obj) == &kControlTags[1]; }
+
 inline void set_tag(lv_obj_t* disc, Mode mode, bool glow) {
   lv_obj_set_user_data(
       disc, const_cast<char*>(&kTags[static_cast<uint8_t>(mode) * 2 + (glow ? 1 : 0)]));
@@ -70,33 +86,122 @@ inline bool icon_color_tints(uint32_t rgb) {
   return r != g || g != b;
 }
 
-// Discs are subtler on dark tiles: the same step from tile to disc reads much
-// stronger on near-black. The opacity scales from 8 % (tile luma <= 0.08) to
-// the full value (luma >= 0.25) in four steps, so only a few shared opacity
-// styles exist. The Web Admin preview (iconDiscContrastStep) and the popup
-// header (popup_layout::headerDiscContrastStep) use the same rule.
-inline uint8_t contrast_step_for(uint32_t rgb) {
-  const float luma = (0.2126f * ((rgb >> 16) & 0xFF) + 0.7152f * ((rgb >> 8) & 0xFF) +
-                      0.0722f * (rgb & 0xFF)) / 255.0f;
-  float t = (luma - 0.08f) / 0.17f;
-  if (t < 0.0f) t = 0.0f;
-  if (t > 1.0f) t = 1.0f;
-  return static_cast<uint8_t>(t * 3.0f + 0.5f);
+// A card's color at rest (`pressed` false) or pressed: the colors the
+// renderers and tints set for those states (not a running transition), else
+// its current color.
+inline uint32_t card_state_color(lv_obj_t* card, bool pressed) {
+  if (!card) return 0x000000;
+  lv_style_value_t value;
+  if (lv_obj_get_local_style_prop(card, LV_STYLE_BG_COLOR, &value, LV_PART_MAIN | LV_STATE_DEFAULT) ==
+      LV_STYLE_RES_FOUND) {
+    lv_style_value_t down;
+    if (pressed && lv_obj_get_local_style_prop(card, LV_STYLE_BG_COLOR, &down, LV_PART_MAIN | LV_STATE_PRESSED) ==
+                       LV_STYLE_RES_FOUND) {
+      return lv_color_to_u32(down.color) & 0xFFFFFF;
+    }
+    return lv_color_to_u32(value.color) & 0xFFFFFF;
+  }
+  return lv_color_to_u32(lv_obj_get_style_bg_color(card, LV_PART_MAIN)) & 0xFFFFFF;
 }
-// Step 3 keeps `full`; step 0 is 8/15 of it (8 % instead of 15 % for kOpa).
-inline lv_opa_t scaled_opa(lv_opa_t full, uint8_t step) {
-  return static_cast<lv_opa_t>((full * (24 + 7 * step) + 22) / 45);
+
+// A pressed tile fades to its lighter pressed color with the theme's press
+// transition. Circles and resting controls take the card's pressed state
+// (follow_card_state) with the same timing (LV_THEME_DEFAULT_TRANSITION_TIME,
+// back after the theme's 70 ms delay), so they keep their step above the card
+// during the whole fade; an instant recolor ran ahead of the card and flashed.
+inline void fade_with_card(lv_obj_t* obj) {
+  if (!obj) return;
+  static const lv_style_prop_t kProps[] = {LV_STYLE_BG_COLOR, static_cast<lv_style_prop_t>(0)};
+  static lv_style_transition_dsc_t down, back;
+  static bool ready = false;
+  if (!ready) {
+    lv_style_transition_dsc_init(&down, kProps, lv_anim_path_linear, LV_THEME_DEFAULT_TRANSITION_TIME, 0, nullptr);
+    lv_style_transition_dsc_init(&back, kProps, lv_anim_path_linear, LV_THEME_DEFAULT_TRANSITION_TIME, 70, nullptr);
+    ready = true;
+  }
+  lv_style_value_t value;
+  if (lv_obj_get_local_style_prop(obj, LV_STYLE_TRANSITION, &value, LV_PART_MAIN | LV_STATE_PRESSED) !=
+      LV_STYLE_RES_FOUND) {
+    lv_obj_set_style_transition(obj, &back, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_transition(obj, &down, LV_PART_MAIN | LV_STATE_PRESSED);
+  }
 }
-// The nearest opaque background behind the disc (the tile card).
-inline uint8_t contrast_step(lv_obj_t* disc) {
-  lv_obj_t* host = lv_obj_get_parent(disc);
+
+// Sets the resting and pressed fill of a circle or resting control; only a
+// change touches the styles.
+inline void set_fill_colors(lv_obj_t* obj, uint32_t rest, uint32_t pressed) {
+  const lv_style_selector_t selectors[] = {LV_PART_MAIN | LV_STATE_DEFAULT, LV_PART_MAIN | LV_STATE_PRESSED};
+  const uint32_t colors[] = {rest, pressed};
+  for (int i = 0; i < 2; ++i) {
+    lv_style_value_t value;
+    if (lv_obj_get_local_style_prop(obj, LV_STYLE_BG_COLOR, &value, selectors[i]) != LV_STYLE_RES_FOUND ||
+        (lv_color_to_u32(value.color) & 0xFFFFFF) != colors[i]) {
+      lv_obj_set_style_bg_color(obj, lv_color_hex(colors[i]), selectors[i]);
+    }
+  }
+}
+
+// Whether a card lets the background through (screensaver tiles below full
+// Tile opacity): its circles and controls stay a veil (tone_color.h).
+inline bool see_through(lv_obj_t* card) {
+  return !card || lv_obj_get_style_bg_opa(card, LV_PART_MAIN) < LV_OPA_COVER;
+}
+
+// The nearest opaque background behind `obj` (the tile card).
+inline lv_obj_t* card_of(lv_obj_t* obj) {
+  lv_obj_t* host = obj ? lv_obj_get_parent(obj) : nullptr;
   for (int depth = 0; host && depth < 3 &&
        lv_obj_get_style_bg_opa(host, LV_PART_MAIN) < LV_OPA_50; ++depth) {
     host = lv_obj_get_parent(host);
   }
-  if (!host) return 3;
-  return contrast_step_for(lv_color_to_u32(lv_obj_get_style_bg_color(host, LV_PART_MAIN)) &
-                           0xFFFFFF);
+  return host;
+}
+
+// The resting color of the nearest opaque background behind `obj` (the tile
+// card).
+inline uint32_t card_color(lv_obj_t* obj) { return card_state_color(card_of(obj), false); }
+
+// An icon too dark to read on its circle is shown lighter in its own hue
+// (tone_color::readable_icon, measured against the default settings, so the
+// global tile color and the Circle strength never change it). The color it
+// was given stays in these unused
+// state selectors next to the shown one, so every reader gets the given
+// color and a direct write of a new color is recognized.
+inline constexpr lv_style_selector_t kIconGiven = LV_PART_MAIN | LV_STATE_USER_1;
+inline constexpr lv_style_selector_t kIconShown = LV_PART_MAIN | LV_STATE_USER_1 | LV_STATE_USER_2;
+
+// The color the icon was given, before any readability lift.
+inline uint32_t icon_color(lv_obj_t* icon) {
+  if (!icon) return 0xFFFFFF;
+  const lv_color_t text = lv_obj_get_style_text_color(icon, LV_PART_MAIN);
+  lv_style_value_t shown, given;
+  if (lv_obj_get_local_style_prop(icon, LV_STYLE_TEXT_COLOR, &shown, kIconShown) == LV_STYLE_RES_FOUND &&
+      lv_color_eq(shown.color, text) &&
+      lv_obj_get_local_style_prop(icon, LV_STYLE_TEXT_COLOR, &given, kIconGiven) == LV_STYLE_RES_FOUND) {
+    return lv_color_to_u32(given.color) & 0xFFFFFF;
+  }
+  return lv_color_to_u32(text) & 0xFFFFFF;
+}
+
+// Shows `given`, lighter only where it would be hard to read.
+inline void show_readable(lv_obj_t* icon, uint32_t given) {
+  if (!icon) return;
+  const uint32_t shown = tone_color::readable_icon(given);
+  auto store = [icon](lv_style_selector_t selector, uint32_t rgb, bool keep) {
+    lv_style_value_t value;
+    const bool found =
+        lv_obj_get_local_style_prop(icon, LV_STYLE_TEXT_COLOR, &value, selector) == LV_STYLE_RES_FOUND;
+    if (!keep) {
+      if (found) lv_obj_remove_local_style_prop(icon, LV_STYLE_TEXT_COLOR, selector);
+    } else if (!found || (lv_color_to_u32(value.color) & 0xFFFFFF) != rgb) {
+      lv_obj_set_style_text_color(icon, lv_color_hex(rgb), selector);
+    }
+  };
+  store(kIconGiven, given, shown != given);
+  store(kIconShown, shown, shown != given);
+  if ((lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFF) != shown) {
+    lv_obj_set_style_text_color(icon, lv_color_hex(shown), 0);
+  }
 }
 
 // The icon a disc belongs to: its child (half-height) or its next sibling.
@@ -111,24 +216,112 @@ inline lv_obj_t* icon_of(lv_obj_t* disc) {
 // follows the icon. Stays null in host tests.
 inline void (*g_icon_color_hook)(lv_obj_t* disc) = nullptr;
 
-// Color and opacity of a disc from its mode, glow option and the icon's
-// current color. Global discs follow the global option through the shared
-// style, On discs always show, Off discs stay transparent.
+// tile_icon_source keeps a card's tile color "From icon" strength (BG_OPA)
+// in this unused selector, and "From cover" (Media) its permission (BG_OPA)
+// and the cover color (BG_COLOR) in the next.
+inline constexpr lv_style_selector_t kCardTintStore = LV_PART_MAIN | LV_STATE_USER_4;
+inline constexpr lv_style_selector_t kCardCoverStore = LV_PART_MAIN | LV_STATE_USER_3;
+
+// Whether a card shows the tile color "From icon" (or "From cover"): it then
+// already is the card its circle belongs to.
+inline bool card_follows_icon(lv_obj_t* card) {
+  for (int depth = 0; card && depth < 3; ++depth, card = lv_obj_get_parent(card)) {
+    lv_style_value_t value;
+    if (lv_obj_get_local_style_prop(card, LV_STYLE_BG_OPA, &value, kCardTintStore) == LV_STYLE_RES_FOUND) {
+      return value.num > 0;
+    }
+    lv_style_value_t cover;
+    if (lv_obj_get_local_style_prop(card, LV_STYLE_BG_OPA, &value, kCardCoverStore) == LV_STYLE_RES_FOUND &&
+        value.num > 0 &&
+        lv_obj_get_local_style_prop(card, LV_STYLE_BG_COLOR, &cover, kCardCoverStore) == LV_STYLE_RES_FOUND &&
+        icon_color_tints(lv_color_to_u32(cover.color) & 0xFFFFFF)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// "Circle in icon color" always shows the circle of the tile color "From
+// icon" (user 2026-10-01): card, circle and icon stay one family of colors.
+// On a card in its own Global or Custom color the circle is computed for the
+// card "From icon" would give instead of mixing the icon's hue into that
+// card's lightness; a card that follows the icon already is that card.
+// Untinted circles (white, grey, black icons, option off) and see-through
+// screensaver tiles keep their own card.
+inline uint32_t circle_card(lv_obj_t* host, uint32_t card, uint32_t rgb, bool tinted, bool pressed,
+                            bool see_through_card) {
+  if (!tinted || see_through_card || !tone_color::g_from_icon_card || card_follows_icon(host)) return card;
+  return tone_color::g_from_icon_card(rgb, pressed, 0);
+}
+
+// The fill of a disc for the card behind it (at rest or pressed) and its
+// icon's color (tone_color::fill, circle_card); `card` and
+// `see_through_card` report that card.
+inline tone_color::Fill disc_fill(lv_obj_t* disc, bool pressed, uint32_t& card, bool& see_through_card) {
+  lv_obj_t* icon = icon_of(disc);
+  const uint32_t rgb = icon ? icon_color(icon) : 0xFFFFFF;
+  const bool tinted = glow_of(disc) && icon_color_tints(rgb);
+  lv_obj_t* host = card_of(disc);
+  card = card_state_color(host, pressed);
+  see_through_card = see_through(host);
+  return tone_color::fill(circle_card(host, card, rgb, tinted, pressed, see_through_card), rgb, tinted,
+                          ui_surface_style::icon_glow_percent(), see_through_card);
+}
+
+// Color and opacity of a disc from its mode, glow option, the card (at rest
+// and pressed) and the icon's color (tone_color::fill). Global discs follow
+// the global option through the shared style, On discs always show, Off
+// discs stay transparent. The icon is shown readable (show_readable).
 inline void apply_fill(lv_obj_t* disc) {
   if (!is_disc(disc)) return;
   const Mode mode = mode_of(disc);
   lv_obj_t* icon = icon_of(disc);
-  const uint32_t rgb =
-      icon ? lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFF
-           : 0xFFFFFF;
-  const bool tinted = glow_of(disc) && icon_color_tints(rgb);
-  const lv_color_t color = tinted ? lv_color_hex(rgb) : lv_color_white();
-  if (!lv_color_eq(lv_obj_get_style_bg_color(disc, LV_PART_MAIN), color)) {
-    lv_obj_set_style_bg_color(disc, color, 0);
-  }
-  const uint8_t step = contrast_step(disc);
-  ui_surface_style::apply_icon_disc(disc, tinted, step, mode == Mode::Off, mode == Mode::Global);
+  const uint32_t rgb = icon ? icon_color(icon) : 0xFFFFFF;
+  uint32_t card = 0, card_pressed = 0;
+  bool see_through_card = false;
+  const tone_color::Fill fill = disc_fill(disc, false, card, see_through_card);
+  const tone_color::Fill pressed = disc_fill(disc, true, card_pressed, see_through_card);
+  set_fill_colors(disc, fill.disc_color, pressed.disc_color);
+  ui_surface_style::apply_icon_disc(disc, mode == Mode::Off, mode == Mode::Global, see_through_card);
+  show_readable(icon, rgb);
   if (g_icon_color_hook) g_icon_color_hook(disc);
+}
+
+// The card's pressed state reaches its discs (fade_with_card) and, through
+// g_card_state_hook (tile_icon_source), its resting controls. Only fills
+// change with it; the icon inside a half-height disc keeps its color.
+inline void (*g_card_state_hook)(lv_obj_t* card) = nullptr;
+
+inline void follow_card_state(lv_event_t* event) {
+  lv_obj_t* card = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
+  if (!card) return;
+  const bool pressed = lv_obj_has_state(card, LV_STATE_PRESSED);
+  const uint32_t count = lv_obj_get_child_count(card);
+  for (uint32_t i = 0; i < count; ++i) {
+    lv_obj_t* child = lv_obj_get_child(card, static_cast<int32_t>(i));
+    if (is_disc(child) && lv_obj_has_state(child, LV_STATE_PRESSED) != pressed) {
+      lv_obj_set_state(child, LV_STATE_PRESSED, pressed);
+    }
+  }
+  if (g_card_state_hook) g_card_state_hook(card);
+}
+
+// Refills the discs of a card whose background changed outside the color
+// paths (screensaver tiles take their Tile opacity after rendering).
+inline void refresh_fills(lv_obj_t* card) {
+  const uint32_t count = card ? lv_obj_get_child_count(card) : 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    lv_obj_t* child = lv_obj_get_child(card, static_cast<int32_t>(i));
+    if (is_disc(child)) apply_fill(child);
+  }
+}
+
+inline void follow_card_states(lv_obj_t* card) {
+  const uint32_t count = lv_obj_get_event_count(card);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (lv_event_dsc_get_cb(lv_obj_get_event_dsc(card, i)) == follow_card_state) return;
+  }
+  lv_obj_add_event_cb(card, follow_card_state, LV_EVENT_STATE_CHANGED, nullptr);
 }
 
 // A wrapped icon's disc is its parent; a round disc sits directly behind it.
@@ -175,7 +368,7 @@ inline void force_icon_color(lv_obj_t* icon, lv_color_t color) {
   if (!icon) return;
   lv_color_t forced;
   if (!forced_color(icon, forced)) {
-    lv_obj_set_style_text_color(icon, lv_obj_get_style_text_color(icon, LV_PART_MAIN), kIconRequested);
+    lv_obj_set_style_text_color(icon, lv_color_hex(icon_color(icon)), kIconRequested);
   } else if (lv_color_eq(forced, color)) {
     return;
   }
@@ -221,7 +414,8 @@ inline lv_obj_t* create(lv_obj_t* card, Shape shape) {
   ui_surface_style::apply_radius(disc, radius_baseline(), 0);
   lv_obj_set_style_bg_color(disc, lv_color_white(), 0);
   // New discs follow the global option until the tile's own mode is applied.
-  ui_surface_style::apply_icon_disc(disc, false, 3, false, true);
+  ui_surface_style::apply_icon_disc(disc, false, true);
+  fade_with_card(disc);
   return disc;
 }
 
@@ -236,16 +430,17 @@ inline void apply_tile_options(lv_obj_t* card, uint8_t mode, bool glow) {
   for (uint32_t i = 0; i < count; ++i) {
     lv_obj_t* child = lv_obj_get_child(card, static_cast<int32_t>(i));
     if (!is_disc(child)) continue;
+    follow_card_states(card);
     set_tag(child, disc_mode, glow);
     apply_fill(child);
     // The tile border takes a hint of a glowing icon's hue when the tile is
-    // built: mostly the tile, slightly lighter. Icon color changes do not
-    // touch it: a border change redraws the whole tile and any popup above
-    // it, which made a dragged Light color or Kelvin value stutter.
+    // built, only on a card in the tile color "From icon": a Global or
+    // Custom card keeps the neutral hairline (user 2026-10-01). Icon color
+    // changes do not touch it: a border change redraws the whole tile and
+    // any popup above it, which made a dragged Light color stutter.
     lv_obj_t* icon = icon_of(child);
-    const uint32_t rgb =
-        icon ? lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFF : 0xFFFFFF;
-    if (glow && disc_mode != Mode::Off && icon_color_tints(rgb)) {
+    const uint32_t rgb = icon ? icon_color(icon) : 0xFFFFFF;
+    if (glow && disc_mode != Mode::Off && icon_color_tints(rgb) && card_follows_icon(card)) {
       ui_surface_style::set_tile_border_tint(card, lv_color_hex(rgb));
     } else {
       ui_surface_style::clear_tile_border_tint(card);
@@ -347,7 +542,9 @@ inline lv_obj_t* add_round(lv_obj_t* card, lv_obj_t* icon) {
   // The icon label sizes to its content: one glyph wide, one line high.
   const lv_font_t* font = lv_obj_get_style_text_font(icon, LV_PART_MAIN);
   lv_point_t icon_size{};
-  lv_text_get_size(&icon_size, lv_label_get_text(icon), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  // Colored weather icons carry recolor commands that take no space.
+  lv_text_get_size(&icon_size, lv_label_get_text(icon), font, 0, 0, LV_COORD_MAX,
+                   lv_label_get_recolor(icon) ? LV_TEXT_FLAG_RECOLOR : LV_TEXT_FLAG_NONE);
   if (icon_size.x <= 0) icon_size.x = lv_font_get_glyph_width(font, kMdiReferenceGlyph, 0);
   icon_size.y = lv_font_get_line_height(font);
   lv_obj_t* disc = create(card, Shape::Round);

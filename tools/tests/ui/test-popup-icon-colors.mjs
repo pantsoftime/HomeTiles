@@ -46,8 +46,8 @@ assert.ok(camera.includes('lv_obj_t* icon = tile_icon_source::card_icon(static_c
 assert.ok(read('src/ui/popups/camera/camera_popup.cpp').includes('lv_obj_set_style_text_color(g_camera_popup->icon_label, lv_color_hex(init.icon_color), 0);'));
 // A protected Folder's PIN popup shows the icon in the tile's current color.
 const pin = read('src/ui/popups/pin/pin_popup.cpp');
-assert.ok(pin.includes('lv_obj_set_style_text_color(g_ctx->icon_label, lv_color_hex(init.icon_color), 0);') &&
-  pin.includes('lv_obj_set_style_text_color(parts.icon, lv_color_hex(init.icon_color), 0);'),
+assert.ok(pin.includes('lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(init.icon_color), 0);') &&
+  (pin.match(/apply_header\((?:g_)?ctx, init\);/g) || []).length === 2,
   'PIN popup icon color on first build and on reuse');
 assert.ok(read('src/ui/ui_manager.cpp').includes('init.icon_color = icon_color;'));
 const navigateSource = read('src/types/navigate/renderer.cpp');
@@ -89,6 +89,7 @@ for (const file of ['src/types/media/renderer.cpp', 'src/tiles/runtime/tile_rend
 }
 assert.equal((read('src/ui/popups/media/media_popup.cpp').match(/lv_obj_set_style_text_color\(ctx->icon_label, lv_color_hex\(init\.icon_color\), 0\);/g) || []).length, 2,
   'Media applies the icon color on update and on opening');
-// The shell follows the body icon color every sync, so disc and border follow.
-assert.match(read('src/ui/popups/popup_shell.cpp'), /copy_label\(shell\.icon, shell\.active->icon, false\);\s*apply_header_disc_tint\(shell\.icon_disc, shell\.icon\);/);
+// The shell follows the body icon color every sync, so the disc follows and
+// the header icon shows that color readable on it.
+assert.match(read('src/ui/popups/popup_shell.cpp'), /copy_label\(shell\.icon, shell\.active->icon, false, nullptr, false\);\s*apply_header_disc_tint\(shell\.icon_disc, shell\.icon, shell\.active->icon\);/);
 console.log('Popup header icons follow the tile icon colors');

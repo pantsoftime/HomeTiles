@@ -33,7 +33,7 @@ Open **Settings → Devices & Services → HomeTiles Bridge → Configure**.
 
 ### Entity Configuration { data-toc-label="Entities" }
 
-Select the sensors, binary sensors, numbers, selects, date/time entities, weather, lights, switchable entities, covers, climate entities, media players, cameras, and scenes/scripts/buttons you want to use. Then assign them to tiles in the [Web Admin](web-admin.md).
+Select the sensors, binary sensors, numbers, selects, date/time entities, weather, lights, switchable entities, covers, fans, locks, alarm panels, climate entities, media players, cameras, and scenes/scripts/buttons you want to use. Then assign them to tiles in the [Web Admin](web-admin.md).
 
 Selections are shared across all displays. Action aliases are generated automatically and remain stable when selections are reordered; custom aliases use one `alias=entity_id` per line.
 
@@ -45,7 +45,9 @@ Older display configurations, entity selections, aliases, and MQTT topic names r
 
 **Numbers** accepts `number` and `input_number`; **Selects** accepts `select` and `input_select`; **Date/Time** accepts `time`, `date`, `datetime`, and `input_datetime`. Use their dedicated [editable tile types](tiles.md#number). State, writable limits, options, availability, and history come from Home Assistant. Recorder exclusions also apply to these history views.
 
-Bridge v0.7.0 remains compatible with older firmware and existing configurations. New features require the corresponding firmware; no reset or re-pairing is needed for a normal update.
+**Fans**, **Locks**, and **Alarm panels** feed the [Fan](tiles.md#fan), [Lock](tiles.md#lock), and [Alarm Panel](tiles.md#alarm-panel) tiles (Bridge v0.8.0). Locks and alarm panels can only be operated from a display with [encrypted commands](#encrypted-commands) and a Web Admin password. **Codes for locks and alarm panels** lets the Bridge check the codes of devices that ignore a wrong code; **Allow opening without a code** is only for devices without their own code. Fans also remain selectable as switchable entities.
+
+Bridge v0.8.0 remains compatible with older firmware and existing configurations. New features require the corresponding firmware; no reset or re-pairing is needed for a normal update.
 
 ## Control the Displayed View
 
@@ -78,6 +80,16 @@ Commands to offline displays or missing targets are rejected. Status updates do 
 
 Enable the electricity, gas, or water categories you need. Each requires the corresponding data in Home Assistant's [Energy Dashboard](https://my.home-assistant.io/redirect/energy/). These selections are also shared across displays.
 
+### Encrypted Commands { #encrypted-commands data-toc-label="Encryption" }
+
+Optional. Anyone who can publish on your MQTT broker could otherwise send commands in the display's name. With encryption, the Bridge runs only commands that the paired display encrypted and signed, each at most once, and camera stream tokens travel encrypted as well. Entity states, weather, history and camera images stay unencrypted.
+
+1. On the display, open **Settings → System → Security** and tap **Encrypt**.
+2. The display and Home Assistant show the same six-digit number. Confirm only if both numbers match, on the display and in Home Assistant.
+3. The shield turns green: commands are encrypted. The display stays the same Home Assistant device; nothing is added.
+
+To switch encryption off, tap **Turn off** on the display or use **Security** in the Bridge options; the other side follows. A display that was never paired, and older firmware or Bridge versions, keep working unencrypted; with an older Bridge the display asks for a Bridge update. Protocol details: [command-encryption.md](https://github.com/GalusPeres/HomeTiles/blob/main/docs-dev/command-encryption.md).
+
 ## Local Hardware Entities { data-toc-label="Local I/O" }
 
 Configure GPIO switches, onboard relays, and DS18B20 inputs on the display's [I/O tab](hardware-io.md). The Bridge adds them to that display's Home Assistant device automatically; they do not belong in the shared entity selection.
@@ -108,7 +120,7 @@ Displays with a camera can share it with Home Assistant. This needs HomeTiles v0
 | Waveshare ESP32-P4 7B, 4.3-inch, 4B | Optional OV5647 module on the CSI connector |
 | M5Stack Tab5 | Built-in SC2356 |
 
-Tested on the Guition JC8012P4A1 V2, Waveshare 8-inch, and M5Stack Tab5; the JC4880P443 camera was contributor-tested. On the other displays, use **Rotation**, **Mirror image**, or **Swap red and blue** under [Advanced](web-admin.md#built-in-camera) if the image appears turned or its colors are swapped.
+Tested on the Guition JC8012P4A1 V2, Waveshare 8-inch, and M5Stack Tab5. On the other displays, use **Rotation**, **Mirror image**, or **Swap red and blue** under [Advanced](web-admin.md#built-in-camera) if the image appears turned or its colors are swapped.
 
 1. In the Web Admin, open **Settings → Built-in camera** and enable **Allow Home Assistant to use the built-in camera**, then press **Save**.
 2. The Bridge adds a **Camera** entity to the display's Home Assistant device, plus a **Camera** switch that pauses it.

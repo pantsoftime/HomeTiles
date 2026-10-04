@@ -360,7 +360,9 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   lv_label_set_text(v, "--");
 
   const bool compact =
-      tile_geometry::compact(tile.type, tile.span_w, tile.span_h) && display_mode == 0;
+      (tile_geometry::compact(tile.type, tile.span_w, tile.span_h) ||
+       tile_geometry::compact_editable(tile.type, tile.span_w, tile.span_h)) &&
+      display_mode == 0;
 
   // Caption label for the small second line. Created up front (empty) whenever
   // the tile could ever show one, because the decision depends on the value,
@@ -383,7 +385,9 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     }
   }
 
-  if (compact) {
+  if ((tile_geometry::compact(tile.type, tile.span_w, tile.span_h) ||
+       tile_geometry::compact_editable(tile.type, tile.span_w, tile.span_h)) &&
+      display_mode == 0) {
     compact_sensor_layout::apply(card, icon_lbl, title_label, v, tile);
   } else {
     tile_icon_disc::add_round(card, icon_lbl);

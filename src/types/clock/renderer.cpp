@@ -14,31 +14,6 @@
 #include <new>
 #include <time.h>
 
-static uint8_t normalize_clock_font_size(uint8_t raw, uint8_t fallback) {
-  switch (raw) {
-    case 20:
-    case 24:
-    case 28:
-    case 32:
-    case 40:
-    case 48:
-    case 56:
-    case 64:
-    case 72:
-    case 80:
-    case 96:
-      return raw;
-    default:
-      return fallback;
-  }
-}
-
-static uint8_t normalize_clock_date_font_size(uint8_t raw,
-                                              uint8_t fallback) {
-  const uint8_t normalized = normalize_clock_font_size(raw, fallback);
-  return normalized > 72 ? 72 : normalized;
-}
-
 static uint8_t layout_clock_font_size(uint8_t size) {
 #if defined(DEVICE_LAYOUT_1024X600)
   switch (size) {
@@ -116,19 +91,24 @@ struct ClockShadowSet {
   lv_coord_t text_height = 0;
   lv_obj_t* labels[kClockShadowCopies] = {};
 
-  void set_text(const char* text) {
-    if (main_label) lv_label_set_text(main_label, text ? text : "");
+  // Returns false for unchanged text. The clock ticks every second but shows
+  // minutes; rewriting the same text redrew it and its nine shadow copies
+  // each second (screensaver b88: 120 ms S3, 265 ms V2 per second).
+  bool set_text(const char* text) {
+    if (!text) text = "";
+    if (main_label && strcmp(lv_label_get_text(main_label), text) == 0) return false;
+    if (main_label) lv_label_set_text(main_label, text);
     for (lv_obj_t* label : labels) {
-      if (label) lv_label_set_text(label, text ? text : "");
+      if (label) lv_label_set_text(label, text);
     }
-    if (!line || !font) return;
+    if (!line || !font) return true;
 
     lv_point_t text_size{};
     lv_text_get_size(&text_size, text ? text : "", font, 0, 0,
                      LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     text_width = text_size.x > 0 ? text_size.x : 1;
     text_height = text_size.y > 0 ? text_size.y : font->line_height;
-    if (fill_parent) return;
+    if (fill_parent) return true;
 
     // Reset to the actual text width before recalculating, then give both
     // clock lines the width of the longer one.
@@ -139,6 +119,7 @@ struct ClockShadowSet {
         if (label) lv_obj_set_size(label, text_width, text_height);
       }
     }
+    return true;
   }
 
   void set_box_width(lv_coord_t width) {
@@ -197,6 +178,7 @@ static void update_clock_labels(ClockTileData* data) {
   if (!data) return;
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 0)) {
+    bool changed = false;
     if (data->time_label) {
       char buf[16];
       if (data->time_format == clock_tile::TIME_FORMAT_12H) {
@@ -206,7 +188,7 @@ static void update_clock_labels(ClockTileData* data) {
       } else {
         snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
       }
-      data->time_shadows.set_text(buf);
+      changed |= data->time_shadows.set_text(buf);
     }
     if (data->date_label) {
       char date_buf[16] = "";
@@ -243,9 +225,9 @@ static void update_clock_labels(ClockTileData* data) {
       } else {
         snprintf(buf, sizeof(buf), "%s", weekday[0] ? weekday : date_buf);
       }
-      data->date_shadows.set_text(buf);
+      changed |= data->date_shadows.set_text(buf);
     }
-    apply_clock_line_alignment(data);
+    if (changed) apply_clock_line_alignment(data);
   }
 }
 
@@ -265,8 +247,8 @@ static lv_obj_t* create_clock_line(lv_obj_t* stack,
                                    uint8_t alignment,
                                    ClockShadowSet* shadow_out) {
   const uint8_t font_size = layout_clock_font_size(
-      date_line ? normalize_clock_date_font_size(raw_font_size, fallback)
-                : normalize_clock_font_size(raw_font_size, fallback));
+      date_line ? clock_tile::normalize_date_font_size(raw_font_size, fallback)
+                : clock_tile::normalize_font_size(raw_font_size, fallback));
   const lv_font_t* font = ui_font_for_size(font_size);
   if (!config.text_shadow) {
     lv_obj_t* label = lv_label_create(stack);
@@ -550,9 +532,9 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   widget_config.show_time = show_time;
   widget_config.show_date = show_date;
   widget_config.fill_parent = true;
-  widget_config.time_font_size = normalize_clock_font_size(tile.key_code, 40);
+  widget_config.time_font_size = clock_tile::normalize_font_size(tile.key_code, 40);
   widget_config.date_font_size =
-      normalize_clock_date_font_size(tile.key_modifier, 20);
+      clock_tile::normalize_date_font_size(tile.key_modifier, 20);
   widget_config.time_format = resolve_clock_time_format(tile);
   widget_config.date_format = resolve_clock_date_format(tile);
   if (compact) {

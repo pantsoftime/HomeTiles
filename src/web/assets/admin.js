@@ -68,6 +68,8 @@ function applyIconDiscsPreview(enabled) {
   document.querySelectorAll('.global-icon-disc-toggle').forEach(input => {
     input.checked = !!enabled;
   });
+  // A dark icon is lifted against its circle or, without one, the tile.
+  document.querySelectorAll('.tile').forEach(tile => applyIconDiscTint(tile));
 }
 async function saveIconDiscs(enabled) {
   const wanted = !!enabled;
@@ -145,6 +147,9 @@ function previewDefaultTileColor(value) {
   document.documentElement.style.setProperty('--tile-default-bg', color);
   Object.values(typeof TILE_TYPE_REGISTRY === 'object' ? TILE_TYPE_REGISTRY : {})
     .forEach(meta => { if (meta && meta.sharedBg) meta.defaultBg = color; });
+  // Circles are opaque steps above their tile (tone_color.h): recompute them
+  // for the new background.
+  if (typeof applyIconDiscTint === 'function') document.querySelectorAll('.tile').forEach(tile => applyIconDiscTint(tile));
   document.querySelectorAll('.global-tile-color').forEach(input => { input.value = color; });
   // Open editors of tiles without their own color show the new default.
   document.querySelectorAll('input[type="color"][id$="_tile_color"]').forEach(input => {
@@ -213,7 +218,9 @@ function previewTileRadius(value) {
     tileRadiusConfirmed = Number(getComputedStyle(root).getPropertyValue('--tile-radius-device'));
   }
   const scale = Number(getComputedStyle(root).getPropertyValue('--radius-preview-scale'));
-  root.style.setProperty('--tile-radius', Math.max(1, Math.round(radius * scale)) + 'px');
+  // Unrounded like the server's --tile-radius: the corner disc is concentric
+  // with the card corner only at the exact device radius.
+  root.style.setProperty('--tile-radius', (radius * scale).toFixed(2) + 'px');
   root.style.setProperty('--tile-radius-device', String(radius));
   document.querySelectorAll('.global-tile-radius').forEach(control => { control.value = radius; });
   document.querySelectorAll('.global-tile-radius-value').forEach(output => { output.textContent = radius; });
@@ -278,10 +285,12 @@ function syncTileRadiusControls(tabEl) {
       button.removeAttribute('aria-current');
     });
     const active = buttons.find(button => button.dataset.tabTarget === tabName);
-    if (!active) return;
-    active.classList.add('active');
-    active.setAttribute('aria-current', 'page');
+    if (active) {
+      active.classList.add('active');
+      active.setAttribute('aria-current', 'page');
+    }
   }
+
 
   async function switchTab(tabName) {
     const sequence = ++tabSwitchSequence;
@@ -367,38 +376,15 @@ function syncTileRadiusControls(tabEl) {
     }
   }
 
-  // Caps the tile settings panel at exactly the space below header and tabs so
-  // that it scrolls internally instead of stretching the page.
+  // The Tile settings panel takes the height of the tile editor row, which
+  // fills the card on wide windows (admin.css); narrow windows stack it below
+  // the grid. Only an inline cap from an earlier layout is cleared here.
   function updateTileSettingsMaxHeight() {
-    document.querySelectorAll('.tile-settings').forEach(panel => {
-      panel.style.maxHeight = '';
-      if (window.innerWidth <= 1180) return;
-      const tab = panel.closest('.tab-content');
-      if (!tab || !tab.classList.contains('active')) return;
-      const top = panel.getBoundingClientRect().top + window.scrollY;
-      // Only card padding and wrapper spacing sit below the panel. Read those
-      // from the styles instead of measuring scrollHeight: on large windows
-      // scrollHeight is at least the viewport height and would cap the panel
-      // far too small.
-      let below = 24;
-      const card = panel.closest('.card');
-      if (card) {
-        const ccs = getComputedStyle(card);
-        below = (parseFloat(ccs.paddingBottom) || 0) + (parseFloat(ccs.borderBottomWidth) || 0);
-        const wrapper = card.parentElement;
-        if (wrapper) {
-          const wcs = getComputedStyle(wrapper);
-          below += (parseFloat(wcs.paddingBottom) || 0) + (parseFloat(wcs.marginBottom) || 0);
-        }
-      }
-      const h = window.innerHeight - top - below;
-      if (h > 240) panel.style.maxHeight = h + 'px';
-    });
+    document.querySelectorAll('.tile-settings').forEach(panel => { panel.style.maxHeight = ''; });
   }
-  // Resize fires many times per second while a window is dragged, and both
-  // handlers below are expensive: one forces a layout and reads computed styles
-  // per panel, the other re-renders the whole screensaver editor. Coalescing to
-  // one call per frame keeps that work off every single event.
+  // Resize fires many times per second while a window is dragged, and the
+  // screensaver handler below re-renders the whole screensaver editor.
+  // Coalescing to one call per frame keeps that work off every single event.
   function perFrame(callback) {
     let frame = 0;
     return () => {
@@ -494,7 +480,10 @@ function syncTileRadiusControls(tabEl) {
 
   let settingsAccessSaveQueue = Promise.resolve();
   let settingsAccessCommittedState = null;
-  let settingsTileTransferInFlight = false;
+  // Settings moves between grid and parking slot still being saved, and the
+  // number of the latest one (hideSettingsTileFromGrid).
+  let settingsTileTransfersInFlight = 0;
+  let settingsTileTransferSeq = 0;
 
   function readSettingsAccessState() {
     const pinToggle = settingsAccessElement('settings_pin_enabled');
@@ -611,10 +600,14 @@ function syncTileRadiusControls(tabEl) {
       ? tileBackgroundCss(getTileTypeMeta('7'), true,
           getTileTypeMeta('7').defaultBg || '#2A2A2A')
       : snapshot.color;
-    const iconName = normalizeMdiIconName(snapshot.icon);
+    // The Settings PIN shows its lock here too (previewTileLocked); without
+    // an icon the lock is the icon.
+    const locked = typeof previewTileLocked === 'function' && previewTileLocked('7', tile);
+    const iconName = normalizeMdiIconName(snapshot.icon) || (locked ? 'lock' : '');
     if (iconName) {
       const icon = document.createElement('i');
       icon.className = 'mdi mdi-' + iconName + ' tile-icon';
+      if (locked && iconName !== 'lock') icon.innerHTML = PREVIEW_LOCK_MARK;
       tile.appendChild(icon);
     }
     if (snapshot.title) {
@@ -627,6 +620,57 @@ function syncTileRadiusControls(tabEl) {
         currentTileTab === 'folder0') {
       tile.classList.add('active');
     }
+  }
+
+  // The Settings tile shows a lock while the Settings PIN is on
+  // (previewTileLocked): redraw it, in the grid or parked, once the PIN is
+  // set or cleared.
+  function refreshSettingsTileLock() {
+    const editing = currentTileTab === 'folder0' &&
+      (currentTileIndex === HIDDEN_SETTINGS_TILE_INDEX ||
+       document.getElementById('folder0-tile-' + currentTileIndex)?.dataset.type === '7');
+    if (editing && typeof updateTilePreview === 'function') {
+      updateTilePreview('folder0');
+    } else if (document.getElementById('settingsHiddenTile')?.dataset.hidden === '1') {
+      renderSettingsHiddenSlot(true);
+    } else {
+      const tiles = getTilesData('folder0');
+      const index = tiles.findIndex(item => Number(item?.type || 0) === 7);
+      if (index >= 0) renderTileFromData('folder0', index, tiles[index], sensorMetaCache);
+    }
+  }
+
+  // Shows a Settings move between the grid and the parking slot at once,
+  // before the device has saved it (user 2026-10-02: the tile jumped back,
+  // its teal selection lagged and it took long to move). The grid data, the
+  // selection and the editor follow at once, so the tile can be moved again
+  // right away; the reload after the save (reconcileSettingsTileUi) draws the
+  // stored state, and a failed save draws it back. Restoring takes the first
+  // empty index like TileConfig::ensureSettingsTile.
+  // Returns the slot it showed the tile in, -1 when parked or not shown.
+  function previewSettingsTileTransfer(hidden, snapshot, target = null) {
+    const tiles = getTilesData('folder0');
+    const isSettings = tile => Number(tile?.type || 0) === 7;
+    const index = hidden
+      ? tiles.findIndex(isSettings)
+      : (tiles.some(isSettings) || !target ? -1 : tiles.findIndex(tile => !Number(tile?.type || 0)));
+    if (index < 0) return -1;
+    tiles[index] = hidden ? {type: 0} : {
+      type: 7,
+      title: snapshot.title,
+      icon_name: snapshot.icon,
+      bg_color: snapshot.bg_color,
+      col: target.col,
+      row: target.row,
+      span_w: snapshot.span_w,
+      span_h: snapshot.span_h
+    };
+    renderTileFromData('folder0', index, tiles[index], sensorMetaCache);
+    layoutTiles('folder0', tiles);
+    renderSettingsHiddenSlot(hidden, snapshot);
+    if (hidden) selectHiddenSettingsTile();
+    else selectTile(index, 'folder0');
+    return hidden ? -1 : index;
   }
 
   function currentGridSettingsSnapshot() {
@@ -718,6 +762,7 @@ function syncTileRadiusControls(tabEl) {
       }
     }
 
+    const lockedBefore = pinToggle.dataset.pinConfigured === '1';
     if (pinApply && hasNewPin) pinApply.disabled = true;
     try {
       const response = await fetch('/mqtt', {
@@ -753,6 +798,7 @@ function syncTileRadiusControls(tabEl) {
         setSettingsPinStatus(false);
       }
       toggleSettingsAccessFields();
+      if ((pinToggle.dataset.pinConfigured === '1') !== lockedBefore) refreshSettingsTileLock();
       const savedState = {
         ...requested,
         pinEnabled: persistPinEnabled,
@@ -766,7 +812,8 @@ function syncTileRadiusControls(tabEl) {
                  requested.tileHidden) {
         renderSettingsHiddenSlot(true, tileSnapshot);
       }
-      return true;
+      // The device's answer (truthy): a Settings move reads settings_tile_index.
+      return result;
     } catch (error) {
       if (!hasNewPin &&
           settingsAccessStatesEqual(readSettingsAccessState(), requested)) {
@@ -880,6 +927,73 @@ function syncTileRadiusControls(tabEl) {
       } finally {
         if (submitButton) submitButton.disabled = false;
       }
+    });
+  }
+  // Optional Web Admin password section (Settings tab). The password never
+  // leaves the browser: auth.js derives a PBKDF2-HMAC-SHA256 key and the
+  // panel stores only salt, iteration count and key.
+  function initWebAdminPasswordSettings() {
+    const section = document.getElementById('web_auth_section');
+    const auth = window.HomeTilesAuth;
+    if (!section || !auth) return;
+    const input = document.getElementById('web_auth_password');
+    const repeat = document.getElementById('web_auth_password_repeat');
+    const setButton = document.getElementById('web_auth_set');
+    const removeButton = document.getElementById('web_auth_remove');
+    const logoutButton = document.getElementById('web_auth_logout');
+    const busy = value => {
+      [setButton, removeButton, logoutButton].forEach(button => {
+        if (button) button.disabled = value;
+      });
+    };
+
+    setButton?.addEventListener('click', async () => {
+      const password = String(input?.value || '');
+      if (password.length < 8) {
+        showNotification(t('webAuthTooShort'), false);
+        input?.focus();
+        return;
+      }
+      if (password !== String(repeat?.value || '')) {
+        showNotification(t('webAuthMismatch'), false);
+        repeat?.focus();
+        return;
+      }
+      busy(true);
+      try {
+        if (!await auth.setPassword(password)) throw new Error('set');
+        // Setting a password ends every session, including this one. Sign in
+        // again right away so the page stays usable.
+        const login = await auth.login(password);
+        if (input) input.value = '';
+        if (repeat) repeat.value = '';
+        showNotification(t('webAuthSaved'), true);
+        window.setTimeout(() => window.location.reload(), login.ok ? 400 : 1200);
+      } catch (error) {
+        showNotification(t('webAuthChangeFailed'), false);
+      } finally {
+        busy(false);
+      }
+    });
+
+    removeButton?.addEventListener('click', async () => {
+      if (!window.confirm(t('webAuthRemoveConfirm'))) return;
+      busy(true);
+      try {
+        if (!await auth.removePassword()) throw new Error('remove');
+        showNotification(t('webAuthRemoved'), true);
+        window.setTimeout(() => window.location.reload(), 400);
+      } catch (error) {
+        showNotification(t('webAuthChangeFailed'), false);
+      } finally {
+        busy(false);
+      }
+    });
+
+    logoutButton?.addEventListener('click', async () => {
+      busy(true);
+      await auth.logout();
+      window.location.replace('/');
     });
   }
 
@@ -2191,6 +2305,7 @@ function syncTileRadiusControls(tabEl) {
       return { values: {}, units: {}, icons: {}, names: {}, sceneEntities: {}, loaded: false };
     }
     const hasMeta = Object.prototype.hasOwnProperty.call(payload, 'editable_values') ||
+                    Object.prototype.hasOwnProperty.call(payload, 'device_values') ||
                     Object.prototype.hasOwnProperty.call(payload, 'values') ||
                     Object.prototype.hasOwnProperty.call(payload, 'units') ||
                     Object.prototype.hasOwnProperty.call(payload, 'icons') ||
@@ -2198,7 +2313,9 @@ function syncTileRadiusControls(tabEl) {
                     Object.prototype.hasOwnProperty.call(payload, 'binary_sensor_values') ||
                     Object.prototype.hasOwnProperty.call(payload, 'energy_values') ||
                     Object.prototype.hasOwnProperty.call(payload, 'energy_units') ||
-                    Object.prototype.hasOwnProperty.call(payload, 'climate_values');
+                    Object.prototype.hasOwnProperty.call(payload, 'climate_values') ||
+                    Object.prototype.hasOwnProperty.call(payload, 'weather_values') ||
+                    Object.prototype.hasOwnProperty.call(payload, 'media_values');
     if (!hasMeta) {
       return { values: payload || {}, units: {}, icons: {}, names: {}, sceneEntities: {}, loaded: true };
     }
@@ -2211,6 +2328,13 @@ function syncTileRadiusControls(tabEl) {
         payload.climate_values || {}
       ),
       editableValues: payload.editable_values || payload.editableValues || {},
+      // Lock, Alarm panel and Fan detail states (types/device).
+      deviceValues: payload.device_values || payload.deviceValues || {},
+      // Weather and media tile states, the payloads their tiles draw.
+      weatherValues: payload.weather_values || payload.weatherValues || {},
+      mediaValues: payload.media_values || payload.mediaValues || {},
+      // "From cover": the color each shown media card sampled from its cover.
+      mediaCoverColors: payload.media_cover_colors || payload.mediaCoverColors || {},
       units: Object.assign({}, payload.units || {}, payload.energy_units || {}),
       icons: payload.icons || {},
       names: payload.names || {},
@@ -2332,6 +2456,78 @@ function syncTileRadiusControls(tabEl) {
     return '<span class="tile-title-lines">' + normalizeTileTitle(value).split('\n')
       .map(line => '<span class="tile-title-line">' + escapeHtml(line) + '</span>').join('') + '</span>';
   }
+  // Preview text sits on its LVGL baseline. LVGL draws the baseline base_line
+  // above the bottom of a label's line box; the browser puts it where the
+  // font's rounded ascent and descent and the half-leading put it, which
+  // depends on the size and the display scale (Chrome snaps it to whole
+  // device pixels, so one shift from the server was up to a pixel off; user
+  // 2026-10-02). The page measures the browser baseline per size and zoom and
+  // moves each text by the difference to the LVGL baseline (--lb*, --*-base).
+  const previewBaselineCache = new Map();
+  let previewBaselineProbe = null;
+
+  function previewCssBaseline(fontPx, linePx) {
+    const key = fontPx.toFixed(3) + '/' + linePx.toFixed(3) + '@' + (window.devicePixelRatio || 1);
+    if (previewBaselineCache.has(key)) return previewBaselineCache.get(key);
+    if (!previewBaselineProbe) {
+      previewBaselineProbe = document.createElement('div');
+      previewBaselineProbe.setAttribute('aria-hidden', 'true');
+      previewBaselineProbe.style.cssText =
+        'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;font-weight:400;';
+      const mark = document.createElement('span');
+      mark.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline;';
+      previewBaselineProbe.append('0', mark);
+    }
+    if (!previewBaselineProbe.isConnected) document.body.appendChild(previewBaselineProbe);
+    previewBaselineProbe.style.fontSize = fontPx + 'px';
+    previewBaselineProbe.style.lineHeight = linePx + 'px';
+    const value = previewBaselineProbe.lastChild.getBoundingClientRect().top -
+      previewBaselineProbe.getBoundingClientRect().top;
+    previewBaselineCache.set(key, value);
+    return value;
+  }
+
+  // The shift that moves the browser baseline of a line box onto the LVGL
+  // baseline lvglBasePx below its top.
+  function previewBaselineShift(fontPx, linePx, lvglBasePx) {
+    return lvglBasePx - previewCssBaseline(fontPx, linePx);
+  }
+
+  // Sets every emitted shift (--ldyNN for Clock and Text lines, the
+  // half-height title and value) from the measured browser baselines.
+  function calibratePreviewBaselines() {
+    const root = document.documentElement;
+    const style = getComputedStyle(root);
+    const px = name => parseFloat(style.getPropertyValue(name));
+    const set = (shiftName, fontPx, linePx, basePx) => {
+      if (!(fontPx > 0) || !(linePx > 0) || !Number.isFinite(basePx)) return;
+      root.style.setProperty(shiftName, previewBaselineShift(fontPx, linePx, basePx).toFixed(3) + 'px');
+    };
+    for (const size of [16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 80, 96]) {
+      set('--ldy' + size, px('--fs' + size), px('--lh' + size), px('--lb' + size));
+    }
+    for (const [shift, font, line, base] of [
+      ['--compact-title-dy', '--compact-title-font', '--compact-title-line', '--compact-title-base'],
+      ['--compact-value-dy', '--compact-value-font', '--compact-value-line', '--compact-value-base'],
+      ['--compact-value-dy-24', '--compact-value-font-24', '--compact-value-line-step-24', '--compact-value-base-24'],
+      ['--compact-value-dy-28', '--compact-value-font-28', '--compact-value-line-step-28', '--compact-value-base-28'],
+    ]) set(shift, px(font), px(line), px(base));
+  }
+
+  function bindPreviewBaselines() {
+    const calibrate = () => {
+      calibratePreviewBaselines();
+      // The screensaver clock places its lines in script.
+      if (typeof screensaverDraft !== 'undefined' && screensaverDraft &&
+          typeof renderScreensaverEditor === 'function') {
+        renderScreensaverEditor();
+      }
+    };
+    calibrate();
+    if (document.fonts?.ready) document.fonts.ready.then(calibrate);
+    // Browser zoom changes the device pixel ratio and with it the rounding.
+    window.addEventListener('resize', perFrame(calibrate));
+  }
 
   function getTileTypeMeta(typeValue) {
     const key = String(typeValue ?? '0');
@@ -2447,6 +2643,9 @@ function syncTileRadiusControls(tabEl) {
         rebuildEntitySelect(tab + '_media_entity', data.media);
         rebuildEntitySelect(tab + '_climate_entity', data.climates);
         rebuildEntitySelect(tab + '_cover_entity', data.covers);
+        rebuildEntitySelect(tab + '_lock_entity', data.locks);
+        rebuildEntitySelect(tab + '_alarm_entity', data.alarm_panels);
+        rebuildEntitySelect(tab + '_fan_entity', data.fans);
         rebuildEntitySelect(tab + '_camera_entity', data.cameras);
         rebuildEntitySelect(tab + '_scene_alias', data.scenes);
         if (typeof iconColorSourceEntries === 'function') {
@@ -2505,10 +2704,12 @@ function syncTileRadiusControls(tabEl) {
     const typeValue = document.getElementById(tab + '_tile_type')?.value || '0';
     const discToggle = tileTypeHasDiscToggle(typeValue);
     const colored = tileTypeHasColoredIcon(typeValue);
+    const weather = typeValue === '12';
     document.getElementById(tab + '_tile_icon_disc_fields')
-      ?.classList.toggle('hidden', !tileTypeHasIcon(typeValue) || (!discToggle && !colored));
+      ?.classList.toggle('hidden', !tileTypeHasIcon(typeValue) || (!discToggle && !colored && !weather));
     document.getElementById(tab + '_tile_icon_disc_row')?.classList.toggle('hidden', !discToggle);
     document.getElementById(tab + '_tile_icon_glow_row')?.classList.toggle('hidden', !colored);
+    document.getElementById(tab + '_weather_colored_icons_row')?.classList.toggle('hidden', !weather);
   }
 
   function collectTypeFieldValues(tab) {
@@ -2555,9 +2756,6 @@ function syncTileRadiusControls(tabEl) {
       span_w: document.getElementById(prefix + '_tile_span_w')?.value || '1',
       span_h: document.getElementById(prefix + '_tile_span_h')?.value || '1'
     };
-    if (isScreensaverTileTab(tab)) {
-      snapshot.background_opacity = document.getElementById('screensaver_tile_opacity')?.value || '0';
-    }
     Object.assign(snapshot, collectTypeFieldValues(tab));
     return snapshot;
   }
@@ -2574,7 +2772,9 @@ function syncTileRadiusControls(tabEl) {
     if (!Array.isArray(tiles) || index < 0) return;
 
     const prev = tiles[index] || {};
-    const tile = Object.assign({}, prev);
+    // A deleted (empty) tile starts from nothing: merged over the previous
+    // data, its entity and options returned with the next tile in the slot.
+    const tile = Number(snapshot?.type) === 0 ? {} : Object.assign({}, prev);
     const layout = normalizeSnapshotLayout(snapshot, index, tab);
     const numericFields = ['type', 'sensor_decimals', 'sensor_value_font', 'sensor_display_mode', 'sensor_gauge_min', 'sensor_gauge_max', 'switch_style', 'navigate_target', 'popup_open_mode', 'key_code', 'key_modifier', 'background_opacity', 'icon_disc', 'icon_glow'];
 
@@ -2623,6 +2823,9 @@ function syncTileRadiusControls(tabEl) {
     if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'camera_entity')) {
       tile.sensor_entity = snapshot.camera_entity || '';
     }
+    for (const kind of ['lock', 'alarm', 'fan']) {
+      if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, kind + '_entity')) tile.sensor_entity = snapshot[kind + '_entity'] || '';
+    }
     if (snapshot && (Object.prototype.hasOwnProperty.call(snapshot, 'clock_show_time') || Object.prototype.hasOwnProperty.call(snapshot, 'clock_show_date'))) {
       let flags = 0;
       if (String(snapshot.clock_show_time || '0') === '1') flags |= 1;
@@ -2649,6 +2852,9 @@ function syncTileRadiusControls(tabEl) {
 
     if ([8,9,10].includes(Number(tile.type)) && snapshot?.tile_border !== undefined) {
       tile.sensor_display_mode = ['0','false'].includes(String(snapshot.tile_border)) ? 1 : 0;
+    }
+    if (Number(tile.type) === 12 && snapshot?.weather_colored_icons !== undefined) {
+      tile.sensor_display_mode = ['0','false'].includes(String(snapshot.weather_colored_icons)) ? 1 : 0;
     }
     tiles[index] = tile;
     tilesData[tab] = tiles;
@@ -2702,17 +2908,20 @@ function syncTileRadiusControls(tabEl) {
   // (tileTypeHasFixedIconColorOnly / tileTypeRulesUseOwnEntity in
   // tile_type_policy.h).
   const ICON_COLOR_FIXED_TYPES = ['2', '4', '8', '9', '10', '18'];
-  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23'];
+  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23', '24', '25', '26'];
   // The own entity field of each type (pairs, not an object with numeric keys).
   const ICON_COLOR_ENTITY_FIELDS = [['1', '_sensor_entity'], ['5', '_switch_entity'], ['12', '_weather_entity'],
     ['14', '_energy_entity'], ['15', '_media_entity'], ['17', '_climate_entity'], ['19', '_cover_entity'],
-    ['20', '_binary_sensor_entity'], ['21', '_number_entity'], ['22', '_select_entity'], ['23', '_datetime_entity']];
+    ['20', '_binary_sensor_entity'], ['21', '_number_entity'], ['22', '_select_entity'], ['23', '_datetime_entity'],
+    ['24', '_lock_entity'], ['25', '_alarm_entity'], ['26', '_fan_entity']];
   // Domains shown by the Switch tile (tile_icon_source.cpp switch_domain).
   const ICON_COLOR_SWITCH_DOMAINS = ['light', 'switch', 'input_boolean', 'automation', 'fan',
     'humidifier', 'remote', 'siren'];
   const ICON_COLOR_TYPES = ICON_COLOR_OWN_TYPES.concat(ICON_COLOR_FIXED_TYPES);
   const ICON_COLOR_BAR_TYPES = ['1', '14', '21'];
   const ICON_COLOR_ROW_TYPES = ['1', '20', '22', '23'];
+  // Media: icon color and tile color "From cover" (the "cover" line).
+  const ICON_COLOR_MEDIA_TYPE = '15';
   const ICON_COLOR_MAX_STOPS = 6;
   const ICON_COLOR_MAX_ROWS = 6;
   const ICON_COLOR_MAX_VALUE_BYTES = 32;
@@ -3006,7 +3215,8 @@ function syncTileRadiusControls(tabEl) {
 
   // normalize(): any record (editor, import, b39) in the canonical v2 form;
   // numeric types keep only the bar, text types only the state lines.
-  function normalizeIconColorRecord(record, allowBar, allowRows, allowSource = false, allowSelf = false) {
+  function normalizeIconColorRecord(record, allowBar, allowRows, allowSource = false, allowSelf = false,
+    allowCover = false) {
     const text = String(record ?? '');
     const v2 = iconColorIsV2(text);
     let source = allowSource ? iconColorRecordSource(text) : null;
@@ -3037,6 +3247,9 @@ function syncTileRadiusControls(tabEl) {
     let out = 'v2\n' + (fixed === null ? '' : iconColorHex(fixed));
     const fill = v2 ? iconColorFillOf(body) : 0;
     if (fill) out += '\nfill ' + fill;
+    const cover = allowCover && v2 ? iconColorCoverOf(body) : { icon: false, tile: 0 };
+    const hasCover = cover.icon || cover.tile > 0;
+    if (hasCover) out += '\ncover' + (cover.icon ? ' icon' : '') + (cover.tile ? ' tile=' + cover.tile : '');
     if (emitLayer) {
       out += '\nsrc ' + source.mode + ' ' + (source.self ? 'self' : source.entity) +
         (source.tile ? ' tile=' + source.tile : '') + (source.icon ? '' : ' noicon') + (source.enabled ? '' : ' off');
@@ -3050,7 +3263,7 @@ function syncTileRadiusControls(tabEl) {
       let legacyRules = 0;
       for (const line of body) {
         if (rows >= ICON_COLOR_MAX_ROWS) break;
-        if (v2 && (line.startsWith('bar ') || line.startsWith('src '))) continue;
+        if (v2 && (line.startsWith('bar ') || line.startsWith('src ') || line.startsWith('cover'))) continue;
         const rule = iconColorParseRule(line);
         if (!rule) continue;
         const textRule = rule.op === 'is' || rule.op === 'has';
@@ -3070,7 +3283,7 @@ function syncTileRadiusControls(tabEl) {
         rows++;
       }
     }
-    return fixed === null && !fill && !emitLayer && !bar && rows === 0 ? '' : out;
+    return fixed === null && !fill && !hasCover && !emitLayer && !bar && rows === 0 ? '' : out;
   }
 
   // tile_icon_colors::fill_of(): the "fill NN" tint of the fixed color in
@@ -3083,9 +3296,26 @@ function syncTileRadiusControls(tabEl) {
     return Math.min(50, Math.max(10, Number(text)));
   }
 
+  // tile_icon_colors::cover_of(): "From cover" of a Media tile, the first
+  // "cover [icon] [tile=NN]" line; an unknown token makes it invalid.
+  function iconColorCoverOf(lines) {
+    const none = { icon: false, tile: 0 };
+    const line = lines.find(candidate => candidate.startsWith('cover'));
+    if (line === undefined) return none;
+    const tokens = line.split(/[ \t\r]+/).filter(Boolean);
+    if (tokens[0] !== 'cover') return none;
+    const out = { icon: false, tile: 0 };
+    for (const token of tokens.slice(1)) {
+      if (token === 'icon') out.icon = true;
+      else if (/^tile=[0-9]{1,2}$/.test(token)) out.tile = Math.min(50, Math.max(10, Number(token.slice(5))));
+      else return none;
+    }
+    return out;
+  }
+
   // Editor view of a record: fixed color, bar and state rows.
   function parseIconColorRecord(record) {
-    const lines = normalizeIconColorRecord(record, true, true, true, true).split('\n');
+    const lines = normalizeIconColorRecord(record, true, true, true, true, true).split('\n');
     const fixed = iconColorParseHex(lines[1] ?? '');
     let bar = null;
     const rows = [];
@@ -3095,7 +3325,8 @@ function syncTileRadiusControls(tabEl) {
       if (rule) rows.push({ has: rule.op === 'has', color: '#' + iconColorHex(rule.color), value: rule.value });
     }
     return { color: fixed === null ? '' : '#' + iconColorHex(fixed), bar, rows,
-      fill: iconColorFillOf(lines.slice(2)), source: iconColorRecordSource(lines.join('\n')) };
+      fill: iconColorFillOf(lines.slice(2)), cover: iconColorCoverOf(lines.slice(2)),
+      source: iconColorRecordSource(lines.join('\n')) };
   }
 
   // ---- Source entity (icon-and-title tiles), mirrors tile_icon_source.cpp ----
@@ -3260,6 +3491,16 @@ function syncTileRadiusControls(tabEl) {
     let out = from.map((v, i) => Math.floor((v * (100 - percent) + to[i] * percent + 50) / 100));
     for (let i = 0; i < 40 && contrast(out) < 4.5; i++) out = out.map(v => Math.floor((v * 95 + 50) / 100));
     return '#' + out.map(v => v.toString(16).toUpperCase().padStart(2, '0')).join('');
+  }
+  // Tints a preview card from the global tile color. A screensaver card keeps
+  // its own opacity (data-bg-opacity): the panel sets bg_opa after the tint
+  // (image_screensaver build_slot_tile); the opaque tint hid the wallpaper
+  // in the preview (user 2026-10-02).
+  function setTileTintBackground(el, color, percent) {
+    const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
+    const hex = tileTintBackground(base || '#1A1A1A', color, percent);
+    const opacity = el.dataset.bgOpacity;
+    el.style.background = opacity === undefined ? hex : hex + Number(opacity).toString(16).padStart(2, '0');
   }
 
   // Entities offered as a source: the states the Bridge publishes to tiles.
@@ -3515,10 +3756,18 @@ function syncTileRadiusControls(tabEl) {
   function collectIconColorRecord(tab) {
     const type = iconColorTypeOf(tab);
     const input = iconColorEl(tab, '_tile_icon_color');
-    const fixed = input && input.dataset.unset !== '1' ? normalizeIconColorHex(input.value).slice(1) : '';
+    // Media "From cover": the icon takes the cover color instead of its own.
+    const media = type === ICON_COLOR_MEDIA_TYPE;
+    const coverIcon = media && !!iconColorEl(tab, '_tile_icon_cover')?.checked;
+    const coverTile = media && !!iconColorEl(tab, '_tile_cover_fill')?.checked;
+    const fixed = input && input.dataset.unset !== '1' && !coverIcon ? normalizeIconColorHex(input.value).slice(1) : '';
     const lines = ['v2', fixed];
     if (iconColorEl(tab, '_tile_icon_fill')?.checked) {
       lines.push('fill ' + (iconColorEl(tab, '_tile_icon_fill_strength')?.value || '20'));
+    }
+    if (coverIcon || coverTile) {
+      lines.push('cover' + (coverIcon ? ' icon' : '') +
+        (coverTile ? ' tile=' + (iconColorEl(tab, '_tile_icon_fill_strength')?.value || '20') : ''));
     }
     const layer = ICON_COLOR_TYPES.includes(type) ? readIconColorSource(tab) : null;
     const bar = readIconColorBar(tab);
@@ -3546,7 +3795,7 @@ function syncTileRadiusControls(tabEl) {
         (layer.tile ? ' tile=' + layer.tile : '') + (layer.icon ? '' : ' noicon') + (layer.enabled ? '' : ' off'));
     }
     return normalizeIconColorRecord(lines.join('\n'), ICON_COLOR_BAR_TYPES.includes(type),
-      ICON_COLOR_ROW_TYPES.includes(type), true, ICON_COLOR_OWN_TYPES.includes(type));
+      ICON_COLOR_ROW_TYPES.includes(type), true, ICON_COLOR_OWN_TYPES.includes(type), media);
   }
 
   // States can be numbers or text: the current state picks the bar or the
@@ -3576,6 +3825,18 @@ function syncTileRadiusControls(tabEl) {
     if (typeof syncTileColorMode === 'function') syncTileColorMode(tab);
     block.classList.toggle('hidden', !visible);
     iconColorEl(tab, '_tile_icon_color_fixed')?.classList.toggle('hidden', !visible);
+    // Media offers the icon color "From cover" next to its own color.
+    const media = type === ICON_COLOR_MEDIA_TYPE;
+    const coverIconBox = iconColorEl(tab, '_tile_icon_cover');
+    if (coverIconBox && !media) coverIconBox.checked = false;
+    const coverIcon = media && !!coverIconBox?.checked;
+    iconColorEl(tab, '_tile_icon_color_modes')?.classList.toggle('hidden', !media);
+    iconColorEl(tab, '_tile_icon_color_row')?.classList.toggle('hidden', coverIcon);
+    iconColorEl(tab, '_tile_icon_color_modes')?.querySelectorAll('[data-icon-color="icon-color-mode"]').forEach(button => {
+      const active = button.dataset.mode === (coverIcon ? 'cover' : 'own');
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
     if (!visible) return;
     const own = ICON_COLOR_OWN_TYPES.includes(type);
     const kindInput = iconColorEl(tab, '_tile_icon_source_kind');
@@ -3650,8 +3911,13 @@ function syncTileRadiusControls(tabEl) {
     setIconColorInput(tab, parsed.color);
     const fill = iconColorEl(tab, '_tile_icon_fill');
     if (fill) fill.checked = parsed.fill > 0;
+    const media = type === ICON_COLOR_MEDIA_TYPE;
+    const coverIcon = iconColorEl(tab, '_tile_icon_cover');
+    if (coverIcon) coverIcon.checked = media && parsed.cover.icon;
+    const coverFill = iconColorEl(tab, '_tile_cover_fill');
+    if (coverFill) coverFill.checked = media && parsed.cover.tile > 0 && !parsed.fill;
     const fillStrength = iconColorEl(tab, '_tile_icon_fill_strength');
-    if (fillStrength) fillStrength.value = String(parsed.fill || 20);
+    if (fillStrength) fillStrength.value = String(parsed.fill || (media && parsed.cover.tile) || 20);
     const barInput = iconColorEl(tab, '_tile_icon_bar');
     if (barInput) barInput.dataset.last = '';
     writeIconColorBar(tab, parsed.bar ? parsed.bar.mode : 'off', parsed.bar ? parsed.bar.stops : []);
@@ -3777,6 +4043,9 @@ function syncTileRadiusControls(tabEl) {
     }
     if (role === 'clear') {
       setIconColorInput(tab, '');
+    } else if (role === 'icon-color-mode') {
+      const cover = iconColorEl(tab, '_tile_icon_cover');
+      if (cover) cover.checked = button.dataset.mode === 'cover';
     } else if (role === 'source-mode') {
       const mode = iconColorEl(tab, '_tile_icon_source_mode');
       if (mode) mode.value = button.dataset.mode === 'rules' ? 'rules' : 'auto';
@@ -4019,7 +4288,7 @@ function syncTileRadiusControls(tabEl) {
       .map(button => {
         const folderId = Number(button.dataset.folderId);
         if (!Number.isInteger(folderId) || folderId <= 0) return null;
-        const buttonLabel = button.querySelector('span')?.textContent || '';
+        const buttonLabel = button.querySelector('.tab-label')?.textContent || '';
         return {
           value: String(folderId),
           label: String(button.dataset.folderName || buttonLabel ||
@@ -4067,12 +4336,8 @@ function syncTileRadiusControls(tabEl) {
       buttonTpl.innerHTML = String(data.button_html || '').trim();
       buttonEl = buttonTpl.content.firstElementChild;
       if (!buttonEl) return false;
-      const navButtons = Array.from(nav.querySelectorAll('.tab-btn'));
-      const fixedBtn = navButtons.find(
-        btn => btn.dataset.tabTarget === 'tab-tiles-screensaver') ||
-        navButtons.find(btn => btn.dataset.tabTarget === 'tab-network');
-      if (fixedBtn) nav.insertBefore(buttonEl, fixedBtn);
-      else nav.appendChild(buttonEl);
+      // Folders go after the others in the folder row.
+      (document.getElementById('folderTabs') || nav).appendChild(buttonEl);
     }
 
     const expectedTabId = String(
@@ -4167,9 +4432,72 @@ function syncTileRadiusControls(tabEl) {
     }
   }
 
+  // Folder tabs not opened yet are prefetched one at a time while the Web
+  // Admin is idle, so a later click opens them at once. The device answers
+  // from its UI loop, so the prefetch waits for a quiet editor, leaves a short
+  // gap between requests and stops at the first failure.
+  const FOLDER_TAB_PREFETCH_IDLE_MS = 2500;
+  const FOLDER_TAB_PREFETCH_STEP_MS = 150;
+  let folderTabPrefetchTimer = null;
+  let folderTabPrefetchStopped = false;
+  let lastAdminInteractionMs = Date.now();
+
+  function noteAdminInteraction() {
+    lastAdminInteractionMs = Date.now();
+  }
+
+  function scheduleFolderTabPrefetch(delayMs = FOLDER_TAB_PREFETCH_IDLE_MS) {
+    if (folderTabPrefetchStopped || folderTabPrefetchTimer) return;
+    folderTabPrefetchTimer = window.setTimeout(runFolderTabPrefetch, delayMs);
+  }
+
+  function nextFolderTabToPrefetch() {
+    for (const key of Object.keys(tabByFolder)) {
+      const folderId = Number(key);
+      if (!Number.isInteger(folderId) || folderId <= 0) continue;
+      const tab = tabByFolder[folderId];
+      if (!document.getElementById('tab-tiles-' + tab)) {
+        return { folderId, tab, step: 'tab' };
+      }
+      if (!tileDataLoadedTabs.has(tab)) return { folderId, tab, step: 'tiles' };
+    }
+    return null;
+  }
+
+  async function runFolderTabPrefetch() {
+    folderTabPrefetchTimer = null;
+    if (folderTabPrefetchStopped) return;
+    const idleMs = Date.now() - lastAdminInteractionMs;
+    if (document.hidden || dragSource || resizeState || fileManagerUploadBusy ||
+        idleMs < FOLDER_TAB_PREFETCH_IDLE_MS) {
+      scheduleFolderTabPrefetch(Math.max(
+        FOLDER_TAB_PREFETCH_STEP_MS, FOLDER_TAB_PREFETCH_IDLE_MS - idleMs));
+      return;
+    }
+    const next = nextFolderTabToPrefetch();
+    if (!next) return;
+    let ok = false;
+    try {
+      ok = next.step === 'tab'
+        ? await ensureFolderTabUi(next.folderId)
+        : Array.isArray(await fetchTileGridData(next.tab, false));
+    } catch (error) {
+      ok = false;
+    }
+    if (!ok) {
+      folderTabPrefetchStopped = true;
+      return;
+    }
+    scheduleFolderTabPrefetch(FOLDER_TAB_PREFETCH_STEP_MS);
+  }
+
+  // Folder tab markup is kept in localStorage, so a second browser tab or a
+  // new window opens folders without asking the device again. The namespace
+  // carries the per-boot token, so nothing survives a reboot or OTA; the tile
+  // data itself is always fetched fresh and re-rendered over the markup.
   const FOLDER_TAB_SESSION_CACHE_PREFIX = 'hometilesAdminFolderTabs:';
   const FOLDER_TAB_SESSION_CACHE_VERSION = 2;
-  const FOLDER_TAB_SESSION_CACHE_LIMIT = 4;
+  const FOLDER_TAB_SESSION_CACHE_LIMIT = 8;
 
   function folderTabSessionCacheNamespace() {
     return FOLDER_TAB_SESSION_CACHE_PREFIX + 'v' +
@@ -4188,7 +4516,7 @@ function syncTileRadiusControls(tabEl) {
 
   function readFolderTabSessionIndex() {
     try {
-      const raw = sessionStorage.getItem(folderTabSessionIndexKey());
+      const raw = localStorage.getItem(folderTabSessionIndexKey());
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (parsed?.version !== FOLDER_TAB_SESSION_CACHE_VERSION ||
@@ -4201,7 +4529,7 @@ function syncTileRadiusControls(tabEl) {
 
   function writeFolderTabSessionIndex(entries) {
     try {
-      sessionStorage.setItem(folderTabSessionIndexKey(), JSON.stringify({
+      localStorage.setItem(folderTabSessionIndexKey(), JSON.stringify({
         version: FOLDER_TAB_SESSION_CACHE_VERSION,
         entries: entries.slice(0, FOLDER_TAB_SESSION_CACHE_LIMIT)
       }));
@@ -4221,14 +4549,14 @@ function syncTileRadiusControls(tabEl) {
     let stored = false;
     while (!stored) {
       try {
-        sessionStorage.setItem(
+        localStorage.setItem(
           folderTabSessionEntryKey(folderId), String(data.tab_html));
         stored = true;
       } catch (error) {
         const evicted = entries.pop();
         if (!evicted) break;
         try {
-          sessionStorage.removeItem(
+          localStorage.removeItem(
             folderTabSessionEntryKey(evicted.folder_id));
         } catch (removeError) {}
       }
@@ -4239,7 +4567,7 @@ function syncTileRadiusControls(tabEl) {
     while (nextEntries.length > FOLDER_TAB_SESSION_CACHE_LIMIT) {
       const evicted = nextEntries.pop();
       try {
-        sessionStorage.removeItem(
+        localStorage.removeItem(
           folderTabSessionEntryKey(evicted.folder_id));
       } catch (error) {}
     }
@@ -4259,7 +4587,7 @@ function syncTileRadiusControls(tabEl) {
   function forgetFolderTabSessionFragment(folderId) {
     const folderNum = Number(folderId);
     try {
-      sessionStorage.removeItem(folderTabSessionEntryKey(folderNum));
+      localStorage.removeItem(folderTabSessionEntryKey(folderNum));
     } catch (error) {}
     writeFolderTabSessionIndex(readFolderTabSessionIndex().filter(
       entry => Number(entry?.folder_id) !== folderNum));
@@ -4277,7 +4605,7 @@ function syncTileRadiusControls(tabEl) {
       return null;
     }
     try {
-      const tabHtml = sessionStorage.getItem(
+      const tabHtml = localStorage.getItem(
         folderTabSessionEntryKey(folderNum));
       if (!tabHtml) {
         forgetFolderTabSessionFragment(folderNum);
@@ -4297,14 +4625,14 @@ function syncTileRadiusControls(tabEl) {
     const namespace = folderTabSessionCacheNamespace();
     const storageKeys = [];
     try {
-      for (let index = 0; index < sessionStorage.length; index += 1) {
-        const key = sessionStorage.key(index) || '';
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index) || '';
         storageKeys.push(key);
       }
       storageKeys.filter(key =>
         key.startsWith(FOLDER_TAB_SESSION_CACHE_PREFIX) &&
         !key.startsWith(namespace + ':'))
-        .forEach(key => sessionStorage.removeItem(key));
+        .forEach(key => localStorage.removeItem(key));
     } catch (error) {}
 
     const availableEntryKeys = new Set(storageKeys.filter(key =>
@@ -4332,7 +4660,7 @@ function syncTileRadiusControls(tabEl) {
       folderTabSessionEntryKey(entry.folder_id)));
     availableEntryKeys.forEach(key => {
       if (!validEntryKeys.has(key)) {
-        try { sessionStorage.removeItem(key); } catch (error) {}
+        try { localStorage.removeItem(key); } catch (error) {}
       }
     });
     writeFolderTabSessionIndex(validEntries);
@@ -4446,9 +4774,16 @@ function syncTileRadiusControls(tabEl) {
     return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number * 2) / 2)) : fallback;
   }
   function isCompactSensorType(type) { return [1, 14, 20].includes(Number(type)); }
+  // Number, Select and Date/Time render through the Sensor tile
+  // (tile_geometry::editable).
+  function isEditableValueType(type) { return [21, 22, 23].includes(Number(type)); }
   // Types that may use half-cell sizes (mirrors tile_geometry::half_size).
-  // Scene, Folder, Settings, Back and Camera show only an icon and a title.
-  function supportsHalfSize(type) { return isCompactSensorType(type) || [2, 4, 7, 8, 9, 18].includes(Number(type)); }
+  // Scene, Folder, Settings, Back and Camera show only an icon and a title;
+  // Switch and Cover show their state (tile_geometry::compact_switch,
+  // compact_cover).
+  function supportsHalfSize(type) {
+    return isCompactSensorType(type) || isEditableValueType(type) || [2, 4, 5, 7, 8, 9, 17, 18, 19, 24, 25, 26].includes(Number(type));
+  }
   // Every type resizes in half steps from 1x1; only half-size types may be half
   // a row high (mirrors tile_geometry::supported).
   function supportedTileLayout(type, layout) {
@@ -4489,17 +4824,52 @@ function syncTileRadiusControls(tabEl) {
     else if (!halfHeight && value === '5') select.value = '0';
     else if (halfHeight && forkMono.includes(value)) select.value = '0';
   }
+  // Number, Select and Date/Time value sizes (1 = 20, 2 = 24, 0 = 28, 3 = 32,
+  // 4 = 40): half-height tiles offer 20, 24 and 28 (editable_display_tile).
+  function syncEditableValueFontOptions(select, halfHeight) {
+    if (!select?.options) return;
+    for (const option of Array.from(select.options)) {
+      const hidden = halfHeight && (option.value === '3' || option.value === '4');
+      option.hidden = hidden;
+      option.disabled = hidden;
+    }
+    if (halfHeight && (select.value === '3' || select.value === '4')) select.value = '0';
+  }
+  // The Sensor value size choice that matches a Number, Select or Date/Time
+  // size at half height (editable_display_tile).
+  function editableCompactValueFont(choice) {
+    const value = String(choice ?? '2');
+    return value === '1' ? '0' : value === '2' ? '2' : '5';
+  }
   function applyCompactSensorPreview(el, type, layout, mode = 0, valueFont = 0) {
     const halfHeight = layout?.span_w >= 1 && layout.span_h === 0.5;
     // A half-height icon-and-title tile (Scene, Folder, Settings, Back, Camera) uses the
     // half-height Sensor header: the icon in the corner disc and the title
     // (if any) centered beside it.
     const compactIconTitle = [2, 4, 7, 8, 18].includes(Number(type)) && halfHeight;
-    const compact = (isCompactSensorType(type) || compactIconTitle) && halfHeight;
+    // Half-height Switch: icon, title and state like a compact Sensor.
+    const compactSwitch = [5, 17, 19, 24, 25, 26].includes(Number(type)) && halfHeight;
+    // Number, Select and Date/Time like a compact Sensor.
+    const compactEditable = isEditableValueType(type) && halfHeight;
+    if (compactEditable) valueFont = editableCompactValueFont(valueFont);
+    const compact = (isCompactSensorType(type) || compactIconTitle || compactSwitch || compactEditable) && halfHeight;
     el.classList.toggle('sensor-compact', compact);
     el.classList.toggle('sensor-half', compact);
     el.classList.toggle('compact-title-only', compactIconTitle);
-    const valueSize = compact && !compactIconTitle ? compactValueSize(valueFont) : 20;
+    // Switch header layouts show their state beside the disc at the
+    // half-height value sizes; from 1.5 rows like a Sensor tile at its value
+    // sizes, the bar a third of the extra height higher
+    // (switch_layout::sensor_look).
+    // The Cover position bar uses the same header (tile_header.h).
+    // Lock, Alarm panel and Fan too (types/device).
+    const switchHeader = [5, 19, 24, 25, 26].includes(Number(type)) && el.classList.contains('switch-bar');
+    const switchTall = switchHeader && Number(layout?.span_h) > 1;
+    el.classList.toggle('switch-tall', switchTall);
+    if (switchTall) el.style?.setProperty?.('--switch-span-h', String(Number(layout.span_h)));
+    else el.style?.removeProperty?.('--switch-span-h');
+    const tallSize = switchTall ? ({1: 20, 2: 24, 3: 32, 4: 40}[Number(valueFont)] || 28) : 0;
+    for (const size of [20, 24, 32, 40]) el.classList.toggle('switch-value-' + size, tallSize === size);
+    const valueSize = (compact && !compactIconTitle) || (switchHeader && !switchTall) ? compactValueSize(valueFont) : 20;
     el.classList.toggle('compact-value-24', valueSize === 24);
     el.classList.toggle('compact-value-28', valueSize === 28);
     el.classList.toggle('clock-compact', Number(type) === 9 && halfHeight);
@@ -4953,9 +5323,6 @@ function syncTileRadiusControls(tabEl) {
       span_h: document.getElementById(prefix + '_tile_span_h')?.value || '1'
     };
     if (currentTileIndex === HIDDEN_SETTINGS_TILE_INDEX) d.type = '7';
-    if (isScreensaverTileTab(tab)) {
-      d.background_opacity = document.getElementById('screensaver_tile_opacity')?.value || '0';
-    }
     Object.assign(d, collectTypeFieldValues(tab));
     d._dirty = true;
     d._rev = (prevDraft && prevDraft._rev) ? (prevDraft._rev + 1) : 1;
@@ -4974,10 +5341,6 @@ function syncTileRadiusControls(tabEl) {
     document.getElementById(prefix + '_tile_title').value = d.title || '';
     document.getElementById(prefix + '_tile_icon').value = d.icon || '';
     setTileColorInputFromSnapshot(tab, d);
-    if (isScreensaverTileTab(tab)) {
-      const opacity = document.getElementById('screensaver_tile_opacity');
-      if (opacity) opacity.value = String(d.background_opacity ?? 0);
-    }
     const colEl = document.getElementById(prefix + '_tile_col');
     if (colEl) colEl.value = d.col || '1';
     const rowEl = document.getElementById(prefix + '_tile_row');
@@ -5019,9 +5382,6 @@ function syncTileRadiusControls(tabEl) {
       span_w: document.getElementById(prefix + '_tile_span_w')?.value || '1',
       span_h: document.getElementById(prefix + '_tile_span_h')?.value || '1'
     };
-    if (isScreensaverTileTab(tab)) {
-      data.background_opacity = document.getElementById('screensaver_tile_opacity')?.value || '0';
-    }
     Object.assign(data, collectTypeFieldValues(tab));
     return data;
   }
@@ -5040,10 +5400,6 @@ function syncTileRadiusControls(tabEl) {
     const iconEl = document.getElementById(prefix + '_tile_icon');
     if (iconEl) iconEl.value = data.icon || '';
     setTileColorInputFromSnapshot(tab, data);
-    if (isScreensaverTileTab(tab)) {
-      const opacity = document.getElementById('screensaver_tile_opacity');
-      if (opacity) opacity.value = String(data.background_opacity ?? 0);
-    }
     const spanWEl = document.getElementById(prefix + '_tile_span_w');
     if (spanWEl) spanWEl.value = data.span_w || '1';
     const spanHEl = document.getElementById(prefix + '_tile_span_h');
@@ -5247,8 +5603,6 @@ function syncTileRadiusControls(tabEl) {
     const spanWInput = document.getElementById(prefix + '_tile_span_w');
     const spanHInput = document.getElementById(prefix + '_tile_span_h');
     const typeSelect = document.getElementById(prefix + '_tile_type');
-    const opacityInput = isScreensaverTileTab(tab)
-      ? document.getElementById('screensaver_tile_opacity') : null;
     const entitySelect = document.getElementById(prefix + '_sensor_entity');
     const binarySensorSelect = document.getElementById(
       prefix + '_binary_sensor_entity');
@@ -5268,6 +5622,7 @@ function syncTileRadiusControls(tabEl) {
       const graphHeightInput = document.getElementById(prefix + '_sensor_graph_height');
       const weatherSelect = document.getElementById(prefix + '_weather_entity');
       const weatherPopupModeSelect = document.getElementById(prefix + '_weather_popup_open_mode');
+      const weatherColoredIconsCheck = document.getElementById(prefix + '_weather_colored_icons');
       const energySelect = document.getElementById(prefix + '_energy_entity');
       const energyUnitInput = document.getElementById(prefix + '_energy_unit');
       const energyDecimalsInput = document.getElementById(prefix + '_energy_decimals');
@@ -5318,8 +5673,6 @@ function syncTileRadiusControls(tabEl) {
     bindLive(document.getElementById(prefix + '_tile_icon_disc'), 'change', 'tileIconDisc', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(document.getElementById(prefix + '_tile_icon_glow'), 'change', 'tileIconGlow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colorInput, 'input', 'tileColor', () => { markTileColorInputExplicit(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
-    bindLive(opacityInput, 'input', 'tileOpacity', () => { updateTilePreview(tab); updateDraft(tab); });
-    bindLive(opacityInput, 'change', 'tileOpacitySave', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colInput, 'input', 'tileCol', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(rowInput, 'input', 'tileRow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(spanWInput, 'input', 'tileSpanW', () => { syncClimateSlotFields(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
@@ -5348,10 +5701,6 @@ function syncTileRadiusControls(tabEl) {
         const nextMeta = getTileTypeMeta(typeSelect.value);
         setTileColorInputFromStored(
           tab, 0, nextMeta.defaultBg || '#2A2A2A');
-      }
-      if (isScreensaverTileTab(tab) && previousType === 0 &&
-          nextType !== 0 && opacityInput) {
-        opacityInput.value = String(SCREENSAVER_TILE_DEFAULT_OPACITY);
       }
       updateTileType(tab);
       // New tiles start in the HomeTiles look: a type with icon colors tints
@@ -5401,12 +5750,14 @@ function syncTileRadiusControls(tabEl) {
       scheduleAutoSave(tab);
     });
     bindLive(document.getElementById(prefix + '_binary_sensor_value_font'), 'change', 'binarySensorValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(document.getElementById(prefix + '_switch_value_font'), 'change', 'switchValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(binarySensorPopupModeSelect, 'change', 'binarySensorPopupMode', () => {
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
     bindLive(weatherSelect, 'change', 'weatherEntity', () => { maybeFillTitleFromWeather(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(weatherPopupModeSelect, 'change', 'weatherPopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(weatherColoredIconsCheck, 'change', 'weatherColoredIcons', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(energySelect, 'change', 'energyEntity', () => {
       energySelect.dataset.configuredValue = energySelect.value || '';
       maybeFillTitleFromEnergy(tab);
@@ -5469,6 +5820,12 @@ function syncTileRadiusControls(tabEl) {
       scheduleAutoSave(tab);
     });
     bindLive(climatePopupModeSelect, 'change', 'climatePopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    // Layout "with value" drops the current temperature from the automatic
+    // mini fields (climateAutomaticEditorKinds).
+    bindLive(document.getElementById(prefix + '_climate_view'), 'change', 'climateView', () => {
+      syncClimateSlotFields(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+    });
+    bindLive(document.getElementById(prefix + '_cover_value_font'), 'change', 'coverValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(coverSelect, 'change', 'coverEntity', () => {
       if (coverSelect.value) {
         coverSelect.dataset.configuredValue = coverSelect.value;
@@ -5484,6 +5841,25 @@ function syncTileRadiusControls(tabEl) {
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
+    // Lock, Alarm panel and Fan: entity, state size and popup gesture.
+    for (const kind of ['lock', 'alarm', 'fan']) {
+      const select = document.getElementById(prefix + '_' + kind + '_entity');
+      bindLive(document.getElementById(prefix + '_' + kind + '_value_font'), 'change', kind + 'ValueFont', () => {
+        updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+      });
+      bindLive(select, 'change', kind + 'Entity', () => {
+        if (select.value) select.dataset.configuredValue = select.value;
+        else delete select.dataset.configuredValue;
+        maybeFillTitleFromEntity(tab, '_' + kind + '_entity');
+        updateTilePreview(tab);
+        updateDraft(tab);
+        scheduleAutoSave(tab);
+      });
+      bindLive(document.getElementById(prefix + '_' + kind + '_popup_open_mode'), 'change', kind + 'PopupMode', () => {
+        updateDraft(tab);
+        scheduleAutoSave(tab);
+      });
+    }
     bindLive(cameraSelect, 'change', 'cameraEntity', () => {
       if (cameraSelect.value) {
         cameraSelect.dataset.configuredValue = cameraSelect.value;
@@ -5678,12 +6054,35 @@ function syncTileRadiusControls(tabEl) {
     const halfHeight = Number(document.getElementById(prefix + '_tile_span_h')?.value || 1) === 0.5;
     for (const id of ['_sensor_value_font', '_binary_sensor_value_font', '_energy_value_font'])
       syncCompactValueFontOptions(document.getElementById(prefix + id), halfHeight);
-    const sensorValueFont = isEnergyType
-      ? (document.getElementById(prefix + '_energy_value_font')?.value || '0')
-      : (document.getElementById(prefix + (type === '20' ? '_binary_sensor_value_font' : '_sensor_value_font'))?.value || '0');
+    for (const kind of ['number', 'select', 'datetime'])
+      syncEditableValueFontOptions(document.getElementById(prefix + '_' + kind + '_value_font'), halfHeight);
+    if (type === '5') {
+      // The state beside the disc takes the half-height sizes, the large
+      // state of a tall tile the full-size ones.
+      const spanH = Number(document.getElementById(prefix + '_tile_span_h')?.value || 1);
+      syncCompactValueFontOptions(document.getElementById(prefix + '_switch_value_font'),
+                                  !switchSensorLook(switchStyle, spanH));
+      syncSwitchChoices(tab);
+    }
+    const deviceKind = typeof devicePreviewKind === 'function' ? devicePreviewKind(type) : '';
+    if (type === '19' || deviceKind) {
+      // Like the Switch: beside the disc the half-height sizes, from 1.5 rows
+      // the full-size ones (tile_header.h).
+      const spanH = Number(document.getElementById(prefix + '_tile_span_h')?.value || 1);
+      syncCompactValueFontOptions(document.getElementById(prefix + (deviceKind ? '_' + deviceKind : '_cover') +
+        '_value_font'), !(spanH > 1));
+      syncSwitchChoices(tab);
+    }
     const previewKind = meta.preview || 'none';
-    const sensorValueClass = getSensorValueFontClass(isEditablePreview(previewKind)
-      ? (document.getElementById(prefix + '_' + previewKind + '_value_font')?.value ?? '2') : sensorValueFont);
+    // Number, Select and Date/Time keep their own value size field.
+    const sensorValueFont = isEditablePreview(previewKind)
+      ? (document.getElementById(prefix + '_' + previewKind + '_value_font')?.value ?? '2')
+      : isEnergyType
+      ? (document.getElementById(prefix + '_energy_value_font')?.value || '0')
+      : (document.getElementById(prefix + (type === '20' ? '_binary_sensor_value_font'
+        : (type === '5' ? '_switch_value_font' : (type === '19' ? '_cover_value_font'
+          : (deviceKind ? '_' + deviceKind + '_value_font' : '_sensor_value_font')))))?.value || '0');
+    const sensorValueClass = getSensorValueFontClass(sensorValueFont);
     const sensorEntity = document.getElementById(prefix + '_sensor_entity')?.value || '';
     const binarySensorEntity = document.getElementById(
       prefix + '_binary_sensor_entity')?.value || '';
@@ -5710,6 +6109,7 @@ function syncTileRadiusControls(tabEl) {
                 ? coverEntity
                 : (previewKind === 'camera' ? cameraEntity : '')))))));
     if (isEditablePreview(previewKind)) iconEntity = document.getElementById(prefix + '_' + previewKind + '_entity')?.value || '';
+    if (deviceKind) iconEntity = document.getElementById(prefix + '_' + deviceKind + '_entity')?.value || '';
     if (type === '2') {
       const alias = document.getElementById(prefix + '_scene_alias')?.value || '';
       iconEntity = sensorMetaCache.sceneEntities?.[alias] || '';
@@ -5741,6 +6141,13 @@ function syncTileRadiusControls(tabEl) {
         iconName = coverPreviewIcon(coverPreviewState, iconName);
       }
     }
+    let devicePreviewState = null;
+    if (deviceKind) {
+      devicePreviewState = parseDevicePreviewPayload(deviceDetailPayload(iconEntity));
+      if (!normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) {
+        iconName = devicePreviewIcon(deviceKind, devicePreviewState);
+      }
+    }
     let binarySensorPreviewState = null;
     if (previewKind === 'binary_sensor') {
       binarySensorPreviewState = parseBinarySensorPreviewPayload(
@@ -5753,8 +6160,9 @@ function syncTileRadiusControls(tabEl) {
 
     tileElem.className = 'tile';
     if (meta.css) tileElem.classList.add(meta.css);
-    if (type === '5' && switchStyle === '1') tileElem.classList.add('switch-toggle');
+    if (type === '5') applySwitchPreviewLayout(tileElem, switchStyle, halfHeight);
     tileElem.style.background = '';
+    delete tileElem.dataset.bgOpacity;
     tileElem.dataset.type = type;
     tileElem.dataset.iconDisc = tileTypeHasDiscToggle(type)
       && document.getElementById(prefix + '_tile_icon_disc')?.checked === false ? '2' : '0';
@@ -5779,35 +6187,32 @@ function syncTileRadiusControls(tabEl) {
 
     const defaultBg = meta.defaultBg || '#353535';
     // Tiles without their own color (or with the stored default grey) show
-    // and keep following the global default tile color.
+    // the global default tile color. Only the Tile color buttons change the
+    // choice: a Custom color that is still a default grey (Custom was just
+    // selected and nothing picked yet) stays Custom instead of switching back
+    // to Global and hiding the color field.
     const isDefaultBg = tileColorInputIsDefault(tab);
-    if (isDefaultBg) {
-      const colorInput = document.getElementById(prefix + '_tile_color');
-      if (colorInput) {
-        colorInput.value = defaultBg;
-        colorInput.dataset.bgColorDefault = '1';
-      }
-    }
+    const colorInput = document.getElementById(prefix + '_tile_color');
+    if (colorInput?.dataset.bgColorDefault === '1') colorInput.value = defaultBg;
     syncTileColorMode(tab);
     const tileBg = tileBackgroundCss(meta, isDefaultBg,
       isDefaultBg ? defaultBg : (color || defaultBg));
     if (isScreensaverTileTab(tab)) {
-      const opacity = clampInt(
-        document.getElementById('screensaver_tile_opacity')?.value,
-        0, 255, 0);
+      // One opacity for every screensaver tile (screensaver footer).
+      const opacity = screensaverTileOpacity();
       tileElem.style.background = tileBackgroundCss(meta, isDefaultBg,
         isDefaultBg ? defaultBg : (color || defaultBg), opacity);
+      tileElem.dataset.bgOpacity = String(opacity);
+      // A fully transparent card casts no shadow (apply_slot_tile_shadows).
+      tileElem.classList.toggle('screensaver-bg-clear', opacity === 0);
     } else {
       tileElem.style.background = tileBg;
     }
-    tileElem.style.removeProperty('--switch-knob-color');
-    tileElem.style.removeProperty('--switch-on-color');
-    if (type === '5' && switchStyle === '1') {
-      tileElem.style.setProperty('--switch-knob-color', tileBg);
-      tileElem.style.setProperty('--switch-on-color', '#3B82F6');
-    }
 
     let html = '';
+    const locked = typeof previewTileLocked === 'function' && previewTileLocked(type, tileElem);
+    const lockIsIcon = locked && !iconName;
+    if (lockIsIcon) iconName = 'lock';
 
     if (iconName) {
       const iconRecord = typeof collectIconColorRecord === 'function' ? collectIconColorRecord(prefix) : '';
@@ -5816,11 +6221,14 @@ function syncTileRadiusControls(tabEl) {
           ? climatePreviewColor(climatePreviewState)
           : (previewKind === 'cover'
             ? coverPreviewColor(coverPreviewState)
-            : (previewKind === 'binary_sensor'
-              ? binarySensorPreviewColor(binarySensorPreviewState)
-              : '')));
+            : (deviceKind
+              ? devicePreviewColor(deviceKind, devicePreviewState)
+              : (previewKind === 'binary_sensor'
+                ? binarySensorPreviewColor(binarySensorPreviewState)
+                : ''))));
       const iconStyle = iconColor ? ' style="color:' + escapeHtml(iconColor) + '"' : '';
-      html += '<i class="mdi mdi-' + escapeHtml(iconName) + ' tile-icon"' + iconStyle + '></i>';
+      html += '<i class="mdi mdi-' + escapeHtml(iconName) + ' tile-icon"' + iconStyle + '>' +
+        (locked && !lockIsIcon ? PREVIEW_LOCK_MARK : '') + '</i>';
     }
 
     let displayTitle = title;
@@ -5834,31 +6242,31 @@ function syncTileRadiusControls(tabEl) {
     }
     applyTileAriaLabel(tileElem, displayTitle, type);
 
-    if (previewKind === 'weather') {
-      html += '<div class="tile-ghost-icon"><i class="mdi mdi-weather-partly-cloudy"></i></div>';
-    }
-    if (previewKind === 'media') {
-      html += '<div class="tile-ghost-icon"><i class="mdi mdi-music"></i></div>';
-    }
     if (previewKind === 'climate') {
       const climateSpanW = document.getElementById(
         prefix + '_tile_span_w')?.value || 1;
       const climateSpanH = document.getElementById(
         prefix + '_tile_span_h')?.value || 1;
-      html += climatePreviewSlots(
-        climatePreviewState, climateSpanW, climateSpanH,
-        currentClimateSlotConfig(tab),
-        currentClimateTargetLayouts(tab),
-        currentClimateGeometry(tab));
+      // Layout "with value" and half height: the value pair beside the
+      // disc; half height has no mini fields.
+      const climateHalf = Number(climateSpanH) === 0.5;
+      const climateValue = document.getElementById(prefix + '_climate_view')?.value === '1';
+      tileElem.classList.toggle('climate-header', climateValue && !climateHalf);
+      if (climateHalf || climateValue) {
+        html += '<div class="tile-value tile-switch-state">' +
+          escapeHtml(climatePreviewHeaderText(climatePreviewState)) + '</div>';
+      }
+      if (!climateHalf) {
+        html += climatePreviewSlots(
+          climatePreviewState, climateSpanW, climateSpanH,
+          currentClimateSlotConfig(tab),
+          currentClimateTargetLayouts(tab),
+          currentClimateGeometry(tab),
+          climateValue);
+      }
     }
-    if (previewKind === 'cover') {
-      const value = coverPreviewState?.position !== null &&
-                    coverPreviewState?.position !== undefined
-        ? String(coverPreviewState.position) + '%' : '--%';
-      html += '<div class="tile-value tile-cover-value">' +
-        escapeHtml(coverPreviewStateText(coverPreviewState)) +
-        '<br>' + escapeHtml(value) + '</div>';
-    }
+    if (previewKind === 'cover') html += coverPreviewExtraHtml(coverPreviewState, halfHeight);
+    if (deviceKind) html += devicePreviewExtraHtml(deviceKind, devicePreviewState, halfHeight);
     if (previewKind === 'binary_sensor') {
       html += '<div class="tile-value tile-binary-sensor-value ' + (Number(sensorValueFont) ? sensorValueClass : '') + '" id="' +
         tileId + '-value">' +
@@ -5892,7 +6300,7 @@ function syncTileRadiusControls(tabEl) {
       const clockTimeFormat = document.getElementById(prefix + '_clock_time_format')?.value || '0';
       const clockDateFormat = document.getElementById(prefix + '_clock_date_format')?.value || '0';
       if (flags & 1) html += '<div class="tile-clock-time" ' + getClockPreviewTextStyle(clockTimeFont, 40, '#fff') + '>' + getClockPreviewTime(clockTimeFormat) + '</div>';
-      if (flags & 2) html += '<div class="tile-clock-date" ' + getClockPreviewTextStyle(clockDateFont, 24, '#fff') + '>' + getClockPreviewDate(clockDateFormat) + '</div>';
+      if (flags & 2) html += '<div class="tile-clock-date" ' + getClockPreviewTextStyle(clockDateFont, 20, '#fff') + '>' + getClockPreviewDate(clockDateFormat) + '</div>';
     }
 
     if (previewKind === 'text') {
@@ -5905,17 +6313,40 @@ function syncTileRadiusControls(tabEl) {
       }
     }
 
-    if (previewKind === 'switch' && switchStyle === '1') {
-      html += '<div class="tile-switch" id="' + tileId + '-switch"><div class="tile-switch-knob"></div></div>';
-    }
+    if (previewKind === 'switch') html += switchPreviewExtraHtml(switchStyle, halfHeight);
 
     html += getTileResizeHandlesHtml(type);
+    // A title or icon moves the clock down (clock/renderer.cpp).
+    if (type === '9') tileElem.classList.toggle('clock-has-header', !!(displayTitle || iconName));
     tileElem.innerHTML = html;
+    if (previewKind === 'weather') {
+      const iconRecord = typeof collectIconColorRecord === 'function' ? collectIconColorRecord(prefix) : '';
+      applyWeatherPreview(tileElem, parseWeatherPreviewPayload(
+        weatherEntity ? (sensorMetaCache.weatherValues?.[weatherEntity] ?? '') : ''), {
+        col: Number(tileElem.dataset.col || 0),
+        span_w: Number(document.getElementById(prefix + '_tile_span_w')?.value || 1),
+        span_h: Number(document.getElementById(prefix + '_tile_span_h')?.value || 1),
+        sensor_display_mode: document.getElementById(prefix + '_weather_colored_icons')?.checked === false ? 1 : 0
+      }, iconName, previewIconColor(type, iconRecord, weatherEntity, sensorMetaCache, null, ''));
+    }
+    if (previewKind === 'media') {
+      applyMediaPreview(tileElem, parseMediaPreviewPayload(
+        mediaEntity ? (sensorMetaCache.mediaValues?.[mediaEntity] ?? '') : ''), {
+        sensor_entity: mediaEntity,
+        span_w: Number(document.getElementById(prefix + '_tile_span_w')?.value || 1),
+        span_h: Number(document.getElementById(prefix + '_tile_span_h')?.value || 1)
+      }, iconName, mediaEntity ? (sensorMetaCache.names?.[mediaEntity] || '') : '');
+    }
     if (typeof applyTileRulesTint === 'function' && typeof collectIconColorRecord === 'function' &&
         typeof iconColorOwnEntity === 'function') {
       applyTileRulesTint(tileElem, type, collectIconColorRecord(prefix), iconColorOwnEntity(prefix, String(type)), sensorMetaCache);
     }
+    if (previewKind === 'media' && typeof collectIconColorRecord === 'function') {
+      applyMediaCoverTint(tileElem, collectIconColorRecord(prefix), sensorMetaCache.mediaCoverColors?.[mediaEntity] || '');
+    }
     applyIconDiscTint(tileElem);
+    if (previewKind === 'cover') applyCoverPreview(tileElem, coverPreviewState, halfHeight);
+    if (deviceKind) applyDevicePreview(tileElem, deviceKind, devicePreviewState, halfHeight);
     if (wasActive) tileElem.classList.add('active');
     if (typeWas !== type && wasActive) {
       tileElem.classList.add('active');
@@ -5928,6 +6359,7 @@ function syncTileRadiusControls(tabEl) {
       span_h:Number(document.getElementById(prefix + '_tile_span_h')?.value || 1)},
       document.getElementById(prefix + '_sensor_display_mode')?.value || 0, sensorValueFont);
     if (previewKind === 'climate' &&
+        Number(document.getElementById(prefix + '_tile_span_h')?.value || 1) !== 0.5 &&
         typeof mountClimateMiniEditor === 'function') {
       mountClimateMiniEditor(tab);
       syncClimateSlotFields(tab);
@@ -5952,10 +6384,6 @@ function syncTileRadiusControls(tabEl) {
         document.getElementById(prefix + '_tile_icon').value = data.icon_name || '';
         const colorMeta = getTileTypeMeta(data.type || 0);
         setTileColorInputFromStored(tab, data.bg_color, colorMeta.defaultBg || '#2A2A2A');
-        if (isScreensaverTileTab(tab)) {
-          const opacity = document.getElementById('screensaver_tile_opacity');
-          if (opacity) opacity.value = String(data.background_opacity ?? 0);
-        }
         const colEl = document.getElementById(prefix + '_tile_col');
         const rowEl = document.getElementById(prefix + '_tile_row');
         const spanWEl = document.getElementById(prefix + '_tile_span_w');
@@ -6180,10 +6608,6 @@ function syncTileRadiusControls(tabEl) {
     document.getElementById(prefix + '_tile_title').value = '';
     document.getElementById(prefix + '_tile_icon').value = '';
     setTileColorInputFromStored(tab, 0, '#2A2A2A');
-    if (isScreensaverTileTab(tab)) {
-      const opacity = document.getElementById('screensaver_tile_opacity');
-      if (opacity) opacity.value = '0';
-    }
     resetAllTypeFields(tab);
     syncGaugeUi(tab);
     updateTileType(tab);
@@ -6407,6 +6831,25 @@ function syncTileRadiusControls(tabEl) {
     };
   }
 
+  // Whether the Settings tile is hidden, and the parked tile then: the
+  // import restores both (issue #70). The page holds them in the Home tab's
+  // parking slot, rendered from the device config.
+  function exportSettingsTileState() {
+    const parked = document.getElementById('settingsHiddenTile');
+    if (!parked) return undefined;
+    if (parked.dataset.hidden !== '1') return { hidden: false };
+    return {
+      hidden: true,
+      title: String(parked.dataset.title || ''),
+      icon_name: String(parked.dataset.icon || ''),
+      bg_color: Number(parked.dataset.bgColor || 0),
+      col: Number(parked.dataset.col || 0),
+      row: Number(parked.dataset.row || 0),
+      span_w: Number(parked.dataset.spanW || 1),
+      span_h: Number(parked.dataset.spanH || 1)
+    };
+  }
+
   async function exportTilesConfig() {
     try {
       const foldersRequest = fetch('/api/folders').then(async res => {
@@ -6467,6 +6910,7 @@ function syncTileRadiusControls(tabEl) {
         exported_at: new Date().toISOString(),
         folders: folders,
         grids: grids,
+        settings_tile: exportSettingsTileState(),
         screensaver: {
           version: 2,
           config: buildScreensaverExportConfig(screensaverData),
@@ -6551,6 +6995,9 @@ function syncTileRadiusControls(tabEl) {
       const sourceId = parseInt(sourceFolder && sourceFolder.id, 10);
       const sourceParentId = parseInt(sourceFolder && sourceFolder.parent_id, 10);
       if (isNaN(sourceId) || sourceId === 0 || isNaN(sourceParentId)) return;
+      // A folder its folder tile already mapped keeps that exact target; two
+      // folders with the same name and icon would otherwise share one.
+      if (sourceToTarget[sourceId] !== undefined) return;
       const targetParentId = sourceToTarget[sourceParentId];
       if (targetParentId === undefined) return;
       const sourceName = normalizeImportFolderName(sourceFolder.name);
@@ -6568,31 +7015,166 @@ function syncTileRadiusControls(tabEl) {
     return changed;
   }
 
-  async function replaceFolderGridForImport(folderId, sourceTiles, systemType, sourceToTarget = null) {
+  // The type postTile sends: old exports stored folder, Settings and Back
+  // tiles as a navigate tile with a kind.
+  function importTileType(tile) {
+    const type = Number(tile && tile.type);
+    if (isNaN(type)) return 0;
+    if (type === 4 && tile.navigate_kind !== undefined && tile.navigate_kind !== null) {
+      const kind = Number(tile.navigate_kind);
+      if (kind === 1) return 7;
+      if (kind === 2) return 8;
+    }
+    return type;
+  }
+
+  // A tile as the import messages name it: its title, else its type.
+  function importTileName(tile) {
+    const title = String(tile?.title || '').replace(/\s+/g, ' ').trim();
+    if (title) return title;
+    const type = importTileType(tile);
+    const option = document.querySelector('select[id$="_tile_type"] option[value="' + type + '"]');
+    return option ? option.textContent.trim() : String(type);
+  }
+
+  class TileImportError extends Error {
+    constructor(message, kind, tile, folderName) {
+      super(message);
+      this.kind = kind;
+      this.tile = tile;
+      this.folderName = folderName;
+    }
+  }
+
+  // One Home or folder grid of an import, planned before anything is
+  // written: every tile where postTile will place it, and where the
+  // target's system tile (Settings in Home, Back in a folder) ends up. A
+  // system tile in the export takes its exported place. Without one (an
+  // export with the Settings tile hidden) the target's own stays where it
+  // is, or moves to the nearest free place when an imported tile needs its
+  // cell (issue #70). A tile that cannot be placed is returned as the
+  // conflict, as the server would refuse it (tile_geometry::supported,
+  // placementOverlaps).
+  function planImportGrid(sourceTiles, systemType, targetSystem, tab) {
+    const tileCount = GRID_COLS * GRID_ROWS;
+    const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
+    const cells = (layout, mark) => {
+      for (let y = layout.row * 2; y < (layout.row + layout.span_h) * 2; y++) {
+        for (let x = layout.col * 2; x < (layout.col + layout.span_w) * 2; x++) {
+          if (!mark && occupied[y][x]) return false;
+          if (mark) occupied[y][x] = true;
+        }
+      }
+      return true;
+    };
+    const fits = (type, layout) => supportedTileLayout(type, layout) &&
+      layout.col + layout.span_w <= GRID_COLS && layout.row + layout.span_h <= GRID_ROWS &&
+      cells(layout, false);
+
+    const entries = [];
+    let sourceSystem = null;
+    (Array.isArray(sourceTiles) ? sourceTiles : []).forEach((tile, index) => {
+      const type = importTileType(tile);
+      if (!type) return;
+      const entry = { tile, type, layout: normalizeTileLayout({ ...tile, type }, index, tab) };
+      if (type === systemType && !sourceSystem) sourceSystem = entry;
+      else entries.push(entry);
+    });
+    // Settings belongs to Home, Back to folders; one of each.
+    const misplaced = entries.find(entry => entry.type === 7 || entry.type === 8);
+    if (misplaced) return { conflict: misplaced.tile };
+    if (entries.length + (sourceSystem || targetSystem ? 1 : 0) > tileCount) {
+      return { conflict: entries[entries.length - 1].tile };
+    }
+
+    // An exported system tile replaces the target's; a target without one
+    // (Settings hidden there) keeps it hidden and the place stays free.
+    const placeSystem = !!(sourceSystem && targetSystem);
+    if (placeSystem) {
+      if (!fits(systemType, sourceSystem.layout)) return { conflict: sourceSystem.tile };
+      cells(sourceSystem.layout, true);
+    }
+    for (const entry of entries) {
+      if (!fits(entry.type, entry.layout)) return { conflict: entry.tile };
+      cells(entry.layout, true);
+    }
+    const tiles = entries.map(entry => ({ ...entry.tile, ...entry.layout }));
+    if (placeSystem) return { tiles, system: { ...sourceSystem.tile, ...sourceSystem.layout } };
+    if (!targetSystem) return { tiles, system: null };
+
+    const current = normalizeTileLayout(targetSystem, 0, tab);
+    if (fits(systemType, current)) return { tiles, system: null };
+    let best = null;
+    for (let row = 0; row + current.span_h <= GRID_ROWS; row += 0.5) {
+      for (let col = 0; col + current.span_w <= GRID_COLS; col += 0.5) {
+        const layout = { ...current, col, row };
+        const distance = Math.abs(col - current.col) + Math.abs(row - current.row);
+        if ((!best || distance < best.distance) && fits(systemType, layout)) best = { layout, distance };
+      }
+    }
+    if (!best) return { conflict: targetSystem };
+    return { tiles, system: { ...targetSystem, ...best.layout } };
+  }
+
+  // Writes a planned grid over its current tiles: the old tiles go first
+  // so no imported tile meets one of them, then the system tile takes its
+  // place, then the imported tiles. Empty cells are not written. A folder
+  // tile maps its exported folder to the one the server created for it.
+  async function applyImportGrid(folderId, currentTiles, plan, systemType, folderName, sourceToTarget = null) {
+    const tileCount = GRID_COLS * GRID_ROWS;
+    const systemIndex = currentTiles.findIndex(tile => importTileType(tile) === systemType);
+    const post = async (index, tile) => {
+      try {
+        return await postTile(folderId, index, tile, sourceToTarget);
+      } catch (e) {
+        throw new TileImportError(e.message, 'stopped', tile, folderName);
+      }
+    };
+    for (let i = 0; i < tileCount; i++) {
+      if (i !== systemIndex && importTileType(currentTiles[i]) !== 0) {
+        await post(i, buildEmptyImportTile(i));
+      }
+    }
+    if (systemIndex >= 0 && plan.system) await post(systemIndex, plan.system);
+    const freeIndices = [];
+    for (let i = 0; i < tileCount; i++) {
+      if (i !== systemIndex) freeIndices.push(i);
+    }
+    for (let i = 0; i < plan.tiles.length; i++) {
+      const tile = plan.tiles[i];
+      const data = await post(freeIndices[i], tile);
+      const sourceTarget = Number(tile.navigate_target);
+      const target = Number(data && data.navigate_target);
+      if (sourceToTarget && importTileType(tile) === 4 && sourceTarget > 0 && target > 0 &&
+          sourceToTarget[sourceTarget] === undefined) {
+        sourceToTarget[sourceTarget] = target;
+      }
+    }
+  }
+
+  // Hides or shows the Settings tile through the access settings save, which
+  // keeps the PIN and the swipe gesture as they are; a shown tile takes the
+  // exported place, a hidden one the exported parked tile.
+  async function setSettingsTileHiddenForImport(hidden, snapshot, target, folderName) {
+    const saved = typeof saveSettingsAccess === 'function' && typeof readSettingsAccessState === 'function'
+      ? await saveSettingsAccess(null, target, snapshot, { ...readSettingsAccessState(), tileHidden: hidden }, false)
+      : false;
+    if (!saved) {
+      throw new TileImportError('Settings tile visibility not saved', 'stopped',
+                                { type: 7, title: snapshot?.title || '' }, folderName);
+    }
+  }
+
+  // A folder created by the import gets its Back tile in the first free
+  // cell, the top-left one of an empty grid (TileConfig::ensureBackTile).
+  const NEW_FOLDER_BACK_TILE = { type: 8, title: '', icon_name: 'arrow-left', col: 0, row: 0, span_w: 1, span_h: 1 };
+
+  async function replaceFolderGridForImport(folderId, sourceTiles, systemType, folderName, sourceToTarget = null) {
     const currentTiles = await fetchTilesForImport(folderId);
-    const sourceList = Array.isArray(sourceTiles) ? sourceTiles.slice(0, GRID_COLS * GRID_ROWS) : [];
-    const currentSystemIndex = currentTiles.findIndex(tile => Number(tile && tile.type) === systemType);
-    const sourceSystemTile = sourceList.find(tile => Number(tile && tile.type) === systemType) || null;
-
-    for (let i = 0; i < (GRID_COLS * GRID_ROWS); i++) {
-      if (i === currentSystemIndex) continue;
-      await postTile(folderId, i, buildEmptyImportTile(i), sourceToTarget);
-    }
-
-    if (currentSystemIndex >= 0 && sourceSystemTile) {
-      await postTile(folderId, currentSystemIndex, sourceSystemTile, sourceToTarget);
-    }
-
-    const availableIndices = [];
-    for (let i = 0; i < (GRID_COLS * GRID_ROWS); i++) {
-      if (i === currentSystemIndex) continue;
-      availableIndices.push(i);
-    }
-
-    const nonSystemTiles = sourceList.filter(tile => Number(tile && tile.type) !== systemType);
-    for (let i = 0; i < nonSystemTiles.length && i < availableIndices.length; i++) {
-      await postTile(folderId, availableIndices[i], nonSystemTiles[i] || {}, sourceToTarget);
-    }
+    const targetSystem = currentTiles.find(tile => importTileType(tile) === systemType) || null;
+    const plan = planImportGrid(sourceTiles, systemType, targetSystem, tabByFolder[folderId] || '');
+    if (plan.conflict) throw new TileImportError('Import layout conflict', 'stopped', plan.conflict, folderName);
+    await applyImportGrid(folderId, currentTiles, plan, systemType, folderName, sourceToTarget);
   }
 
   function prepareScreensaverTilesForImport(sourceTiles, sourceLayout) {
@@ -6618,7 +7200,9 @@ function syncTileRadiusControls(tabEl) {
     const occupied = Array.from({ length: GRID_ROWS * 2 }, () => Array(GRID_COLS * 2).fill(false));
     const prepared = [];
     for (const entry of sourceEntries) {
-      if (prepared.length >= tileCount) throw new Error('Screensaver grid does not fit target device');
+      if (prepared.length >= tileCount) {
+        throw new TileImportError('Screensaver grid does not fit', 'conflict', entry.tile, t('importScreensaver'));
+      }
       const tile = entry.tile;
       const mediaTile = Number(tile.type) === MEDIA_TILE_TYPE;
       const half = value => Math.round(Number(value || 1) * 2) / 2;
@@ -6655,7 +7239,9 @@ function syncTileRadiusControls(tabEl) {
           if (!best || score < best.score) best = { row, col, score };
         }
       }
-      if (!best) throw new Error('Screensaver grid does not fit target device');
+      if (!best) {
+        throw new TileImportError('Screensaver grid does not fit', 'conflict', tile, t('importScreensaver'));
+      }
       for (let y = best.row * 2; y < (best.row + spanH) * 2; y++) {
         for (let x = best.col * 2; x < (best.col + spanW) * 2; x++) occupied[y][x] = true;
       }
@@ -6667,29 +7253,41 @@ function syncTileRadiusControls(tabEl) {
     return prepared;
   }
 
-  async function replaceScreensaverGridForImport(sourceTiles, sourceLayout = null) {
-    const folderId = SCREENSAVER_FOLDER_ID;
-    const currentTiles = await fetchTilesForImport(folderId);
-    const tileCount = GRID_COLS * GRID_ROWS;
+  // The screensaver grid as the import writes it, checked before anything
+  // is written like the Home and folder grids.
+  function planScreensaverImport(sourceTiles, sourceLayout) {
     const preparedTiles = prepareScreensaverTilesForImport(sourceTiles, sourceLayout);
     const supportedTypes = new Set([1, 2, 5, 14, 20, 21, 22, 23, MEDIA_TILE_TYPE]);
     for (const entry of preparedTiles) {
       if (!supportedTypes.has(Number(entry.tile.type || 0))) {
-        throw new Error('Unsupported screensaver tile type');
+        throw new TileImportError('Unsupported screensaver tile type', 'conflict', entry.tile, t('importScreensaver'));
       }
     }
+    return preparedTiles;
+  }
+
+  async function replaceScreensaverGridForImport(preparedTiles) {
+    const folderId = SCREENSAVER_FOLDER_ID;
+    const currentTiles = await fetchTilesForImport(folderId);
+    const tileCount = GRID_COLS * GRID_ROWS;
+    const post = async (index, tile) => {
+      try {
+        await postTile(folderId, index, tile);
+      } catch (e) {
+        throw new TileImportError(e.message, 'stopped', tile, t('importScreensaver'));
+      }
+    };
 
     // Remove the existing tiles first so the imported positions do not fail on
     // temporary overlaps with the old grid.
     for (let i = 0; i < tileCount; i++) {
       if (Number(currentTiles[i]?.type || 0) !== 0) {
-        await postTile(folderId, i, buildEmptyImportTile(i));
+        await post(i, buildEmptyImportTile(i));
       }
     }
 
     for (const entry of preparedTiles) {
-      const tile = entry.tile;
-      await postTile(folderId, entry.targetIndex, tile);
+      await post(entry.targetIndex, entry.tile);
     }
   }
 
@@ -6722,22 +7320,75 @@ function syncTileRadiusControls(tabEl) {
         return;
       }
 
+      const sourceFolders = Array.isArray(payload.folders) ? payload.folders : [{ id: 0, parent_id: 0, name: 'Home', icon_name: '' }];
+      const folderName = folderId => {
+        const folder = sourceFolders.find(entry => Number(entry && entry.id) === Number(folderId));
+        return String(folder?.name || '') || String(folderId);
+      };
+      const sourceFolderIds = sourceFolders
+        .map(folder => parseInt(folder && folder.id, 10))
+        .filter(folderId => !isNaN(folderId) && folderId !== 0 && Array.isArray(grids[String(folderId)]));
+      // Versions 1 and 2 had no screensaver block and stay importable
+      // unchanged. Alternative flat field names are accepted as well, in case an
+      // intermediate state of this export function was used.
+      const screensaverBlock = payload.screensaver && typeof payload.screensaver === 'object'
+        ? payload.screensaver
+        : null;
+      const screensaverConfig = screensaverBlock?.config || payload.screensaver_config;
+      const screensaverGrid = screensaverBlock?.grid || payload.screensaver_grid;
+
+      // The Settings tile follows the export (issue #70): hidden there is
+      // hidden here, shown there comes back at its exported place. Exports
+      // without the flag tell it by their Home grid; a Settings tile in the
+      // grid always means shown.
+      const homeSource = Array.isArray(grids['0']) ? grids['0'] : null;
+      const sourceSettings = homeSource ? homeSource.find(tile => importTileType(tile) === 7) || null : null;
+      const exportedSettings = payload.settings_tile && typeof payload.settings_tile === 'object'
+        ? payload.settings_tile : null;
+      const settingsHidden = !!homeSource && !sourceSettings;
+      const parkedSettings = settingsHidden && exportedSettings?.hidden === true ? exportedSettings : null;
+
+      // The whole layout is checked before anything is written: Home with
+      // the Settings tile where the export has it, every folder against the
+      // Back tile a new folder gets (Home replaces every folder), and the
+      // screensaver grid. A tile that does not fit stops the import here.
+      let homeTiles = homeSource ? await fetchTilesForImport(0) : null;
+      const targetSettings = homeTiles ? homeTiles.find(tile => importTileType(tile) === 7) || null : null;
+      const homePlan = homeSource
+        ? planImportGrid(homeSource, 7, settingsHidden ? null : (targetSettings || { type: 7 }), tabByFolder[0] || '')
+        : null;
+      if (homePlan?.conflict) throw new TileImportError('Import layout conflict', 'conflict', homePlan.conflict, folderName(0));
+      for (const folderId of sourceFolderIds) {
+        const plan = planImportGrid(grids[String(folderId)], 8, NEW_FOLDER_BACK_TILE, '');
+        if (plan.conflict) throw new TileImportError('Import layout conflict', 'conflict', plan.conflict, folderName(folderId));
+      }
+      const screensaverTiles = Array.isArray(screensaverGrid)
+        ? planScreensaverImport(screensaverGrid, screensaverBlock?.source_layout || null)
+        : null;
+
       showNotification(t('importRunning'));
 
-      const sourceFolders = Array.isArray(payload.folders) ? payload.folders : [{ id: 0, parent_id: 0, name: 'Home', icon_name: '' }];
       const sourceToTarget = { 0: 0 };
-
-      if (Array.isArray(grids['0'])) {
-        await replaceFolderGridForImport(0, grids['0'], 7, sourceToTarget);
+      if (homePlan) {
+        // Hiding first frees the Settings tile's cell for the imported tiles;
+        // a hidden one takes the exported parked tile.
+        if (settingsHidden && (targetSettings || parkedSettings)) {
+          await setSettingsTileHiddenForImport(true, parkedSettings, null, folderName(0));
+          if (targetSettings) homeTiles = await fetchTilesForImport(0);
+        }
+        await applyImportGrid(0, homeTiles, homePlan, 7, folderName(0), sourceToTarget);
+        if (!settingsHidden && !targetSettings) {
+          await setSettingsTileHiddenForImport(
+            false, homePlan.system, { col: homePlan.system.col, row: homePlan.system.row }, folderName(0));
+        }
       }
 
+      // A folder tile names the folder the server created for it; exports
+      // without folder targets match folders by name and icon.
       let targetFolders = await fetchFoldersForImport();
       updateFolderImportMap(sourceFolders, targetFolders, sourceToTarget);
 
-      const pendingFolderIds = sourceFolders
-        .map(folder => parseInt(folder && folder.id, 10))
-        .filter(folderId => !isNaN(folderId) && folderId !== 0 && Array.isArray(grids[String(folderId)]));
-
+      const pendingFolderIds = sourceFolderIds.slice();
       let progressed = true;
       while (pendingFolderIds.length && progressed) {
         progressed = false;
@@ -6748,32 +7399,25 @@ function syncTileRadiusControls(tabEl) {
             i++;
             continue;
           }
-          await replaceFolderGridForImport(targetFolderId, grids[String(sourceFolderId)], 8, sourceToTarget);
+          await replaceFolderGridForImport(
+            targetFolderId, grids[String(sourceFolderId)], 8, folderName(sourceFolderId), sourceToTarget);
           pendingFolderIds.splice(i, 1);
           progressed = true;
           targetFolders = await fetchFoldersForImport();
           updateFolderImportMap(sourceFolders, targetFolders, sourceToTarget);
         }
       }
-
+      // A folder no folder tile of the export leads to cannot be reached on
+      // the device either; it stays out instead of failing the import.
       if (pendingFolderIds.length) {
-        throw new Error('Folder mapping failed');
+        console.warn('Import skipped unreachable folders:', pendingFolderIds);
       }
 
-      // Versions 1 and 2 had no screensaver block and stay importable
-      // unchanged. Alternative flat field names are accepted as well, in case an
-      // intermediate state of this export function was used.
-      const screensaverBlock = payload.screensaver && typeof payload.screensaver === 'object'
-        ? payload.screensaver
-        : null;
-      const screensaverConfig = screensaverBlock?.config || payload.screensaver_config;
-      const screensaverGrid = screensaverBlock?.grid || payload.screensaver_grid;
       if (screensaverConfig && typeof screensaverConfig === 'object') {
         await importScreensaverConfig(screensaverConfig);
       }
-      if (Array.isArray(screensaverGrid)) {
-        await replaceScreensaverGridForImport(
-          screensaverGrid, screensaverBlock?.source_layout || null);
+      if (screensaverTiles) {
+        await replaceScreensaverGridForImport(screensaverTiles);
       }
 
       try { localStorage.removeItem('tileDrafts'); } catch (e) {}
@@ -6781,7 +7425,12 @@ function syncTileRadiusControls(tabEl) {
       setTimeout(() => location.reload(), 600);
     } catch (e) {
       console.error('Tile import failed:', e);
-      showNotification(t('importFailed'), false);
+      if (e instanceof TileImportError) {
+        const message = t(e.kind === 'conflict' ? 'importConflict' : 'importStopped');
+        showNotification(message.replace('{tile}', importTileName(e.tile)).replace('{folder}', e.folderName), false);
+      } else {
+        showNotification(t('importFailed'), false);
+      }
     }
   }
 
@@ -6894,6 +7543,7 @@ function syncTileRadiusControls(tabEl) {
         ? tile.switch_style
         : (tile.sensor_decimals === 1 ? 1 : 0);
       fd.append('switch_style', style);
+      fd.append('sensor_value_font', tile.sensor_value_font ?? 0);
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
@@ -6913,6 +7563,7 @@ function syncTileRadiusControls(tabEl) {
       fd.append('clock_date_format', (tile.sensor_gauge_max !== undefined && tile.sensor_gauge_max !== null) ? tile.sensor_gauge_max : 0);
     } else if (safeType === 12) {
       fd.append('weather_entity', tile.sensor_entity || tile.weather_entity || '');
+      fd.append('weather_colored_icons', Number(tile.sensor_display_mode) === 1 ? '0' : '1');
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
@@ -6953,6 +7604,12 @@ function syncTileRadiusControls(tabEl) {
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
+    } else if (safeType === 24 || safeType === 25 || safeType === 26) {
+      const kind = devicePreviewKind(safeType);
+      fd.append(kind + '_entity', tile.sensor_entity || tile[kind + '_entity'] || '');
+      if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
+        fd.append('popup_open_mode', tile.popup_open_mode);
+      }
     } else if (safeType === 18) {
       fd.append('camera_entity', tile.sensor_entity || tile.camera_entity || '');
     } else if (safeType === 16) {
@@ -6969,10 +7626,13 @@ function syncTileRadiusControls(tabEl) {
     }
 
     const res = await fetch('/api/tiles', { method: 'POST', body: fd });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!data.success) {
-      throw new Error('Tile speichern fehlgeschlagen');
+      // The server's English reason stays in the log (importTilesPayload);
+      // the page names the tile and folder in the user's language.
+      throw new Error('Tile save failed: ' + (data.error || ('HTTP ' + res.status)));
     }
+    return data;
   }
 
   function rgbToHex(rgb) {
@@ -7018,7 +7678,7 @@ function syncTileRadiusControls(tabEl) {
   // Channels (0..255) of a computed CSS color, or null when it is fully
   // transparent or unknown. Chrome reports color-mix() backgrounds (screensaver
   // tiles with an opacity) as color(srgb r g b / a) with 0..1 channels.
-  function cssColorChannels(value) {
+  function cssColorMatch(value) {
     const text = String(value || '').trim();
     const srgb = text.match(/^color\(srgb\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s*\/\s*([\d.]+%?))?/);
     const rgb = text.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?/);
@@ -7026,29 +7686,149 @@ function syncTileRadiusControls(tabEl) {
     if (!match) return null;
     const alpha = match[4] === undefined ? 1
       : match[4].endsWith('%') ? Number(match[4].slice(0, -1)) / 100 : Number(match[4]);
-    if (!(alpha > 0)) return null;
+    return { match, srgb: !!srgb, alpha };
+  }
+  function cssColorChannels(value) {
+    const parsed = cssColorMatch(value);
+    if (!parsed || !(parsed.alpha > 0)) return null;
     return [1, 2, 3].map(i => {
-      const v = Number(match[i]) * (srgb ? 255 : 1);
+      const v = Number(parsed.match[i]) * (parsed.srgb ? 255 : 1);
       return Math.max(0, Math.min(255, Math.round(v)));
     });
   }
+  // The alpha (0..1) of a computed CSS color; 0 when unknown.
+  function cssColorAlpha(value) {
+    const parsed = cssColorMatch(value);
+    return parsed && parsed.alpha > 0 ? Math.min(1, parsed.alpha) : 0;
+  }
+  // Mirrors src/ui/shared/tone_color.h: the circle and the controls sit a
+  // fixed step of perceived lightness (OKLCH L) above the card in the icon's
+  // hue (white icons: the tile's own color, lighter); a dark icon is shown
+  // lighter in its own hue.
+  function toneToLinear(v) {
+    v /= 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  }
+  function toneToSrgb(v) {
+    if (v <= 0) return 0;
+    if (v >= 1) return 255;
+    return Math.floor((v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255 + 0.5);
+  }
+  function toneOklch(rgb) {
+    const [r, g, b] = rgb.map(toneToLinear);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    const B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    return { L: 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s, C: Math.hypot(A, B), h: Math.atan2(B, A) };
+  }
+  function toneLinear(L, C, h) {
+    const A = C * Math.cos(h), B = C * Math.sin(h);
+    const l = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+    const m = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+    const s = (L - 0.0894841775 * A - 1.2914855480 * B) ** 3;
+    return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+      -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s];
+  }
+  function toneRgb(L, C, h) {
+    L = Math.min(1, Math.max(0, L));
+    const fits = c => toneLinear(L, c, h).every(v => v >= -0.0005 && v <= 1.0005);
+    if (!fits(C)) {
+      let lo = 0, hi = C;
+      for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (fits(mid)) lo = mid; else hi = mid; }
+      C = lo;
+    }
+    return toneLinear(L, C, h).map(toneToSrgb);
+  }
+  function toneBlend(under, over, opa) {
+    return under.map((v, i) => Math.floor((v * (255 - opa) + over[i] * opa + 127) / 255));
+  }
+  // tone_color::fill(): what the circle and the controls draw. Opaque in
+  // exactly their steps: 0.06 L at the default 25 %, controls at least 0.03;
+  // the circle keeps 55 % of the icon's chroma. On a see-through card
+  // (screensaver tiles below full Tile opacity) a veil calibrated to land on
+  // the step, the controls at least opacity 32.
+  function toneFill(card, icon, tinted, percent, seeThrough) {
+    percent = Math.min(100, Math.max(0, percent));
+    const base = toneOklch(card), seed = toneOklch(icon);
+    const lift = step => tinted ? toneRgb(base.L + step, seed.C * 0.55, seed.h) : toneRgb(base.L + step, base.C, base.h);
+    const discStep = percent * 0.0024;
+    if (!seeThrough) {
+      const control = lift(Math.max(discStep, 0.03));
+      const disc = !percent ? card.slice() : discStep >= 0.03 ? control : lift(discStep);
+      return { discColor: disc, controlColor: control, discOpa: percent ? 255 : 0, controlOpa: 255, disc, control, tinted };
+    }
+    const discOpa = Math.floor((percent * 255 + 50) / 100);
+    const controlOpa = Math.max(discOpa, 32);
+    const target = lift(discOpa > 32 ? discStep : 0.03);
+    const color = card.map((under, i) => {
+      const delta = (target[i] - under) * 255;
+      return Math.min(255, Math.max(0, under + Math.trunc((delta + (delta >= 0 ? 1 : -1) * Math.floor(controlOpa / 2)) / controlOpa)));
+    });
+    return {
+      discColor: color, controlColor: color, discOpa, controlOpa,
+      disc: toneBlend(card, color, discOpa), control: toneBlend(card, color, controlOpa), tinted,
+    };
+  }
+  // tone_color::readable_icon(): unchanged while at least 0.22 L above the
+  // circle the icon gets with the default settings (tile color #1A1A1A, tile
+  // color From icon 20 % like tile_tint::background, Circle strength 25 %),
+  // else lighter in its own hue. The global tile color and the Circle
+  // strength never change an icon's color.
+  function toneReadableIcon(icon) {
+    const tinted = icon[0] !== icon[1] || icon[1] !== icon[2];
+    const linear = v => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const contrast = c => 1.05 / (0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2]) + 0.05);
+    let card = [26, 26, 26];
+    if (tinted) {
+      card = card.map((v, i) => Math.floor((v * 80 + icon[i] * 20 + 50) / 100));
+      for (let i = 0; i < 40 && contrast(card) < 4.5; i++) card = card.map(v => Math.floor((v * 95 + 50) / 100));
+    }
+    const base = toneOklch(card), seed = toneOklch(icon);
+    const circle = tinted ? toneRgb(base.L + 0.06, seed.C * 0.55, seed.h) : toneRgb(base.L + 0.06, base.C, base.h);
+    const minimum = toneOklch(circle).L + 0.22;
+    return seed.L >= minimum ? icon : toneRgb(minimum, seed.C, seed.h);
+  }
+  function toneHex(rgb) {
+    return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+  // Default tile color "From icon" strength (tile_icon_colors::kTintDefault).
+  const ICON_FILL_DEFAULT = 20;
+  // A PIN-protected Folder or Settings tile shows a lock in its icon
+  // (navigate renderer, icon_lock_mark.h); without an own icon the lock is
+  // the icon. Folders follow their target's stored PIN (data-folder-pin-enabled),
+  // Settings the stored Settings PIN.
+  function previewTileLocked(typeValue, tileElem) {
+    if (String(typeValue) === '7') {
+      return document.getElementById('folder0_settings_pin_enabled')?.dataset.pinConfigured === '1';
+    }
+    return String(typeValue) === '4' && tileElem?.dataset.folderPinEnabled === '1';
+  }
+  const PREVIEW_LOCK_MARK = '<span class="tile-icon-lock mdi mdi-lock" aria-hidden="true"></span>';
+
   function applyIconDiscTint(tileElem) {
     const icon = tileElem?.querySelector(':scope > .tile-icon');
     if (!icon) return;
     const glow = tileElem.dataset.iconGlow !== '0';
+    // The color the icon was given (tile_icon_disc::icon_color): a shown
+    // readability lift is remembered, a new color from the editor replaces it.
+    const current = cssColorChannels(getComputedStyle(icon).color);
+    const currentHex = current ? toneHex(current) : '';
+    const given = icon.dataset.toneShown && icon.dataset.toneShown === currentHex && icon.dataset.toneGiven
+      ? icon.dataset.toneGiven.slice(1).match(/../g).map(v => parseInt(v, 16))
+      : current;
+    const givenHex = given ? toneHex(given) : '';
     // Mirrors tile_icon_source.cpp on_icon_color(): with Tile color "From
-    // icon color" the tile takes the color the icon shows; grey and white
+    // icon color" the tile takes the color the icon was given; grey and white
     // icons (off, default) keep the untinted background (tile_tint::choose).
     const fill = Number(tileElem.dataset.iconFill || 0);
     if (fill && tileElem.dataset.ruleTint !== '1' && typeof tileTintBackground === 'function' &&
         typeof tileTintChoice === 'function') {
-      const iconRgb = cssColorChannels(getComputedStyle(icon).color);
-      const choice = iconRgb
-        ? tileTintChoice(false, '', 0, fill, '#' + iconRgb.map(v => v.toString(16).padStart(2, '0')).join(''))
-        : null;
+      const choice = given ? tileTintChoice(false, '', 0, fill, givenHex) : null;
       if (choice) {
-        const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
-        tileElem.style.background = tileTintBackground(base || '#1A1A1A', choice.color, choice.percent);
+        setTileTintBackground(tileElem, choice.color, choice.percent);
       } else if (tileElem.dataset.baseBg !== undefined) {
         tileElem.style.background = tileElem.dataset.baseBg;
       }
@@ -7058,39 +7838,69 @@ function syncTileRadiusControls(tabEl) {
     // sensor); only picking a color stores a fixed one.
     if (typeof currentTileTab === 'string' && tileElem.id === currentTileTab + '-tile-' + currentTileIndex) {
       const input = document.getElementById(currentTileTab + '_tile_icon_color');
-      const shown = cssColorChannels(getComputedStyle(icon).color);
-      if (input && input.dataset.unset === '1' && shown) {
-        input.value = '#' + shown.map(v => v.toString(16).padStart(2, '0')).join('');
-      }
+      if (input && input.dataset.unset === '1' && given) input.value = givenHex;
     }
-    // Mirrors tile_icon_disc::contrast_step_for()/scaled_opa(): discs are
-    // subtler on dark tiles (8 % instead of 15 % at luma <= 0.08) in 4 steps.
-    const bg = cssColorChannels(getComputedStyle(tileElem).backgroundColor);
-    const iconRgb = cssColorChannels(getComputedStyle(icon).color);
-    const tinted = glow && iconDiscTinted(getComputedStyle(icon).color);
+    const tinted = glow && !!given && iconDiscTinted('rgb(' + given.join(',') + ')');
     icon.classList.toggle('tile-icon-tinted', tinted);
     // Mirrors ui_surface_style::border_hint(): a glowing icon gives the tile
     // outline its hue halfway to white (lv_color_mix(white, icon, 128)) at the
     // hairline's 20 %, mostly the tile with a hint of the icon.
-    if (tinted && iconRgb) {
-      const hint = iconRgb.map(v => Math.floor(((255 * 128 + v * 127) * 0x8081) / 0x800000));
+    // Only a card in the tile color From icon (tile_icon_disc
+    // apply_tile_options); Global and Custom keep the neutral hairline.
+    if (tinted && fill > 0) {
+      const hint = given.map(v => Math.floor(((255 * 128 + v * 127) * 0x8081) / 0x800000));
       tileElem.style.setProperty('--tile-border-tint', 'rgba(' + hint.join(',') + ',0.20)');
     } else {
       tileElem.style.removeProperty('--tile-border-tint');
     }
-    const luma = bg ? (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) / 255 : 1;
-    const step = Math.floor(Math.min(1, Math.max(0, (luma - 0.08) / 0.17)) * 3 + 0.5);
-    const scaled = full => Math.floor((full * (24 + 7 * step) + 22) / 45);
-    // Global Glow strength (icon_glow.h, 0..100 %): the glowing disc at that
-    // percentage and the white disc scaled with it (38 at 25 %), both scaled
-    // like the device.
+    // Global Circle strength (icon_glow.h, 0..100 %).
     const glowRaw = String(getComputedStyle(document.documentElement).getPropertyValue('--icon-glow-pct')).trim();
     const glowValue = glowRaw === '' ? 25 : Number(glowRaw);
     const glowPct = Math.min(100, Math.max(0, Number.isFinite(glowValue) ? glowValue : 25));
-    const neutralOpa = Math.floor((38 * glowPct + 12) / 25);
-    tileElem.style.setProperty('--icon-disc-opa', (scaled(neutralOpa) / 255).toFixed(3));
-    const glowOpa = Math.floor((glowPct * 255 + 50) / 100);
-    tileElem.style.setProperty('--icon-disc-glow', (scaled(glowOpa) * 100 / 255).toFixed(1) + '%');
+    const background = getComputedStyle(tileElem).backgroundColor;
+    const card = cssColorChannels(background) || [0, 0, 0];
+    // Screensaver tiles below full Tile opacity let the wallpaper through.
+    const seeThrough = cssColorAlpha(background) < 1;
+    // "Circle in icon color" shows the circle of the tile color "From icon"
+    // on a Global or Custom tile too (tile_icon_disc::circle_card): computed
+    // for the card From icon would give at its default strength.
+    let circleCard = card;
+    if (tinted && !(fill > 0) && !seeThrough && typeof tileTintBackground === 'function') {
+      const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
+      const familyHex = tileTintBackground(base || '#1A1A1A', givenHex, ICON_FILL_DEFAULT);
+      circleCard = [1, 3, 5].map(i => parseInt(familyHex.slice(i, i + 2), 16));
+    }
+    const tone = toneFill(circleCard, given || [255, 255, 255], tinted, glowPct, seeThrough);
+    const rgba = (color, opa) => 'rgba(' + color.join(',') + ',' + (opa / 255).toFixed(3) + ')';
+    tileElem.style.setProperty('--icon-disc-bg', rgba(tone.discColor, tone.discOpa));
+    // Mirrors icon_lock_mark::behind(): the lock's rim takes the circle over
+    // the card, or the card when the circle is off.
+    const discShown = tileElem.dataset.iconDisc === '1' ||
+      (tileElem.dataset.iconDisc !== '2' && !tileElem.closest('.icon-discs-off'));
+    const discAlpha = discShown ? tone.discOpa / 255 : 0;
+    const lockRim = card.map((c, i) => Math.round(c * (1 - discAlpha) + tone.discColor[i] * discAlpha));
+    tileElem.style.setProperty('--icon-lock-rim', 'rgb(' + lockRim.join(',') + ')');
+    // Mirrors tile_icon_source::refresh_controls(): tile controls (the
+    // Climate target pill, Media buttons, the Switch bar) take the circle's
+    // color whenever it is tinted, in every tile color; else the neutral step.
+    const controls = tinted ? tone : toneFill(card, given || [255, 255, 255], false, glowPct, seeThrough);
+    tileElem.style.setProperty('--control-fill', rgba(controls.controlColor, controls.controlOpa));
+    // The icon, readable like on the device (the same with every tile color,
+    // Circle strength and circle option).
+    if (!given) return;
+    const readable = toneReadableIcon(given);
+    const readableHex = toneHex(readable);
+    if (readableHex === givenHex) {
+      if (icon.dataset.toneShown) {
+        delete icon.dataset.toneShown;
+        delete icon.dataset.toneGiven;
+        icon.style.color = givenHex;
+      }
+    } else {
+      icon.dataset.toneGiven = givenHex;
+      icon.dataset.toneShown = readableHex;
+      icon.style.color = readableHex;
+    }
   }
   // Mirrors tileBgColorFollowsDefault(): an unset color and the built-in
   // default grey (stored explicitly by older editors) follow the global
@@ -7115,6 +7925,7 @@ function syncTileRadiusControls(tabEl) {
   // colors offer From icon color. Nothing else switches the choice.
   function tileColorMode(tab) {
     if (document.getElementById(tab + '_tile_icon_fill')?.checked) return 'icon';
+    if (document.getElementById(tab + '_tile_cover_fill')?.checked) return 'cover';
     return document.getElementById(tab + '_tile_color')?.dataset.bgColorDefault === '0' ? 'custom' : 'global';
   }
   function syncTileColorMode(tab) {
@@ -7122,15 +7933,20 @@ function syncTileRadiusControls(tabEl) {
     const iconOffered = typeof tileTypeHasIconColors === 'function' && tileTypeHasIconColors(typeValue);
     const fill = document.getElementById(tab + '_tile_icon_fill');
     if (fill?.checked && !iconOffered) fill.checked = false;
+    // Media tiles also offer "From cover" (the album cover's color).
+    const coverOffered = String(typeValue) === '15';
+    const coverFill = document.getElementById(tab + '_tile_cover_fill');
+    if (coverFill?.checked && !coverOffered) coverFill.checked = false;
     const mode = tileColorMode(tab);
     document.getElementById(tab + '_tile_color_modes')?.querySelectorAll('[data-tile-color-mode]').forEach(button => {
       const active = button.dataset.tileColorMode === mode;
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
       if (button.dataset.tileColorMode === 'icon') button.classList.toggle('hidden', !iconOffered);
+      if (button.dataset.tileColorMode === 'cover') button.classList.toggle('hidden', !coverOffered);
     });
     document.getElementById(tab + '_tile_color_row')?.classList.toggle('color-hidden', mode !== 'custom');
-    document.getElementById(tab + '_tile_icon_fill_row')?.classList.toggle('hidden', mode !== 'icon');
+    document.getElementById(tab + '_tile_icon_fill_row')?.classList.toggle('hidden', mode !== 'icon' && mode !== 'cover');
     const strength = document.getElementById(tab + '_tile_icon_fill_strength');
     const output = document.getElementById(tab + '_tile_icon_fill_strength_value');
     if (strength && output) output.textContent = strength.value + ' %';
@@ -7143,6 +7959,8 @@ function syncTileRadiusControls(tabEl) {
     if (before === 'custom' && mode !== 'custom') input.dataset.customColor = input.value;
     const fill = document.getElementById(tab + '_tile_icon_fill');
     if (fill) fill.checked = mode === 'icon';
+    const coverFill = document.getElementById(tab + '_tile_cover_fill');
+    if (coverFill) coverFill.checked = mode === 'cover';
     const remembered = input.dataset.customColor || '';
     if (mode === 'custom') {
       if (before !== 'custom' && remembered) input.value = remembered;
@@ -7158,9 +7976,14 @@ function syncTileRadiusControls(tabEl) {
     updateTilePreview(tab);
     updateDraft(tab);
     scheduleAutoSave(tab);
-    // A first Custom opens the color picker right away.
+    // A first Custom opens the color picker right away. The color row was
+    // display:none until syncTileColorMode above, and Chrome anchors the
+    // picker to the input's box from the last layout without running one:
+    // with no box yet it opened in the top left corner of the window. Reading
+    // the input's rect lays the row out first.
     if (mode === 'custom' && before !== 'custom' && !remembered) {
       try {
+        input.getBoundingClientRect();
         if (typeof input.showPicker === 'function') input.showPicker();
       } catch (_) {}
     }
@@ -7224,8 +8047,7 @@ function syncTileRadiusControls(tabEl) {
       ? iconColorTilePreviewTint(String(typeValue ?? '0'), record, ownEntity, meta) : null;
     el.dataset.ruleTint = tint ? '1' : '0';
     if (!tint) return;
-    const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
-    el.style.background = tileTintBackground(base || '#1A1A1A', tint.color, tint.percent);
+    setTileTintBackground(el, tint.color, tint.percent);
   }
   function snapshotBgColorIsDefault(snapshot) {
     return String(snapshot?.bg_color_default || '0') === '1' ||
@@ -7275,10 +8097,6 @@ function syncTileRadiusControls(tabEl) {
     const fill = document.getElementById(tab + '_tile_icon_fill');
     if (fill) fill.checked = false;
     syncTileColorMode(tab);
-    if (isScreensaverTileTab(tab)) {
-      const opacity = document.getElementById('screensaver_tile_opacity');
-      if (opacity) opacity.value = String(SCREENSAVER_TILE_DEFAULT_OPACITY);
-    }
     updateTilePreview(tab);
     updateDraft(tab);
     scheduleAutoSave(tab);
@@ -7303,34 +8121,37 @@ function syncTileRadiusControls(tabEl) {
     }
     let cls = ['tile'];
     if (meta.css) cls.push(meta.css);
-    if (typeValue === '5' && tile.switch_style === 1) cls.push('switch-toggle');
     if (typeValue === '0' && (!meta.css || meta.css !== 'empty')) cls.push('empty');
     el.className = cls.join(' ');
+    if (typeValue === '5') applySwitchPreviewLayout(el, tile.switch_style, Number(tile.span_h) === 0.5);
     el.dataset.type = typeValue;
     el.dataset.iconDisc = ['1', '2'].includes(String(tile?.icon_disc)) ? String(tile.icon_disc) : '0';
     el.dataset.iconGlow = ['0', 'false'].includes(String(tile?.icon_glow)) ? '0' : '1';
     el.classList.toggle('tile-border-hidden', ['8','9','10'].includes(typeValue) && Number(tile.sensor_display_mode) === 1);
     applyCompactSensorPreview(el, typeValue, tile, tile.sensor_display_mode, tile.sensor_value_font);
-    if (typeValue === '4') el.dataset.navigateTarget = String(tile.navigate_target || 0);
-    else delete el.dataset.navigateTarget;
+    if (typeValue === '4') {
+      el.dataset.navigateTarget = String(tile.navigate_target || 0);
+      el.dataset.folderPinEnabled = tile.folder_pin_enabled === true ? '1' : '0';
+    } else {
+      delete el.dataset.navigateTarget;
+      delete el.dataset.folderPinEnabled;
+    }
+    delete el.dataset.bgOpacity;
     if (typeValue === '0') el.style.background = 'transparent';
     else {
       const isDefaultBg = tileBgFollowsDefault(tile.bg_color);
       const bg = tileBackgroundCss(meta, isDefaultBg,
         tileBgToHex(tile.bg_color, meta.defaultBg || '#353535'));
       if (isScreensaverTileTab(tab)) {
-        const opacity = clampInt(tile.background_opacity, 0, 255,
-                                 SCREENSAVER_TILE_DEFAULT_OPACITY);
+        // One opacity for every screensaver tile (screensaver footer).
+        const opacity = screensaverTileOpacity();
         el.style.background = tileBackgroundCss(meta, isDefaultBg,
           tileBgToHex(tile.bg_color, meta.defaultBg || '#353535'), opacity);
+        el.dataset.bgOpacity = String(opacity);
+        // A fully transparent card casts no shadow (apply_slot_tile_shadows).
+        el.classList.toggle('screensaver-bg-clear', opacity === 0);
       } else {
         el.style.background = bg;
-      }
-      el.style.removeProperty('--switch-knob-color');
-      el.style.removeProperty('--switch-on-color');
-      if (typeValue === '5' && tile.switch_style === 1) {
-        el.style.setProperty('--switch-knob-color', bg);
-        el.style.setProperty('--switch-on-color', '#3B82F6');
       }
     }
     const sensorValueClass = getSensorValueFontClass(tile.sensor_value_font);
@@ -7345,7 +8166,7 @@ function syncTileRadiusControls(tabEl) {
                           previewKind === 'switch' ||
                           previewKind === 'weather' || previewKind === 'media' ||
                           previewKind === 'climate' || previewKind === 'cover' ||
-                          previewKind === 'camera')
+                          previewKind === 'device' || previewKind === 'camera')
         ? (tile.sensor_entity || '')
         : (typeValue === '2' ? (sensorMeta?.sceneEntities?.[tile.scene_alias] || '') : '');
       const rawIcon = tile.icon_name || '';
@@ -7375,6 +8196,14 @@ function syncTileRadiusControls(tabEl) {
           iconName = coverPreviewIcon(coverPreviewState, iconName);
         }
       }
+      const deviceKind = previewKind === 'device' ? devicePreviewKind(typeValue) : '';
+      let devicePreviewState = null;
+      if (deviceKind) {
+        devicePreviewState = parseDevicePreviewPayload(deviceDetailPayload(tile.sensor_entity || '', sensorMeta));
+        if (!normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) {
+          iconName = devicePreviewIcon(deviceKind, devicePreviewState);
+        }
+      }
       let binarySensorPreviewState = null;
       if (previewKind === 'binary_sensor') {
         binarySensorPreviewState = parseBinarySensorPreviewPayload(
@@ -7385,6 +8214,9 @@ function syncTileRadiusControls(tabEl) {
       }
 
       let html = '';
+      const locked = typeof previewTileLocked === 'function' && previewTileLocked(typeValue, el);
+      const lockIsIcon = locked && !iconName;
+      if (lockIsIcon) iconName = 'lock';
 
       if (iconName) {
         const iconColor = previewIconColor(typeValue, tile.icon_colors, tile.sensor_entity || '',
@@ -7392,11 +8224,14 @@ function syncTileRadiusControls(tabEl) {
             ? climatePreviewColor(climatePreviewState)
             : (previewKind === 'cover'
               ? coverPreviewColor(coverPreviewState)
-              : (previewKind === 'binary_sensor'
-                ? binarySensorPreviewColor(binarySensorPreviewState)
-                : '')));
+              : (deviceKind
+                ? devicePreviewColor(deviceKind, devicePreviewState)
+                : (previewKind === 'binary_sensor'
+                  ? binarySensorPreviewColor(binarySensorPreviewState)
+                  : ''))));
         const iconStyle = iconColor ? ' style="color:' + escapeHtml(iconColor) + '"' : '';
-        html += '<i class="mdi mdi-' + escapeHtml(iconName) + ' tile-icon"' + iconStyle + '></i>';
+        html += '<i class="mdi mdi-' + escapeHtml(iconName) + ' tile-icon"' + iconStyle + '>' +
+          (locked && !lockIsIcon ? PREVIEW_LOCK_MARK : '') + '</i>';
       }
 
       let displayTitle = tile.title || '';
@@ -7410,12 +8245,6 @@ function syncTileRadiusControls(tabEl) {
       }
       applyTileAriaLabel(el, displayTitle, typeValue);
 
-      if (previewKind === 'weather') {
-        html += '<div class="tile-ghost-icon"><i class="mdi mdi-weather-partly-cloudy"></i></div>';
-      }
-      if (previewKind === 'media') {
-        html += '<div class="tile-ghost-icon"><i class="mdi mdi-music"></i></div>';
-      }
 
       if (previewKind === 'sensor') {
         let value = '--';
@@ -7427,22 +8256,28 @@ function syncTileRadiusControls(tabEl) {
           '</div>';
       }
       if (previewKind === 'climate') {
-        html += climatePreviewSlots(
-          climatePreviewState,
-          tile.span_w || 1,
-          tile.span_h || 1,
-          decodeClimateSlotConfig(tile.sensor_gauge_min || 0),
-          decodeClimateTargetLayouts(tile.sensor_gauge_max || 0),
-          tile.climate_geometry || tile.scene_alias || '');
+        // Layout "with value" and half height: the value pair beside the
+        // disc; half height has no mini fields.
+        const climateHalf = Number(tile.span_h) === 0.5;
+        const climateValue = Number(tile.sensor_display_mode) === 1;
+        el.classList.toggle('climate-header', climateValue && !climateHalf);
+        if (climateHalf || climateValue) {
+          html += '<div class="tile-value tile-switch-state">' +
+            escapeHtml(climatePreviewHeaderText(climatePreviewState)) + '</div>';
+        }
+        if (!climateHalf) {
+          html += climatePreviewSlots(
+            climatePreviewState,
+            tile.span_w || 1,
+            tile.span_h || 1,
+            decodeClimateSlotConfig(tile.sensor_gauge_min || 0),
+            decodeClimateTargetLayouts(tile.sensor_gauge_max || 0),
+            tile.climate_geometry || tile.scene_alias || '',
+            climateValue);
+        }
       }
-      if (previewKind === 'cover') {
-        const value = coverPreviewState?.position !== null &&
-                      coverPreviewState?.position !== undefined
-          ? String(coverPreviewState.position) + '%' : '--%';
-        html += '<div class="tile-value tile-cover-value">' +
-          escapeHtml(coverPreviewStateText(coverPreviewState)) +
-          '<br>' + escapeHtml(value) + '</div>';
-      }
+      if (previewKind === 'cover') html += coverPreviewExtraHtml(coverPreviewState, Number(tile.span_h) === 0.5);
+      if (deviceKind) html += devicePreviewExtraHtml(deviceKind, devicePreviewState, Number(tile.span_h) === 0.5);
       if (previewKind === 'binary_sensor') {
         html += '<div class="tile-value tile-binary-sensor-value ' + (Number(tile.sensor_value_font) ? sensorValueClass : '') + '" id="' +
           tab + '-tile-' + index + '-value">' +
@@ -7457,7 +8292,7 @@ function syncTileRadiusControls(tabEl) {
         const clockTimeFormat = (tile.sensor_gauge_min !== undefined) ? tile.sensor_gauge_min : 0;
         const clockDateFormat = (tile.sensor_gauge_max !== undefined) ? tile.sensor_gauge_max : 0;
         if (flags & 1) html += '<div class="tile-clock-time" ' + getClockPreviewTextStyle(clockTimeFont, 40, '#fff') + '>' + getClockPreviewTime(clockTimeFormat) + '</div>';
-        if (flags & 2) html += '<div class="tile-clock-date" ' + getClockPreviewTextStyle(clockDateFont, 24, '#fff') + '>' + getClockPreviewDate(clockDateFormat) + '</div>';
+        if (flags & 2) html += '<div class="tile-clock-date" ' + getClockPreviewTextStyle(clockDateFont, 20, '#fff') + '>' + getClockPreviewDate(clockDateFormat) + '</div>';
       }
       if (previewKind === 'text') {
         const textValue = tile.text_value || tile.scene_alias || tile.key_macro || '';
@@ -7467,21 +8302,45 @@ function syncTileRadiusControls(tabEl) {
             escapeHtml(textValue) + '</div>';
         }
       }
-      if (previewKind === 'switch' && tile.switch_style === 1) {
-        html += '<div class="tile-switch" id="' + tab + '-tile-' + index + '-switch"><div class="tile-switch-knob"></div></div>';
-      }
+      if (previewKind === 'switch') html += switchPreviewExtraHtml(tile.switch_style, Number(tile.span_h) === 0.5);
       html += getTileResizeHandlesHtml(typeValue);
       el.innerHTML = html;
+      if (previewKind === 'weather') {
+        applyWeatherPreview(el, parseWeatherPreviewPayload(
+          tile.sensor_entity ? (sensorMeta?.weatherValues?.[tile.sensor_entity] ?? '') : ''),
+          tile, iconName, previewIconColor(typeValue, tile.icon_colors, tile.sensor_entity || '', sensorMeta, null, ''));
+      }
+      if (previewKind === 'media') {
+        applyMediaPreview(el, parseMediaPreviewPayload(
+          tile.sensor_entity ? (sensorMeta?.mediaValues?.[tile.sensor_entity] ?? '') : ''),
+          tile, iconName, tile.sensor_entity ? (metaNames[tile.sensor_entity] || '') : '');
+      }
       if (typeof applyTileRulesTint === 'function') {
         applyTileRulesTint(el, typeValue, tile.icon_colors, tile.sensor_entity || '', sensorMeta);
       }
+      if (previewKind === 'media') {
+        applyMediaCoverTint(el, tile.icon_colors, sensorMeta?.mediaCoverColors?.[tile.sensor_entity || ''] || '');
+      }
       applyIconDiscTint(el);
-      if (typeValue === '9') fitCompactClockPreview(el);
+      if (previewKind === 'cover') {
+        applyCoverPreview(el, coverPreviewState, Number(tile.span_h) === 0.5);
+        // The header classes need the bar class set above (switch-tall).
+        applyCompactSensorPreview(el, typeValue, tile, tile.sensor_display_mode, tile.sensor_value_font);
+      }
+      if (deviceKind) {
+        applyDevicePreview(el, deviceKind, devicePreviewState, Number(tile.span_h) === 0.5);
+        applyCompactSensorPreview(el, typeValue, tile, tile.sensor_display_mode, tile.sensor_value_font);
+      }
+      if (typeValue === '9') {
+        // A title or icon moves the clock down (clock/renderer.cpp).
+        el.classList.toggle('clock-has-header', !!(displayTitle || iconName));
+        fitCompactClockPreview(el);
+      }
     }
     if (currentTileTab === tab && currentTileIndex === index) el.classList.add('active');
     if (typeValue === '5' && tile.sensor_entity) {
       const state = parseSwitchPayload(metaValues[tile.sensor_entity] ?? '');
-      applySwitchPreviewState(el, state);
+      applySwitchPreviewState(el, state, tile.sensor_entity);
     }
   }
 
@@ -7515,7 +8374,9 @@ function syncTileRadiusControls(tabEl) {
 
   function loadSensorValues(
       refreshTiles = false, forceMetaFetch = false, tabsOverride = null) {
-    if (dragSource || resizeState) {
+    // A Settings move to or from the parking slot shows ahead of the device
+    // (previewSettingsTileTransfer); stored tile data would draw it back.
+    if (dragSource || resizeState || settingsTileTransfersInFlight) {
       queueDeferredSensorRefresh(refreshTiles);
       return Promise.resolve(false);
     }
@@ -7537,7 +8398,7 @@ function syncTileRadiusControls(tabEl) {
       // A refresh may have started shortly before the drag and only arrive
       // during it. In that case it must not overwrite the local preview with the
       // old device state.
-      if (dragSource || resizeState) {
+      if (dragSource || resizeState || settingsTileTransfersInFlight) {
         queueDeferredSensorRefresh(refreshTiles);
         return;
       }
@@ -7590,7 +8451,13 @@ function syncTileRadiusControls(tabEl) {
 
   function createDragPreview(tile) {
     const clone = tile.cloneNode(true);
+    // No second element with the tile's id (getElementById, selection).
+    clone.removeAttribute('id');
     const rect = tile.getBoundingClientRect();
+    // The tile's own display: a forced block dropped the flex centering of
+    // Folder, Settings and Switch tiles, so the drag image showed icon and
+    // disc at the top left (user 2026-10-02).
+    const display = getComputedStyle(tile).display;
     clone.style.position = 'absolute';
     clone.style.top = '-9999px';
     clone.style.left = '-9999px';
@@ -7601,7 +8468,7 @@ function syncTileRadiusControls(tabEl) {
     clone.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
     clone.style.backgroundClip = 'padding-box';
     clone.style.clipPath = 'inset(0 round 11px)';
-    clone.style.display = 'block';
+    clone.style.display = display === 'none' ? 'block' : display;
     document.body.appendChild(clone);
     return clone;
   }
@@ -7711,6 +8578,24 @@ function syncTileRadiusControls(tabEl) {
   }
 
   function getGridCellFromPointer(tab, clientX, clientY) {
+    if (dragSource && dragSource.tab === tab && dragSource.dropOffset) {
+      // The drop spot is the half cell nearest to the drag image's top-left
+      // corner, so it always lies under the dragged tile; the half cell under
+      // the pointer put it up to a half cell off (user 2026-10-02).
+      const metrics = getTileGridMetrics(tab);
+      if (!metrics) return null;
+      const halfX = (metrics.cellW + metrics.gapX) / 2;
+      const halfY = (metrics.cellH + metrics.gapY) / 2;
+      const left = clientX - dragSource.dropOffset.x - metrics.rect.left - metrics.padLeft;
+      const top = clientY - dragSource.dropOffset.y - metrics.rect.top - metrics.padTop;
+      if (!isFinite(left) || !isFinite(top) || !(halfX > 0) || !(halfY > 0)) return null;
+      const layout = getDragSourceLayout();
+      return {
+        col: Math.max(0, Math.min(GRID_COLS - (layout?.span_w || 0.5), Math.round(left / halfX) / 2)),
+        row: Math.max(firstAllowedGridRow(tab),
+                      Math.min(GRID_ROWS - (layout?.span_h || 0.5), Math.round(top / halfY) / 2))
+      };
+    }
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!rawCell) return null;
     if (!dragSource || dragSource.tab !== tab) return rawCell;
@@ -7735,6 +8620,17 @@ function syncTileRadiusControls(tabEl) {
       getTileLayoutFromData(dragSource.tab, dragSource.index);
   }
 
+  // The pointer's offset from the tile's grid corner, measured in the grid
+  // frame (getTileGridMetrics) that the drop spot is snapped in.
+  function getDragLayoutOffset(tab, layout, clientX, clientY) {
+    const metrics = getTileGridMetrics(tab);
+    if (!metrics || !layout) return null;
+    return {
+      x: clientX - metrics.rect.left - metrics.padLeft - layout.col * (metrics.cellW + metrics.gapX),
+      y: clientY - metrics.rect.top - metrics.padTop - layout.row * (metrics.cellH + metrics.gapY)
+    };
+  }
+
   function getDragAnchorCell(tab, layout, clientX, clientY) {
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!layout || !rawCell) return { col: 0, row: 0 };
@@ -7744,23 +8640,14 @@ function syncTileRadiusControls(tabEl) {
     return { col, row };
   }
 
-  function getDragAnchorOffset(tab, layout, grabCellCol, grabCellRow, tileRect) {
-    const metrics = getTileGridMetrics(tab);
-    const rect = tileRect || { width: 0, height: 0 };
-    if (!layout || !metrics) {
-      return {
-        x: Math.max(0, (rect.width / 2) || 0),
-        y: Math.max(0, (rect.height / 2) || 0)
-      };
-    }
-    const unit = 0.5;
-    const x = (grabCellCol * (metrics.cellW + metrics.gapX)) + ((metrics.cellW + metrics.gapX) * unit - metrics.gapX) / 2;
-    const y = (grabCellRow * (metrics.cellH + metrics.gapY)) + ((metrics.cellH + metrics.gapY) * unit - metrics.gapY) / 2;
-    const maxX = Math.max(0, rect.width - 1);
-    const maxY = Math.max(0, rect.height - 1);
+  // Where the pointer took the tile: the drag image stays exactly under the
+  // pointer. Centering it on the grabbed half cell moved it by up to a quarter
+  // tile (user 2026-10-02: a dragged tile sat slightly off).
+  function getDragGrabOffset(tileRect, clientX, clientY) {
+    const rect = tileRect || { left: 0, top: 0, width: 0, height: 0 };
     return {
-      x: Math.max(0, Math.min(maxX, x)),
-      y: Math.max(0, Math.min(maxY, y))
+      x: Math.max(0, Math.min(Math.max(0, rect.width - 1), clientX - rect.left)),
+      y: Math.max(0, Math.min(Math.max(0, rect.height - 1), clientY - rect.top))
     };
   }
 
@@ -8146,8 +9033,12 @@ function syncTileRadiusControls(tabEl) {
       if (slots && html) slots.outerHTML = html;
     }
     const data = getTilesData(tab)?.[resizeState?.index];
+    // A Switch tile gains or loses its bar between half and full height.
+    const isSwitch = Number(data?.type) === 5;
+    if (isSwitch) prepareSwitchResizePreview(preview, data, layout);
     applyCompactSensorPreview(preview, data?.type, layout, data?.sensor_display_mode, data?.sensor_value_font);
     placeholder.replaceChildren(preview);
+    if (isSwitch) finishSwitchResizePreview(preview, data);
   }
 
   function updateResizePlaceholder(tab, layout, valid) {
@@ -8313,6 +9204,9 @@ function syncTileRadiusControls(tabEl) {
     tile.classList.add('resizing');
     tile.draggable = false;
     document.body.classList.add('tile-resize-active');
+    // The hidden card's target shows at once: before the first pointer move
+    // the tile was simply gone (user 2026-10-02).
+    updateResizePlaceholder(tab, layout, true);
     window.addEventListener('pointermove', handleTileResizeMove);
     window.addEventListener('pointerup', handleTileResizeEnd);
     window.addEventListener('pointercancel', handleTileResizeCancel);
@@ -8546,7 +9440,7 @@ function syncTileRadiusControls(tabEl) {
         const layout = getTileElementLayout(tab, tileIndex) ||
                        getTileLayoutFromData(tab, tileIndex);
         const anchorCell = getDragAnchorCell(tab, layout, e.clientX, e.clientY);
-        const grabOffset = getDragAnchorOffset(tab, layout, anchorCell.col, anchorCell.row, tile.getBoundingClientRect());
+        const grabOffset = getDragGrabOffset(tile.getBoundingClientRect(), e.clientX, e.clientY);
         dragSource = {
           kind: 'grid-tile',
           tab,
@@ -8556,6 +9450,7 @@ function syncTileRadiusControls(tabEl) {
           baseLayouts: captureLayoutSnapshot(tab),
           grabCellCol: anchorCell.col,
           grabCellRow: anchorCell.row,
+          dropOffset: getDragLayoutOffset(tab, layout, e.clientX, e.clientY) || grabOffset,
           previewResult: null,
           appliedPreviewResult: null,
           previewKey: '',
@@ -8610,11 +9505,14 @@ function syncTileRadiusControls(tabEl) {
   async function flushSettingsTileSaveBeforeHide(tab, index) {
     if (index < 0) return true;
     const timerKey = tab + ':' + index;
+    // A pending edit needs no save of its own: the parking save carries the
+    // tile's snapshot with it, and an extra save made the device write and
+    // rebuild its grid twice. Only a save already on its way must land first.
     if (autoSaveTimers[timerKey]) {
       clearTimeout(autoSaveTimers[timerKey]);
       delete autoSaveTimers[timerKey];
     }
-    saveTile(tab, true, index);
+    clearDraft(tab, index);
     const saveKey = getTileSaveKey(tab, index);
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
@@ -8629,21 +9527,34 @@ function syncTileRadiusControls(tabEl) {
     return false;
   }
 
+  // Moves of the Settings tile between the grid and the parking slot show at
+  // once and queue their saves (queueSettingsAccessSave keeps the order), so
+  // a move made while the device still saves the previous one is not lost
+  // (user 2026-10-02). Only the latest move reconciles with the device, and
+  // only when the device put the tile elsewhere than the preview: reloading
+  // the Home grid made the panel read every folder it links to.
+  function settingsTransferMatches(saved, index) {
+    return saved && Number(saved.settings_tile_index) === index;
+  }
+
   async function hideSettingsTileFromGrid() {
     const hidden = settingsAccessElement('settings_tile_hidden');
     const swipe = settingsAccessElement('settings_swipe_enabled');
-    if (!hidden || settingsTileTransferInFlight) return false;
-    settingsTileTransferInFlight = true;
+    if (!hidden) return false;
+    const settingsTile = (getTilesData('folder0') || []).findIndex(
+      tile => Number(tile?.type || 0) === 7);
+    if (settingsTile < 0) {
+      return false;
+    }
+    const snapshot = normalizeHiddenSettingsSnapshot(
+      getTileSnapshotForSave('folder0', settingsTile) ||
+      currentGridSettingsSnapshot());
+    const transfer = ++settingsTileTransferSeq;
+    settingsTileTransfersInFlight++;
     try {
-      const settingsTile = (getTilesData('folder0') || []).findIndex(
-        tile => Number(tile?.type || 0) === 7);
-      if (settingsTile < 0) {
-        return false;
-      }
-      const snapshot = normalizeHiddenSettingsSnapshot(
-        getTileSnapshotForSave('folder0', settingsTile) ||
-        currentGridSettingsSnapshot());
+      previewSettingsTileTransfer(true, snapshot);
       if (!(await flushSettingsTileSaveBeforeHide('folder0', settingsTile))) {
+        if (transfer === settingsTileTransferSeq) await reconcileSettingsTileUi(false);
         return false;
       }
       hidden.checked = true;
@@ -8651,33 +9562,52 @@ function syncTileRadiusControls(tabEl) {
       toggleSettingsAccessFields();
       const saved = await queueSettingsAccessSave(
         null, null, snapshot, false);
-      if (!saved) return false;
+      if (transfer !== settingsTileTransferSeq) return saved;
+      if (!saved) {
+        await reconcileSettingsTileUi(false);
+        return false;
+      }
+      if (settingsTransferMatches(saved, -1)) return true;
       return await reconcileSettingsTileUi(true, snapshot);
     } finally {
-      settingsTileTransferInFlight = false;
+      settingsTileTransfersInFlight--;
+      flushDeferredSensorRefresh();
     }
   }
 
   async function restoreHiddenSettingsTile(col, row) {
     const hidden = settingsAccessElement('settings_tile_hidden');
-    if (!hidden || settingsTileTransferInFlight) return false;
+    if (!hidden) return false;
     const snapshot = normalizeHiddenSettingsSnapshot();
-    settingsTileTransferInFlight = true;
+    const transfer = ++settingsTileTransferSeq;
+    settingsTileTransfersInFlight++;
     try {
+      // The Settings checkbox restores without a drop spot; the device then
+      // picks the spot and the reload shows it.
+      const shownAt = Number.isFinite(col) && Number.isFinite(row)
+        ? previewSettingsTileTransfer(false, snapshot, {col, row})
+        : -1;
       hidden.checked = false;
       toggleSettingsAccessFields();
       const saved = await queueSettingsAccessSave(
         null, {col, row}, null, false);
-      if (!saved) return false;
+      if (transfer !== settingsTileTransferSeq) return saved;
+      if (!saved) {
+        await reconcileSettingsTileUi(true, snapshot);
+        return false;
+      }
+      if (shownAt >= 0 && settingsTransferMatches(saved, shownAt)) return true;
       return await reconcileSettingsTileUi(false, snapshot, true);
     } finally {
-      settingsTileTransferInFlight = false;
+      settingsTileTransfersInFlight--;
+      flushDeferredSensorRefresh();
     }
   }
 
   function enableSettingsHiddenSlot() {
     const slot = document.getElementById('settingsHiddenSlot');
     const hiddenTile = document.getElementById('settingsHiddenTile');
+    const hint = document.getElementById('settingsHiddenHint');
     if (!slot || !hiddenTile || slot.dataset.bound === '1') return;
     slot.dataset.bound = '1';
     hiddenTile.addEventListener('click', () => selectHiddenSettingsTile());
@@ -8688,10 +9618,20 @@ function syncTileRadiusControls(tabEl) {
       const tile = getTilesData('folder0')?.[dragSource.index];
       return Number(dragSource.type || tile?.type || 0) === 7;
     };
+    // The slot is one more drop cell of the Settings tile and works like a
+    // grid cell (user 2026-10-02): with the pointer over it the teal
+    // placeholder shows in the slot and the grid's placeholder and reflow
+    // preview go back; a parked tile dropped on it stays parked.
+    const draggingSettings = () => acceptsGridSettings() ||
+      (dragSource?.kind === 'hidden-settings' && dragSource.tab === 'folder0');
     slot.addEventListener('dragover', event => {
-      if (!acceptsGridSettings()) return;
+      if (!draggingSettings()) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
+      if (slot.classList.contains('drop-target')) return;
+      restoreDragPreview('folder0');
+      clearDragPlaceholder();
+      if (dragSource.kind === 'hidden-settings') dragSource.hiddenTarget = null;
       slot.classList.add('drop-target');
     });
     slot.addEventListener('dragleave', event => {
@@ -8700,13 +9640,14 @@ function syncTileRadiusControls(tabEl) {
       slot.classList.remove('drop-target');
     });
     slot.addEventListener('drop', event => {
-      if (!acceptsGridSettings()) return;
+      if (!draggingSettings()) return;
       event.preventDefault();
       event.stopPropagation();
       slot.classList.remove('drop-target');
       restoreDragPreview('folder0');
       clearDragPlaceholder();
-      if (dragSource) dragSource.dropCommitted = true;
+      if (dragSource.kind === 'hidden-settings') return;
+      dragSource.dropCommitted = true;
       hideSettingsTileFromGrid();
     });
 
@@ -8715,15 +9656,27 @@ function syncTileRadiusControls(tabEl) {
         event.preventDefault();
         return;
       }
+      // Taking the parked tile selects it like a grid tile, so the drag image
+      // carries the teal selection.
+      if (currentTileTab !== 'folder0' || currentTileIndex !== HIDDEN_SETTINGS_TILE_INDEX) {
+        selectHiddenSettingsTile();
+      }
       const spanW = clampHalf(hiddenTile.dataset.spanW, 1, GRID_COLS, 1);
       const spanH = clampHalf(hiddenTile.dataset.spanH, 0.5, GRID_ROWS, 1);
+      // The slot shows one cell: the grabbed half of it anchors the drop like
+      // a grid tile, and the drag image stays where the pointer took it.
+      const rect = hiddenTile.getBoundingClientRect();
+      const grabOffset = getDragGrabOffset(rect, event.clientX, event.clientY);
+      const grabCellCol = spanW > 0.5 && grabOffset.x >= rect.width / 2 ? 0.5 : 0;
+      const grabCellRow = spanH > 0.5 && grabOffset.y >= rect.height / 2 ? 0.5 : 0;
       dragSource = {
         kind: 'hidden-settings',
         tab: 'folder0',
         index: -1,
         layout: {col: 0, row: 0, span_w: spanW, span_h: spanH},
-        grabCellCol: 0,
-        grabCellRow: 0,
+        grabCellCol,
+        grabCellRow,
+        dropOffset: grabOffset,
         baseLayouts: null,
         dropCommitted: false,
         hiddenTarget: null
@@ -8732,13 +9685,16 @@ function syncTileRadiusControls(tabEl) {
       hiddenTile.classList.add('dragging');
       if (event.dataTransfer.setDragImage) {
         dragPreview = createDragPreview(hiddenTile);
-        event.dataTransfer.setDragImage(
-          dragPreview, hiddenTile.offsetWidth / 2, hiddenTile.offsetHeight / 2);
+        event.dataTransfer.setDragImage(dragPreview, grabOffset.x, grabOffset.y);
       }
+      // The slot it left is the empty slot at once: tray icon and hint.
+      slot.classList.add('lifting');
+      hint?.classList.remove('is-hidden');
     });
     hiddenTile.addEventListener('dragend', () => {
       hiddenTile.classList.remove('dragging');
-      slot.classList.remove('drop-target', 'invalid');
+      slot.classList.remove('drop-target', 'invalid', 'lifting');
+      hint?.classList.toggle('is-hidden', hiddenTile.dataset.hidden === '1');
       clearDragPlaceholder();
       if (dragPreview && dragPreview.parentNode) dragPreview.parentNode.removeChild(dragPreview);
       dragPreview = null;
@@ -8859,6 +9815,46 @@ function syncTileRadiusControls(tabEl) {
     return Math.max(min, Math.min(max, Number.isFinite(n) ? n : min));
   }
 
+  // The image frame stands for the panel's screen: its box in the grid's
+  // padding box (where the clock is positioned) and on the page.
+  function ssPreviewScreenRect(preview) {
+    const frame = preview.querySelector('.screensaver-grid-image-frame');
+    return (frame || preview).getBoundingClientRect();
+  }
+
+  // One background opacity for every screensaver tile (tile_opacity, set in
+  // the screensaver footer): the draft once loaded, else the server-rendered
+  // slider.
+  function screensaverTileOpacity() {
+    const value = screensaverDraft?.tile_opacity ??
+      document.getElementById('screensaverTileOpacity')?.value;
+    return Math.round(ssClamp(value ?? SCREENSAVER_TILE_DEFAULT_OPACITY, 0, 255));
+  }
+
+  // The new opacity on every screensaver tile preview and in the footer.
+  function refreshScreensaverTileOpacity() {
+    const value = screensaverTileOpacity();
+    const output = document.getElementById('screensaverTileOpacityValue');
+    if (output) output.textContent = Math.round(value * 100 / 255) + ' %';
+    const tiles = tilesData.screensaver || [];
+    tiles.forEach((tile, index) => {
+      if (tile && Number(tile.type)) renderTileFromData('screensaver', index, tile, sensorMetaCache);
+    });
+    layoutTiles('screensaver', tiles);
+    if (currentTileTab === 'screensaver' && currentTileIndex >= 0) updateTilePreview('screensaver');
+  }
+
+  function ssPreviewScreen(preview) {
+    const frame = preview.querySelector('.screensaver-grid-image-frame');
+    const rect = ssPreviewScreenRect(preview);
+    return {
+      left: frame ? frame.offsetLeft : 0,
+      top: frame ? frame.offsetTop : 0,
+      width: rect.width || 800,
+      height: rect.height || 500
+    };
+  }
+
   function ssNearestClockFont(value, dateLine = false) {
     const wanted = Number(value) || 20;
     const sizes = dateLine ? screensaverDateFontSizes : screensaverTimeFontSizes;
@@ -8970,6 +9966,7 @@ function syncTileRadiusControls(tabEl) {
       shuffle: !!d.shuffle,
       tile_shadow: !!d.tile_shadow,
       tile_border: d.tile_border !== false,
+      tile_opacity: Math.round(ssClamp(d.tile_opacity ?? SCREENSAVER_TILE_DEFAULT_OPACITY, 0, 255)),
       show_time: !!d.show_time,
       show_date: !!d.show_date,
       show_weekday: !!d.show_weekday,
@@ -9118,8 +10115,11 @@ function syncTileRadiusControls(tabEl) {
     if (!preview || !image || !clock) return;
     preview.classList.toggle('selected-background', screensaverSelected.kind === 'background');
     clock.classList.toggle('selected-clock', screensaverSelected.kind === 'clock');
-    const width = preview.getBoundingClientRect().width || 800;
-    const scale = width / Number(d.screen_width || 1280);
+    // The image frame is the panel's screen. The grid around it is wider
+    // (editor padding and gaps), so the clock is placed and scaled on the
+    // frame; on the grid it sat about 10 px up and right, against the edge.
+    const screen = ssPreviewScreen(preview);
+    const scale = screen.width / Number(d.screen_width || 1280);
     const rootStyles = getComputedStyle(document.documentElement);
     const devicePx = (name, fallback) => {
       const value = parseFloat(rootStyles.getPropertyValue(name));
@@ -9153,8 +10153,8 @@ function syncTileRadiusControls(tabEl) {
       image.removeAttribute('src');
       delete image.dataset.src;
     }
-    clock.style.left = (d.clock_x / 10) + '%';
-    clock.style.top = (d.clock_y / 10) + '%';
+    clock.style.left = (screen.left + d.clock_x * screen.width / 1000) + 'px';
+    clock.style.top = (screen.top + d.clock_y * screen.height / 1000) + 'px';
     const time = document.getElementById('screensaverClockTime');
     const date = document.getElementById('screensaverClockDate');
     time.hidden = !d.show_time;
@@ -9163,6 +10163,26 @@ function syncTileRadiusControls(tabEl) {
       Math.max(10, deviceClockFontPx(d.time_font_size, 48) * scale) + 'px';
     date.style.fontSize =
       Math.max(8, deviceClockFontPx(d.date_font_size, 28) * scale) + 'px';
+    // Each line is as tall as its LVGL font's line height, the glyphs on the
+    // LVGL baseline, with the device gap between the lines (clock/renderer.cpp).
+    const applyClockLine = (el, raw, fallback, minPx) => {
+      const size = Number(raw || fallback);
+      const fontPx = deviceClockFontPx(raw, fallback) * scale;
+      // Tiny previews keep a readable font; the line box grows with it.
+      const lineScale = fontPx < minPx ? minPx / fontPx : 1;
+      const linePx = devicePx('--screensaver-lh' + size, size * 1.21) * scale * lineScale;
+      // The glyphs on the LVGL baseline, measured in this browser and zoom
+      // (text-baseline.js).
+      const base = parseFloat(rootStyles.getPropertyValue('--screensaver-lb' + size));
+      el.style.lineHeight = linePx + 'px';
+      el.style.position = 'relative';
+      el.style.top = (Number.isFinite(base)
+        ? previewBaselineShift(Math.max(minPx, fontPx), linePx, base * scale * lineScale) : 0) + 'px';
+    };
+    applyClockLine(time, d.time_font_size, 48, 10);
+    applyClockLine(date, d.date_font_size, 28, 8);
+    date.style.marginTop = !time.hidden && !date.hidden
+      ? devicePx('--screensaver-clock-gap', 6) * scale + 'px' : '0px';
     time.textContent = getClockPreviewTime(d.time_format);
     date.textContent = getScreensaverClockPreviewDate(d);
     time.style.width = 'auto';
@@ -9185,6 +10205,8 @@ function syncTileRadiusControls(tabEl) {
     document.getElementById('screensaverShuffle').checked = !!d.shuffle;
     document.getElementById('screensaverTileShadow').checked = !!d.tile_shadow;
     document.getElementById('screensaverTileBorder').checked = d.tile_border !== false;
+    const opacityInput = document.getElementById('screensaverTileOpacity');
+    if (opacityInput) opacityInput.value = String(screensaverTileOpacity());
     document.getElementById('screensaverShowTime').checked = !!d.show_time;
     document.getElementById('screensaverShowDate').checked = !!d.show_date;
     document.getElementById('screensaverShowWeekday').checked = !!d.show_weekday;
@@ -9259,7 +10281,7 @@ function syncTileRadiusControls(tabEl) {
     });
     clock.addEventListener('pointermove', e => {
       if (!clockDrag || clockDrag.id !== e.pointerId) return;
-      const rect = preview.getBoundingClientRect();
+      const rect = ssPreviewScreenRect(preview);
       const centerX = e.clientX - clockDrag.offsetX;
       const centerY = e.clientY - clockDrag.offsetY;
       screensaverDraft.clock_x = Math.round(ssClamp((centerX - rect.left) * 1000 / rect.width, 0, 1000));
@@ -9325,6 +10347,11 @@ function syncTileRadiusControls(tabEl) {
     bind('screensaverShuffle', 'change', el => { screensaverDraft.shuffle = el.checked; });
     bind('screensaverTileShadow', 'change', el => { screensaverDraft.tile_shadow = el.checked; });
     bind('screensaverTileBorder', 'change', el => { screensaverDraft.tile_border = el.checked; });
+    bind('screensaverTileOpacity', 'input', el => {
+      screensaverDraft.tile_opacity = Number(el.value);
+      refreshScreensaverTileOpacity();
+    }, false);
+    bind('screensaverTileOpacity', 'change', el => { screensaverDraft.tile_opacity = Number(el.value); });
     bind('screensaverShowTime', 'change', el => { screensaverDraft.show_time = el.checked; });
     bind('screensaverShowDate', 'change', el => { screensaverDraft.show_date = el.checked; });
     bind('screensaverShowWeekday', 'change', el => { screensaverDraft.show_weekday = el.checked; });
@@ -9726,11 +10753,15 @@ function syncTileRadiusControls(tabEl) {
   function restartHardwareIoNow() {
     setHardwareIoSaveState(t('ioRestarting'), 'saving');
     const restartForm = document.getElementById('admin_restart_form');
-    if (restartForm) {
+    // form.submit() cannot carry the CSRF header a password-protected panel
+    // requires; send the same request with fetch and reload as before.
+    if (restartForm && !window.HomeTilesAuth?.csrfToken()) {
       window.setTimeout(() => restartForm.submit(), 100);
       return;
     }
-    fetch('/restart', {method: 'POST'}).catch(() => {});
+    fetch('/restart', {method: 'POST'}).catch(() => {}).finally(() => {
+      if (restartForm) window.setTimeout(() => window.location.assign('/'), 300);
+    });
   }
 
   async function saveHardwareIoNow() {
@@ -9825,11 +10856,13 @@ function syncTileRadiusControls(tabEl) {
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    bindPreviewBaselines();
     toggleStaticNetworkFields();
     toggleNetworkSettings();
     toggleSettingsAccessFields();
     initSettingsAccessControls();
     initAdminSettingsSave();
+    initWebAdminPasswordSettings();
     initTileTabs();
     let initialTab = '';
     try { initialTab = localStorage.getItem('activeAdminTab') || ''; } catch (e) {}
@@ -9870,6 +10903,10 @@ function syncTileRadiusControls(tabEl) {
     fillStaticClockPreviews();
     setInterval(fillStaticClockPreviews, 30000);
     updateTileSettingsMaxHeight();
+    // Any editing postpones the background folder tab prefetch.
+    ['pointerdown', 'keydown', 'input'].forEach(type =>
+      document.addEventListener(type, noteAdminInteraction, true));
+    scheduleFolderTabPrefetch();
   });
 
 function maybeFillTitleFromSensor(tab) {
@@ -10312,6 +11349,55 @@ function maybeFillTitleFromEnergy(tab) {
     const valueYOffsetEl = document.getElementById(prefix + '_energy_value_y_offset');
     if (valueYOffsetEl) valueYOffsetEl.value = '';
   }
+// Generated by tools/generate-weather-icon-fonts.mjs from
+// tools/weather-icons/parts.mjs. Do not edit by hand.
+// The device's filled, multi-color weather icons (weather_icon_table.h) as SVG
+// for the Web Admin preview: shared layer paths in the 24-unit MDI grid, and
+// per icon its weather color and its layers bottom to top.
+  const WEATHER_ICON_LAYER_PATHS = Object.freeze([
+    '<path d="M12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7Z"/><path d="M12,2L14.39,5.42C13.65,5.15 12.84,5 12,5C11.16,5 10.35,5.15 9.61,5.42L12,2Z"/><path d="M3.34,7L7.5,6.65C6.9,7.16 6.36,7.78 5.94,8.5C5.5,9.24 5.25,10 5.11,10.79L3.34,7Z"/><path d="M3.36,17L5.12,13.23C5.26,14 5.53,14.78 5.95,15.5C6.37,16.24 6.91,16.86 7.5,17.37L3.36,17Z"/><path d="M20.65,7L18.88,10.79C18.74,10 18.47,9.23 18.05,8.5C17.63,7.78 17.1,7.15 16.5,6.64L20.65,7Z"/><path d="M20.64,17L16.5,17.36C17.09,16.85 17.62,16.22 18.04,15.5C18.46,14.77 18.73,14 18.87,13.21L20.64,17Z"/><path d="M12,22L9.59,18.56C10.33,18.83 11.14,19 12,19C12.82,19 13.63,18.83 14.37,18.56L12,22Z"/>',
+    '<path d="M18.97,15.95C19.8,15.87 20.69,17.05 20.16,17.8C19.84,18.25 19.5,18.67 19.08,19.07C15.17,23 8.84,23 4.94,19.07C1.03,15.17 1.03,8.83 4.94,4.93C5.34,4.53 5.76,4.17 6.21,3.85C6.96,3.32 8.14,4.21 8.06,5.04C7.79,7.9 8.75,10.87 10.95,13.06C13.14,15.26 16.1,16.22 18.97,15.95Z"/>',
+    '<path d="M17.75,4.09L15.22,6.03L16.13,9.09L13.5,7.28L10.87,9.09L11.78,6.03L9.25,4.09L12.44,4L13.5,1L14.56,4L17.75,4.09Z"/><path d="M21.25,11L19.61,12.25L20.2,14.23L18.5,13.06L16.8,14.23L17.39,12.25L15.75,11L17.81,10.95L18.5,9L19.19,10.95L21.25,11Z"/>',
+    '<path d="M5,10.5A5.5,5.5 0 1,1 16,10.5A5.5,5.5 0 1,1 5,10.5Z"/><path d="M13.55,3.64C13,3.4 12.45,3.23 11.88,3.12L14.37,1.82L15.27,4.71C14.76,4.29 14.19,3.93 13.55,3.64Z"/><path d="M6.09,4.44C5.6,4.79 5.17,5.19 4.8,5.63L4.91,2.82L7.87,3.5C7.25,3.71 6.65,4.03 6.09,4.44Z"/><path d="M18,9.71C17.91,9.12 17.78,8.55 17.59,8L19.97,9.5L17.92,11.73C18.03,11.08 18.05,10.4 18,9.71Z"/><path d="M3.04,11.3C3.11,11.9 3.24,12.47 3.43,13L1.06,11.5L3.1,9.28C3,9.93 2.97,10.61 3.04,11.3Z"/>',
+    '<path d="M6,16A6,6 0 1,1 18,16A6,6 0 1,1 6,16Z"/><path d="M2,18A4,4 0 1,1 10,18A4,4 0 1,1 2,18Z"/><path d="M16,19A3,3 0 1,1 22,19A3,3 0 1,1 16,19Z"/><path d="M6,18H12V22H6Z"/><path d="M12,16H19V22H12Z"/>',
+    '<path d="M18.97,15.95C19.8,15.87 20.69,17.05 20.16,17.8C19.84,18.25 19.5,18.67 19.08,19.07C15.17,23 8.84,23 4.94,19.07C1.03,15.17 1.03,8.83 4.94,4.93C5.34,4.53 5.76,4.17 6.21,3.85C6.96,3.32 8.14,4.21 8.06,5.04C7.79,7.9 8.75,10.87 10.95,13.06C13.14,15.26 16.1,16.22 18.97,15.95Z" transform="translate(8.26 -1.05) scale(0.62)"/>',
+    '<path d="M6,19A5,5 0 0,1 1,14A5,5 0 0,1 6,9C7,6.65 9.3,5 12,5C15.43,5 18.24,7.66 18.5,11.03L19,11A4,4 0 0,1 23,15A4,4 0 0,1 19,19H6Z" transform="translate(8.88 -0.1) scale(0.62)"/>',
+    '<path d="M6,19A5,5 0 0,1 1,14A5,5 0 0,1 6,9C7,6.65 9.3,5 12,5C15.43,5 18.24,7.66 18.5,11.03L19,11A4,4 0 0,1 23,15A4,4 0 0,1 19,19H6Z" transform="translate(0 1.5) scale(1)"/>',
+    '<path d="M1,12A5,5 0 0,1 6,7C7,4.65 9.3,3 12,3C15.43,3 18.24,5.66 18.5,9.03L19,9C21.19,9 22.97,10.76 23,13H1.1L1,12Z"/>',
+    '<path d="M3,15H13A1,1 0 0,1 14,16A1,1 0 0,1 13,17H3A1,1 0 0,1 2,16A1,1 0 0,1 3,15Z"/><path d="M16,15H21A1,1 0 0,1 22,16A1,1 0 0,1 21,17H16A1,1 0 0,1 15,16A1,1 0 0,1 16,15Z"/><path d="M3,19H5A1,1 0 0,1 6,20A1,1 0 0,1 5,21H3A1,1 0 0,1 2,20A1,1 0 0,1 3,19Z"/><path d="M8,19H21A1,1 0 0,1 22,20A1,1 0 0,1 21,21H8A1,1 0 0,1 7,20A1,1 0 0,1 8,19Z"/>',
+    '<path d="M6,16A5,5 0 0,1 1,11A5,5 0 0,1 6,6C7,3.65 9.3,2 12,2C15.43,2 18.24,4.66 18.5,8.03L19,8A4,4 0 0,1 23,12A4,4 0 0,1 19,16H6Z" transform="translate(1.68 0.28) scale(0.86)"/>',
+    '<path d="M18.5,18.67C18.5,19.96 17.5,21 16.25,21C15,21 14,19.96 14,18.67C14,17.12 16.25,14.5 16.25,14.5C16.25,14.5 18.5,17.12 18.5,18.67Z" transform="translate(-8.25 1.2) scale(1)"/><path d="M18.5,18.67C18.5,19.96 17.5,21 16.25,21C15,21 14,19.96 14,18.67C14,17.12 16.25,14.5 16.25,14.5C16.25,14.5 18.5,17.12 18.5,18.67Z" transform="translate(-2.25 1.2) scale(1)"/>',
+    '<path d="M7.683,15.95L6.483,20.35A0.95,0.95 0 0,0 8.317,20.85L9.517,16.45A0.95,0.95 0 0,0 7.683,15.95Z"/><path d="M11.682,15.955L10.082,21.955A0.95,0.95 0 0,0 11.918,22.445L13.518,16.445A0.95,0.95 0 0,0 11.682,15.955Z"/><path d="M15.683,15.95L14.483,20.35A0.95,0.95 0 0,0 16.317,20.85L17.517,16.45A0.95,0.95 0 0,0 15.683,15.95Z"/>',
+    '<path d="M7.88,18.07L10.07,17.5L8.46,15.88C8.07,15.5 8.07,14.86 8.46,14.46C8.85,14.07 9.5,14.07 9.88,14.46L11.5,16.07L12.07,13.88C12.21,13.34 12.76,13.03 13.29,13.17C13.83,13.31 14.14,13.86 14,14.4L13.41,16.59L15.6,16C16.14,15.86 16.69,16.17 16.83,16.71C16.97,17.24 16.66,17.79 16.12,17.93L13.93,18.5L15.54,20.12C15.93,20.5 15.93,21.15 15.54,21.54C15.15,21.93 14.5,21.93 14.12,21.54L12.5,19.93L11.93,22.12C11.79,22.66 11.24,22.97 10.71,22.83C10.17,22.69 9.86,22.14 10,21.6L10.59,19.41L8.4,20C7.86,20.14 7.31,19.83 7.17,19.29C7.03,18.76 7.34,18.21 7.88,18.07Z" transform="translate(3.36 6.04) scale(0.72)"/>',
+    '<path d="M7.88,18.07L10.07,17.5L8.46,15.88C8.07,15.5 8.07,14.86 8.46,14.46C8.85,14.07 9.5,14.07 9.88,14.46L11.5,16.07L12.07,13.88C12.21,13.34 12.76,13.03 13.29,13.17C13.83,13.31 14.14,13.86 14,14.4L13.41,16.59L15.6,16C16.14,15.86 16.69,16.17 16.83,16.71C16.97,17.24 16.66,17.79 16.12,17.93L13.93,18.5L15.54,20.12C15.93,20.5 15.93,21.15 15.54,21.54C15.15,21.93 14.5,21.93 14.12,21.54L12.5,19.93L11.93,22.12C11.79,22.66 11.24,22.97 10.71,22.83C10.17,22.69 9.86,22.14 10,21.6L10.59,19.41L8.4,20C7.86,20.14 7.31,19.83 7.17,19.29C7.03,18.76 7.34,18.21 7.88,18.07Z" transform="translate(1.36 8.04) scale(0.62)"/>',
+    '<path d="M18.5,18.67C18.5,19.96 17.5,21 16.25,21C15,21 14,19.96 14,18.67C14,17.12 16.25,14.5 16.25,14.5C16.25,14.5 18.5,17.12 18.5,18.67Z" transform="translate(-1 1.2) scale(1)"/>',
+    '<path d="M6.8,19.8A1.7,1.7 0 1,1 10.2,19.8A1.7,1.7 0 1,1 6.8,19.8Z"/><path d="M10.5,17.4A1.5,1.5 0 1,1 13.5,17.4A1.5,1.5 0 1,1 10.5,17.4Z"/><path d="M13.8,19.8A1.7,1.7 0 1,1 17.2,19.8A1.7,1.7 0 1,1 13.8,19.8Z"/>',
+    '<path d="M12,11H15L13,15H15L11.25,22L12,17H9.5L12,11Z" transform="translate(0 1) scale(1)"/>',
+    '<path d="M12,11H15L13,15H15L11.25,22L12,17H9.5L12,11Z" transform="translate(-2.5 1) scale(1)"/>',
+    '<path d="M18.5,18.67C18.5,19.96 17.5,21 16.25,21C15,21 14,19.96 14,18.67C14,17.12 16.25,14.5 16.25,14.5C16.25,14.5 18.5,17.12 18.5,18.67Z" transform="translate(-0.5 1.2) scale(1)"/>',
+    '<path d="M4,10A1,1 0 0,1 3,9A1,1 0 0,1 4,8H12A2,2 0 0,0 14,6A2,2 0 0,0 12,4C11.45,4 10.95,4.22 10.59,4.59C10.2,5 9.56,5 9.17,4.59C8.78,4.2 8.78,3.56 9.17,3.17C9.9,2.45 10.9,2 12,2A4,4 0 0,1 16,6A4,4 0 0,1 12,10H4Z"/><path d="M19,12A1,1 0 0,0 20,11A1,1 0 0,0 19,10C18.72,10 18.47,10.11 18.29,10.29C17.9,10.68 17.27,10.68 16.88,10.29C16.5,9.9 16.5,9.27 16.88,8.88C17.42,8.34 18.17,8 19,8A3,3 0 0,1 22,11A3,3 0 0,1 19,14H5A1,1 0 0,1 4,13A1,1 0 0,1 5,12H19Z"/><path d="M18,18H4A1,1 0 0,1 3,17A1,1 0 0,1 4,16H18A3,3 0 0,1 21,19A3,3 0 0,1 18,22C17.17,22 16.42,21.66 15.88,21.12C15.5,20.73 15.5,20.1 15.88,19.71C16.27,19.32 16.9,19.32 17.29,19.71C17.47,19.89 17.72,20 18,20A1,1 0 0,0 19,19A1,1 0 0,0 18,18Z"/>',
+    '<path d="M6,6L6.69,6.06C7.32,3.72 9.46,2 12,2A5.5,5.5 0 0,1 17.5,7.5L17.42,8.45C17.88,8.16 18.42,8 19,8A3,3 0 0,1 22,11A3,3 0 0,1 19,14H6A4,4 0 0,1 2,10A4,4 0 0,1 6,6Z"/>',
+    '<path d="M18,18H4A1,1 0 0,1 3,17A1,1 0 0,1 4,16H18A3,3 0 0,1 21,19A3,3 0 0,1 18,22C17.17,22 16.42,21.66 15.88,21.12C15.5,20.73 15.5,20.1 15.88,19.71C16.27,19.32 16.9,19.32 17.29,19.71C17.47,19.89 17.72,20 18,20A1,1 0 0,0 19,19A1,1 0 0,0 18,18Z"/>',
+    '<path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>',
+  ]);
+  const WEATHER_ICONS = Object.freeze({
+    'weather-sunny': {tint: '#FFB224', layers: [['#FFC53D', 0]]},
+    'weather-night': {tint: '#5E7092', layers: [['#FFE08A', 1], ['#FFFFFF', 2]]},
+    'weather-partly-cloudy': {tint: '#CCAB6B', layers: [['#FFC53D', 3], ['#EEF2F7', 4]]},
+    'weather-night-partly-cloudy': {tint: '#7C8AA2', layers: [['#FFE08A', 5], ['#C3CCD8', 4]]},
+    'weather-cloudy': {tint: '#9AA4B2', layers: [['#8E9BB0', 6], ['#C3CCD8', 7]]},
+    'weather-fog': {tint: '#B8BEC6', layers: [['#C3CCD8', 8], ['#8E9BB0', 9]]},
+    'weather-rainy': {tint: '#4A7FC0', layers: [['#EEF2F7', 10], ['#4DA3FF', 11]]},
+    'weather-pouring': {tint: '#2F5FB0', layers: [['#C3CCD8', 10], ['#4DA3FF', 12]]},
+    'weather-snowy': {tint: '#7CC4F0', layers: [['#EEF2F7', 10], ['#CFE8FF', 13]]},
+    'weather-snowy-rainy': {tint: '#63A2D8', layers: [['#EEF2F7', 10], ['#CFE8FF', 14], ['#4DA3FF', 15]]},
+    'weather-hail': {tint: '#5FB4D8', layers: [['#C3CCD8', 10], ['#CFE8FF', 16]]},
+    'weather-lightning': {tint: '#8B5CF6', layers: [['#9EAABA', 10], ['#FFC53D', 17]]},
+    'weather-lightning-rainy': {tint: '#6B6EDB', layers: [['#9EAABA', 10], ['#FFC53D', 18], ['#4DA3FF', 19]]},
+    'weather-windy': {tint: '#4FB8B0', layers: [['#A9C7E8', 20]]},
+    'weather-windy-variant': {tint: '#75AEB1', layers: [['#C3CCD8', 21], ['#A9C7E8', 22]]},
+    'alert-circle-outline': {tint: '#E5533D', layers: [['#FFB020', 23]]},
+  });
 
 function maybeFillTitleFromWeather(tab) {
     maybeFillTitleFromEntity(tab, '_weather_entity');
@@ -10324,6 +11410,8 @@ function maybeFillTitleFromWeather(tab) {
     if (el) el.value = data.sensor_entity || data.weather_entity || '';
     const popupModeEl = document.getElementById(prefix + '_weather_popup_open_mode');
     if (popupModeEl) popupModeEl.value = (data.popup_open_mode !== undefined) ? String(data.popup_open_mode) : '1';
+    const colored = document.getElementById(prefix + '_weather_colored_icons');
+    if (colored) colored.checked = data?.weather_colored_icons !== undefined ? !['0', 'false'].includes(String(data.weather_colored_icons)) : Number(data?.sensor_display_mode) !== 1;
     maybeFillTitleFromWeather(tab);
   }
 
@@ -10332,6 +11420,8 @@ function maybeFillTitleFromWeather(tab) {
     const prefix = tab;
     formData.append('weather_entity', document.getElementById(prefix + '_weather_entity')?.value || '');
     formData.append('popup_open_mode', document.getElementById(prefix + '_weather_popup_open_mode')?.value || '1');
+    const colored = document.getElementById(prefix + '_weather_colored_icons');
+    if (colored) formData.append('weather_colored_icons', colored.checked ? '1' : '0');
   }
 
   function resetWeatherFields(tab) {
@@ -10341,7 +11431,359 @@ function maybeFillTitleFromWeather(tab) {
     if (el) el.value = '';
     const popupModeEl = document.getElementById(prefix + '_weather_popup_open_mode');
     if (popupModeEl) popupModeEl.value = '1';
+    const colored = document.getElementById(prefix + '_weather_colored_icons');
+    if (colored) colored.checked = true;
   }
+
+  // --- Tile preview -------------------------------------------------------
+  // What types/weather/renderer.cpp builds and update_weather_tile_state()
+  // (tiles/runtime/tile_renderer.cpp) fills from the cached payload, at the
+  // device positions (WEATHER_TILE_LAYOUT, display pixels).
+  const WEATHER_CONDITION_ICONS = Object.freeze({
+    'clear-night': 'weather-night', cloudy: 'weather-cloudy', exceptional: 'alert-circle-outline',
+    fog: 'weather-fog', hail: 'weather-hail', lightning: 'weather-lightning',
+    'lightning-rainy': 'weather-lightning-rainy', partlycloudy: 'weather-partly-cloudy',
+    pouring: 'weather-pouring', rainy: 'weather-rainy', snowy: 'weather-snowy',
+    'snowy-rainy': 'weather-snowy-rainy', sunny: 'weather-sunny', windy: 'weather-windy',
+    'windy-variant': 'weather-windy-variant'
+  });
+
+  // A number or a numeric string (extract_json_number_or_string_field).
+  function weatherPreviewNumber(value) {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    const text = String(value ?? '').trim().replace(',', '.');
+    const number = text ? parseFloat(text) : NaN;
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function weatherPreviewString(value) {
+    return typeof value === 'string' ? value : '';
+  }
+
+  function weatherIsoParts(iso) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+    if (!match) return null;
+    const [y, m, d] = match.slice(1).map(Number);
+    return y > 0 && m >= 1 && m <= 12 && d >= 1 && d <= 31 ? Date.UTC(y, m - 1, d) : null;
+  }
+
+  function weatherIsoDate(utcMs) {
+    const date = new Date(utcMs);
+    return date.getUTCFullYear() + '-' + String(date.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(date.getUTCDate()).padStart(2, '0');
+  }
+
+  function weatherLocalToday(now) {
+    return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0');
+  }
+
+  // i18n::weather_weekday_short: the first ten characters as a date.
+  function weatherWeekdayShort(iso) {
+    const day = weatherIsoParts(iso);
+    return day === null ? '' : (WEATHER_I18N.weekdaysShort[new Date(day).getUTCDay()] || '');
+  }
+
+  // i18n::weather_condition_label.
+  function weatherConditionLabel(condition) {
+    const key = String(condition || '').trim().toLowerCase();
+    if (!key) return '--';
+    if (WEATHER_I18N.conditions[key]) return WEATHER_I18N.conditions[key];
+    const text = String(condition).replaceAll('-', ' ').replaceAll('_', ' ').trim();
+    return text || '--';
+  }
+
+  // weather_icons::for_now: partly cloudy and sunny turn into their night
+  // icons between the bridge's sunset and sunrise of today.
+  function weatherIconForNow(name, sun, now) {
+    if (!Array.isArray(sun)) return name;
+    const today = weatherLocalToday(now);
+    const minute = now.getHours() * 60 + now.getMinutes();
+    const days = sun.filter(day => day && typeof day.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day.d) &&
+      (day.up !== undefined || (Number.isInteger(day.r) && Number.isInteger(day.s) &&
+                                day.r >= 0 && day.r < day.s && day.s <= 1440))).slice(0, 8);
+    const day = days.find(entry => entry.d === today);
+    if (!day) return name;
+    const night = day.up !== undefined ? day.up !== true : (minute < day.r || minute >= day.s);
+    if (!night) return name;
+    if (name === 'weather-partly-cloudy') return 'weather-night-partly-cloudy';
+    if (name === 'weather-sunny') return 'weather-night';
+    return name;
+  }
+
+  function parseWeatherPreviewPayload(raw) {
+    let data = raw;
+    if (typeof raw === 'string') {
+      if (!raw.trim()) return null;
+      try { data = JSON.parse(raw); } catch (_) { return null; }
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    // An empty state falls back to the condition (extract_json_string_field).
+    const condition = weatherPreviewString(data.state).trim() || weatherPreviewString(data.condition).trim();
+    let icon = normalizeMdiIconName(weatherPreviewString(data.icon));
+    if (!icon) icon = WEATHER_CONDITION_ICONS[condition.trim().toLowerCase()] || '';
+    const units = data.units && typeof data.units === 'object' ? data.units : null;
+    return {
+      condition,
+      icon: icon ? weatherIconForNow(icon, data.sun, new Date()) : '',
+      temperature: weatherPreviewNumber(data.temperature),
+      unit: units ? weatherPreviewString(units.temperature) : weatherPreviewString(data.temperature_unit),
+      forecast: Array.isArray(data.forecast) ? data.forecast.filter(entry => entry && typeof entry === 'object') : []
+    };
+  }
+
+  function weatherPreviewTemp(value) {
+    return formatLocalizedNumber(value, 1, true);
+  }
+
+  // The device's filled weather icon as SVG layers (admin-icons.js); single
+  // draws every layer in the label color (an icon color the user chose).
+  function weatherIconSvg(name, single) {
+    const entry = WEATHER_ICONS[name];
+    if (!entry) return '';
+    return '<svg class="weather-icon-svg" viewBox="0 0 24 24" aria-hidden="true">' +
+      entry.layers.map(([color, index]) => '<g fill="' + (single ? 'currentColor' : color) + '">' +
+        WEATHER_ICON_LAYER_PATHS[index] + '</g>').join('') + '</svg>';
+  }
+
+  // weather_forecast_count(): days per whole width; a half step shows as many
+  // days as fit at the density of the next whole width.
+  function weatherForecastCount(spanW, cardW, nextW) {
+    const whole = Math.floor(Math.max(0, spanW));
+    const count = span => {
+      const w = Math.floor(Math.max(0, span));
+      return [0, 1, 2, 4, 5, 6, 8][Math.min(w, 6)] ?? 8;
+    };
+    const fixed = count(spanW);
+    if (spanW < 1 || spanW === whole || nextW <= 0) return fixed;
+    const next = count(spanW + 0.5);
+    const fits = Math.trunc(cardW * next / nextW);
+    return fits <= fixed ? fixed : Math.min(fits, next);
+  }
+
+  // tile_geometry::extent in display pixels.
+  function weatherExtent(position, span, cell, gap) {
+    const edge = value => Math.round(value * (cell + gap));
+    return edge(position + span) - edge(position) - gap;
+  }
+
+  // Fills a rendered weather preview tile: the header icon, condition |
+  // temperature and the forecast columns. iconName is the tile's initial icon
+  // (before a state arrives), forcedColor an icon color of the user or a rule.
+  // A text's width in display pixels as LVGL lays it out: whole-pixel glyph
+  // advances plus kerning (WEATHER_TILE_LAYOUT adv/kern, lv_text_get_size);
+  // null when the table lacks a glyph.
+  function weatherDeviceTextWidth(text, font) {
+    if (!font?.adv) return null;
+    const chars = [...String(text)];
+    let width = 0;
+    for (let i = 0; i < chars.length; ++i) {
+      const advance = font.adv[chars[i]];
+      if (advance === undefined) return null;
+      width += advance + ((i + 1 < chars.length && font.kern?.[chars[i] + chars[i + 1]]) || 0);
+    }
+    return width;
+  }
+
+  function applyWeatherPreview(el, state, tile, iconName, forcedColor) {
+    if (!el || typeof WEATHER_TILE_LAYOUT === 'undefined') return;
+    const L = WEATHER_TILE_LAYOUT;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const scale = parseFloat(rootStyle.getPropertyValue('--radius-preview-scale')) || 0.5;
+    const colored = Number(tile?.sensor_display_mode) !== 1;
+    const now = new Date();
+
+    // Header icon: the current weather icon, colored in its layers with the
+    // weather color as the label color (disc and Tile color From icon).
+    let icon = el.querySelector(':scope > .tile-icon');
+    const name = state ? state.icon : normalizeMdiIconName(iconName);
+    // A state shows its icon even when the tile's own icon is off.
+    if (!icon && name) {
+      el.insertAdjacentHTML('afterbegin', '<i class="mdi tile-icon"></i>');
+      icon = el.querySelector(':scope > .tile-icon');
+    }
+    if (icon && !name) icon.remove();
+    else if (icon) {
+      const entry = WEATHER_ICONS[name];
+      if (colored && entry) {
+        icon.className = 'mdi tile-icon tile-weather-icon';
+        icon.innerHTML = weatherIconSvg(name, !!forcedColor);
+        icon.style.color = forcedColor || entry.tint;
+      } else {
+        icon.className = 'mdi mdi-' + name + ' tile-icon';
+        icon.innerHTML = '';
+        icon.style.color = forcedColor || '';
+      }
+    }
+
+    // Display pixels of the card and the preview's (border box) size.
+    const col = Number(tile?.col) || 0;
+    const spanW = Math.max(1, Number(tile?.span_w) || 1);
+    const spanH = Math.max(1, Number(tile?.span_h) || 1);
+    const cardW = weatherExtent(col, spanW, L.cellW, L.gap);
+    const cellW = parseFloat(rootStyle.getPropertyValue('--preview-cell-w'));
+    const cellH = parseFloat(rootStyle.getPropertyValue('--preview-cell-h'));
+    const previewGap = parseFloat(rootStyle.getPropertyValue('--preview-gap')) || 0;
+    // The tile's size like the grid gives it (.fractional-tile), never
+    // measured: a re-rendered tile at a half position is placed only after
+    // it is filled.
+    const width = cellW > 0 ? spanW * (cellW + previewGap) - previewGap : el.offsetWidth;
+    const height = cellH > 0 ? Math.max(1, Number(tile?.span_h) || 1) * (cellH + previewGap) - previewGap
+      : el.offsetHeight;
+    const px = value => (value * scale).toFixed(2) + 'px';
+    // Unrounded sizes, the glyphs on the LVGL baseline as this browser draws
+    // them (text-baseline.js).
+    const font = f => {
+      const size = Math.max(6, f.px * scale);
+      const line = f.line * scale;
+      return {size, line, shift: typeof previewBaselineShift === 'function'
+        ? previewBaselineShift(size, line, (f.line - f.base) * scale)
+        : (f.line / 2 - f.base - 0.364 * f.px) * scale};
+    };
+    const fontCss = f => 'font-size:' + f.size.toFixed(2) + 'px;line-height:' + f.line.toFixed(2) + 'px;';
+    const family = getComputedStyle(el).fontFamily || 'sans-serif';
+    const measure = (text, f) => {
+      const context = (weatherPreviewMeasure.context ||= document.createElement('canvas').getContext('2d'));
+      if (!context) return 0;
+      context.font = '400 ' + f.size + 'px ' + family;
+      return context.measureText(text).width;
+    };
+    // Positions below are in the border box; absolute children start inside
+    // the 3 px editor border.
+    const at = (left, top) => 'left:' + (left - 3).toFixed(2) + 'px;top:' + (top - 3).toFixed(2) + 'px;';
+
+    // Condition | temperature.
+    const valueFont = font(L.value);
+    const hasTemp = !!state && state.temperature !== null;
+    const tempText = hasTemp ? weatherPreviewTemp(state.temperature) + (state.unit ? ' ' + state.unit : '') : '--';
+    const conditionText = state ? weatherConditionLabel(state.condition) : '--';
+    let showCondition = spanW > 1 && conditionText !== '--';
+    let room = 0;
+    if (showCondition) {
+      const gap = L.valueGap * scale;
+      room = width - 2 * L.padH * scale - measure(tempText, valueFont) - measure('|', valueFont) - 2 * gap;
+      const conditionWidth = measure(conditionText, valueFont);
+      if (spanW < 2 ? conditionWidth > room : room < L.minConditionRoom * scale) showCondition = false;
+    }
+    const showForecast = Math.floor(Number(tile?.span_h) || 1) >= 2;
+    const rowCenter = showForecast ? (L.cellH / 2 + L.valueDy) * scale : height / 2 + L.valueDy * scale;
+    const textSpan = (cls, text, f, extra = '') => '<span class="' + cls + '" style="' + fontCss(f) +
+      'top:' + f.shift.toFixed(2) + 'px;' + extra + '">' + escapeHtml(text) + '</span>';
+    let html = '<div class="weather-preview-row" style="top:' + (rowCenter - valueFont.line / 2 - 3).toFixed(2) +
+      'px;height:' + valueFont.line.toFixed(2) + 'px;gap:' + px(L.valueGap) + '">';
+    if (showCondition) {
+      html += textSpan('weather-preview-condition', conditionText, valueFont, 'max-width:' + Math.max(0, room).toFixed(2) + 'px;');
+      if (hasTemp) html += textSpan('weather-preview-separator', '|', valueFont);
+    }
+    html += textSpan('weather-preview-temp', tempText, valueFont) + '</div>';
+
+    // Forecast columns, spread evenly over the card, the row anchored to the
+    // card's bottom like on the device.
+    const count = showForecast
+      ? weatherForecastCount(spanW, cardW, weatherExtent(col, spanW + 0.5, L.cellW, L.gap)) : 0;
+    if (count > 0) {
+      const today = weatherLocalToday(now);
+      const slots = Array.from({length: count}, () => null);
+      let base = today;
+      let fallback = 0;
+      for (const entry of state ? state.forecast : []) {
+        const datetime = weatherPreviewString(entry.datetime);
+        let dateLocal = weatherPreviewString(entry.date_local);
+        if (!dateLocal && datetime.length >= 10) dateLocal = datetime.slice(0, 10);
+        const low = ['templow', 'temperature_low', 'temp_low', 'low']
+          .map(key => weatherPreviewNumber(entry[key])).find(value => value !== null) ?? null;
+        const conditionIcon = WEATHER_CONDITION_ICONS[weatherPreviewString(entry.condition).trim().toLowerCase()] || '';
+        const slot = {
+          dateLocal,
+          day: datetime ? weatherWeekdayShort(datetime) : '',
+          icon: normalizeMdiIconName(weatherPreviewString(entry.icon)) || conditionIcon,
+          high: weatherPreviewNumber(entry.temperature),
+          low
+        };
+        let index = -1;
+        const baseDay = weatherIsoParts(base);
+        const day = weatherIsoParts(dateLocal);
+        if (baseDay !== null && day !== null) {
+          const offset = Math.round((day - baseDay) / 86400000);
+          if (offset >= 0 && offset < count) index = offset;
+        }
+        if (index < 0) {
+          while (fallback < count && slots[fallback]) ++fallback;
+          if (fallback < count) index = fallback++;
+        }
+        if (index >= 0) slots[index] = slot;
+      }
+
+      const colW = L.colW * scale;
+      // In display pixels with the device's integer division, so the columns
+      // do not drift apart from the device's.
+      const spacing = Math.trunc((Math.round(width / scale) - count * L.colW) / (count + 1)) * scale;
+      const rowTop = height - (L.cellH + L.headroom - L.yOffset) * scale;
+      const contentTop = rowTop + L.padV * scale;
+      const contentW = (L.colW - 2 * L.padH) * scale;
+      const dayFont = font(L.day);
+      const tempFont = font(L.temp);
+      const unitFont = font(L.unit);
+      const unitText = L.unitGap + (state?.unit || '°C');
+      const baseDay = weatherIsoParts(base);
+      for (let i = 0; i < count; ++i) {
+        const slot = slots[i];
+        const left = spacing + i * (colW + spacing) + L.padH * scale;
+        const displayDate = slot?.dateLocal || (baseDay !== null ? weatherIsoDate(baseDay + i * 86400000) : '');
+        let dayText = slot?.day || '';
+        if ((i === 0 && (slot || displayDate)) || displayDate === today) dayText = WEATHER_I18N.today;
+        else if (!dayText && displayDate) dayText = weatherWeekdayShort(displayDate);
+        // Until a first state arrives the device shows white placeholders.
+        if (!state) dayText = '';
+        html += '<div class="weather-preview-day" style="' + at(left, contentTop + L.dayTop * scale + dayFont.shift) +
+          'width:' + contentW.toFixed(2) + 'px;' + fontCss(dayFont) +
+          'color:' + (slot || !state ? '#FFFFFF' : '#7F8BAA') + '">' + escapeHtml(dayText || '--') + '</div>';
+        if (!slot) continue;
+        if (slot.icon) {
+          const svg = colored ? weatherIconSvg(slot.icon, false) : '';
+          html += '<div class="weather-preview-icon" style="' +
+            at(left, contentTop + (L.iconTop + L.iconEmDy) * scale) + 'width:' + contentW.toFixed(2) + 'px;">' +
+            (svg || '<i class="mdi mdi-' + escapeHtml(slot.icon) + '"></i>') + '</div>';
+        }
+        for (const [value, top] of [[slot.high, L.tempTop], [slot.low, L.lowTop]]) {
+          if (value === null) continue;
+          const text = weatherPreviewTemp(value);
+          let valueWidth = measure(text, tempFont);
+          let x;
+          const valueDevice = weatherDeviceTextWidth(text, L.temp);
+          const unitDevice = weatherDeviceTextWidth(unitText, L.unit);
+          if (valueDevice !== null && unitDevice !== null) {
+            // The device's whole-pixel layout (position_tile_value_unit_centered).
+            const contentDevice = L.colW - 2 * L.padH;
+            const total = valueDevice + unitDevice;
+            let xDevice = Math.trunc(contentDevice / 2) - Math.trunc(total / 2);
+            if (xDevice < 0) xDevice = 0;
+            if (xDevice + total > contentDevice) xDevice = contentDevice - total;
+            x = xDevice * scale;
+            valueWidth = valueDevice * scale;
+          } else {
+            const total = valueWidth + measure(unitText, unitFont);
+            x = contentW / 2 - total / 2;
+            if (x < 0) x = 0;
+            if (x + total > contentW) x = contentW - total;
+          }
+          const y = contentTop + top * scale;
+          html += '<div class="weather-preview-temp-value" style="' + at(left + x, y + tempFont.shift) + fontCss(tempFont) + '">' +
+            escapeHtml(text) + '</div>';
+          html += '<div class="weather-preview-temp-unit" style="' +
+            at(left + x + valueWidth, y + L.unitDy * scale + unitFont.shift) + fontCss(unitFont) + '">' +
+            escapeHtml(unitText) + '</div>';
+        }
+      }
+    }
+    el.querySelectorAll(':scope > .weather-preview-row, :scope > .weather-preview-day, ' +
+      ':scope > .weather-preview-icon, :scope > .weather-preview-temp-value, ' +
+      ':scope > .weather-preview-temp-unit').forEach(node => node.remove());
+    const handles = el.querySelector(':scope > .tile-resize-handle');
+    if (handles) handles.insertAdjacentHTML('beforebegin', html);
+    else el.insertAdjacentHTML('beforeend', html);
+  }
+  const weatherPreviewMeasure = {context: null};
 
 function maybeFillTitleFromScene(tab) {
     const prefix = tab;
@@ -10410,22 +11852,11 @@ function normalizeIconName(value) {
       if (btn) {
         btn.dataset.folderName = label;
         btn.dataset.folderIcon = iconName;
-        const labelEl = btn.querySelector('span');
+        const labelEl = btn.querySelector('.tab-label');
         if (labelEl) labelEl.textContent = label;
-        let iconEl = btn.querySelector('i.mdi');
-        if (iconName) {
-          if (!iconEl) {
-            iconEl = document.createElement('i');
-            iconEl.className = 'mdi';
-            iconEl.style.fontSize = '24px';
-            if (labelEl) btn.insertBefore(iconEl, labelEl);
-            else btn.appendChild(iconEl);
-          }
-          iconEl.className = 'mdi mdi-' + iconName;
-          iconEl.style.fontSize = '24px';
-        } else if (iconEl) {
-          iconEl.remove();
-        }
+        // The circle always holds an icon; without one the folder icon.
+        const iconEl = btn.querySelector('.tab-disc i.mdi');
+        if (iconEl) iconEl.className = 'mdi mdi-' + (iconName || (folderNum === 0 ? 'home' : 'folder'));
       }
     }
     document.querySelectorAll('select[id$="_navigate_target"]').forEach(select => {
@@ -10562,6 +11993,8 @@ function normalizeIconName(value) {
         tile.folder_pin = storedPin;
       }
       if (tileEl) tileEl.dataset.folderPinEnabled = enabled ? '1' : '0';
+      // The tile shows the lock of a protected Folder (previewTileLocked).
+      if (typeof updateTilePreview === 'function') updateTilePreview(tab);
       syncFolderPinControls(tab);
       if (status) status.textContent = navigateText('folderPinSaved');
       showNotification(navigateText('folderPinSaved'));
@@ -10598,20 +12031,147 @@ function maybeFillTitleFromSwitch(tab) {
     maybeFillTitleFromEntity(tab, '_switch_entity');
   }
 
-  const SWITCH_TOGGLE_ON = '#3B82F6';
   const SWITCH_ICON_ON = '#FFD54F';
   const SWITCH_ICON_OFF = '#B0B0B0';
-  const SWITCH_ICON_NEUTRAL = '#FFFFFF';
+  // Layouts (src/types/switch/layout.h): 0 icon button, 1 switch, 2 dimmer,
+  // 3 automatic. New tiles start with Automatic.
+  const SWITCH_LAYOUT_NEW_TILE = '3';
+  // Home Assistant color modes that dim (every mode except onoff).
+  // Mirrors parse_switch_payload() (tile_renderer.cpp).
+  const SWITCH_DIMMING_MODES = ['brightness', 'color_temp', 'hs', 'rgb', 'xy', 'rgbw', 'rgbww'];
 
-  function syncSwitchPreviewPalette(tileElem) {
-    if (!tileElem) return;
-    const switchEl = tileElem.querySelector('.tile-switch');
-    if (!switchEl) return;
-    const bg = tileElem.style.background || window.getComputedStyle(tileElem).backgroundColor || '#353535';
-    switchEl.style.setProperty('--switch-knob-color', bg);
-    if (tileElem.classList.contains('switch-toggle')) {
-      switchEl.style.setProperty('--switch-on-color', SWITCH_TOGGLE_ON);
+  // The Sensor value size choices (Tile::sensor_value_font 0..5). One row
+  // high the state shows the half-height sizes (compact_sensor_layout::
+  // value_step), from 1.5 rows the full-size ones; the editor offers the
+  // fitting ones (syncCompactValueFontOptions).
+  function switchValueFont(value) {
+    const v = String(value ?? '0');
+    return ['1', '2', '3', '4', '5'].includes(v) ? v : '0';
+  }
+
+  // switch_layout::sensor_look: from 1.5 rows a header layout looks like a
+  // Sensor tile with the bar below.
+  function switchSensorLook(style, spanH) {
+    return switchLayoutValue(style) !== 0 && Number(spanH) > 1;
+  }
+
+  // The segmented choices of the Switch fields (like Tile color). The hidden
+  // select of each keeps the value; a button sets it and fires its change
+  // event, so the existing preview, draft and autosave bindings run.
+  // The Climate tile's Layout uses the same segmented choice.
+  const SWITCH_CHOICE_FIELDS = ['switch_style', 'switch_value_font', 'switch_popup_open_mode', 'climate_view',
+    'cover_value_font', 'lock_value_font', 'alarm_value_font', 'fan_value_font'];
+
+  function syncSwitchChoices(tab) {
+    for (const field of SWITCH_CHOICE_FIELDS) {
+      const select = document.getElementById(tab + '_' + field);
+      const group = document.getElementById(tab + '_' + field + '_choices');
+      if (!select || !group?.querySelectorAll) continue;
+      const options = select.options ? Array.from(select.options) : [];
+      for (const button of group.querySelectorAll('button[data-value]')) {
+        button.classList.toggle('active', button.dataset.value === String(select.value));
+        // Value sizes this tile size does not offer stay hidden.
+        const option = options.find(o => o.value === button.dataset.value);
+        button.classList.toggle('hidden', !!option?.hidden);
+      }
     }
+  }
+
+  function setSwitchChoice(tab, field, value) {
+    const select = document.getElementById(tab + '_' + field);
+    if (!select) return;
+    if (String(select.value) !== String(value)) {
+      select.value = String(value);
+      if (typeof select.dispatchEvent === 'function') select.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+    syncSwitchChoices(tab);
+  }
+
+  function switchLayoutValue(value) {
+    const layout = Number(value);
+    return [0, 1, 2, 3].includes(layout) ? layout : 0;
+  }
+
+  // Header layouts (Switch, Dimmer, Automatic) and every half-height Switch
+  // tile use the Sensor header; only a full-size icon button does not.
+  function switchUsesHeader(style, halfHeight) {
+    return !!halfHeight || switchLayoutValue(style) !== 0;
+  }
+
+  // switch_layout::bar_for(): no bar at half height or for the icon button.
+  function switchBarKind(style, halfHeight, dimmable) {
+    const layout = switchLayoutValue(style);
+    if (halfHeight || layout === 0) return 'none';
+    if (layout === 1) return 'toggle';
+    return dimmable ? 'dimmer' : 'toggle';
+  }
+
+  // Markup after the icon and title of a header layout: the state line and,
+  // at full height, the control bar.
+  function switchPreviewExtraHtml(style, halfHeight) {
+    if (!switchUsesHeader(style, halfHeight)) return '';
+    let html = '<div class="tile-value tile-switch-state">--</div>';
+    if (!halfHeight) {
+      html += '<div class="tile-switch" data-bar="none">' +
+        '<div class="tile-switch-fill"><span class="tile-switch-handle"></span></div>' +
+        '<div class="tile-switch-knob"><i class="mdi mdi-power tile-switch-symbol"></i></div>' +
+        '</div>';
+    }
+    return html;
+  }
+
+  // The tile classes and layout of a Switch preview (live and cached grid).
+  function applySwitchPreviewLayout(tileElem, style, halfHeight) {
+    if (!tileElem) return;
+    tileElem.dataset.switchLayout = String(switchLayoutValue(style));
+    tileElem.classList.toggle('switch-bar', switchUsesHeader(style, halfHeight) && !halfHeight);
+  }
+
+  // switch_layout::Dimmer: the fill stays inside the bar's shape; its end
+  // has a quarter of the bar height as rounding, growing into the bar's
+  // radius only near the full end. The smallest piece is the bar radius plus
+  // that rounding wide (tangential, no edge) with the handle in its middle.
+  // `baseHeight`: the one-row bar height; a taller bar keeps its end
+  // rounding and handle width, only the handle grows in height.
+  function switchDimmerGeometry(width, height, radius, baseHeight = 0) {
+    const reference = baseHeight > 0 ? baseHeight : height;
+    const endRadius = Math.floor(reference / 4);
+    const minFill = Math.min(radius + endRadius, width);
+    const margin = Math.floor(minFill / 2);
+    const low = minFill - margin;
+    const high = width - margin;
+    return {
+      margin,
+      minFill,
+      endRadius,
+      handleWidth: Math.max(3, Math.floor(reference * 7 / 100)),
+      handleHeight: Math.floor(height * 42 / 100),
+      handleX(value) {
+        if (value <= 1 || high <= low) return low;
+        if (value >= 100) return high;
+        return low + Math.floor(((value - 1) * (high - low) + 49) / 99);
+      },
+      fillWidth(value) {
+        if (!value) return 0;
+        return Math.min(width, this.handleX(value) + margin);
+      },
+      endRadiusFor(fill) {
+        if (fill <= width - radius || endRadius >= radius) return endRadius;
+        const corner = width - radius;
+        for (let end = endRadius; end < radius; end++) {
+          let inside = true;
+          for (let x = fill - end; x <= fill && inside; x++) {
+            const dxEnd = x - (fill - end);
+            const endTop = end - Math.sqrt(Math.max(0, end * end - dxEnd * dxEnd));
+            const dxBar = x - corner;
+            const barTop = dxBar <= 0 ? 0 : radius - Math.sqrt(Math.max(0, radius * radius - dxBar * dxBar));
+            if (endTop + 0.01 < barTop) inside = false;
+          }
+          if (inside) return end;
+        }
+        return radius;
+      }
+    };
   }
 
   function parseOnOff(text) {
@@ -10668,8 +12228,12 @@ function maybeFillTitleFromSwitch(tab) {
       available: true,
       hasState: false,
       isOn: false,
+      unknown: false,
       hasColor: false,
-      color: null
+      color: null,
+      hasBrightness: false,
+      brightness: 0,
+      supportsBrightness: false
     };
     if (value === undefined || value === null) return out;
     const text = String(value).trim();
@@ -10686,6 +12250,8 @@ function maybeFillTitleFromSwitch(tab) {
             const normalizedState = String(obj.state).trim().toLowerCase();
             if (normalizedState === 'unavailable') {
               out.available = false;
+            } else if (normalizedState === 'unknown') {
+              out.unknown = true;
             } else {
               const on = parseOnOff(obj.state);
               if (on !== null) {
@@ -10712,12 +12278,32 @@ function maybeFillTitleFromSwitch(tab) {
             out.hasColor = true;
             out.color = hsToRgb(Number(obj.hs_color[0]), Number(obj.hs_color[1]));
           }
+          // Like parse_switch_payload(): brightness_pct, else brightness 0..255.
+          const pct = Number(obj.brightness_pct);
+          const raw = Number(obj.brightness);
+          if (obj.brightness_pct !== undefined && obj.brightness_pct !== null && Number.isFinite(pct)) {
+            out.hasBrightness = true;
+            out.brightness = Math.max(0, Math.min(100, Math.round(pct)));
+          } else if (obj.brightness !== undefined && obj.brightness !== null && Number.isFinite(raw)) {
+            out.hasBrightness = true;
+            out.brightness = Math.max(0, Math.min(100, Math.round(raw / 255 * 100)));
+          }
+          // supported_color_modes decides; color_mode only when it is absent.
+          if (Array.isArray(obj.supported_color_modes)) {
+            out.supportsBrightness = obj.supported_color_modes.some(mode =>
+              SWITCH_DIMMING_MODES.includes(String(mode).toLowerCase()));
+          } else if (obj.color_mode) {
+            out.supportsBrightness = SWITCH_DIMMING_MODES.includes(String(obj.color_mode).toLowerCase());
+          }
         }
       } catch (e) {}
     }
 
     if (text.toLowerCase() === 'unavailable') {
       out.available = false;
+    }
+    if (text.toLowerCase() === 'unknown') {
+      out.unknown = true;
     }
 
     if (!out.hasState) {
@@ -10749,49 +12335,148 @@ function maybeFillTitleFromSwitch(tab) {
     return out;
   }
 
-  function applySwitchPreviewState(tileElem, state) {
+  // Resize preview (drag-resize.js): the copy of a Switch tile at its old
+  // size takes the parts of the new size like the device: no bar at half
+  // height, the header and bar of the layout from one row. Before the
+  // compact classes, so the tall look follows too.
+  function prepareSwitchResizePreview(preview, data, layout) {
+    if (!preview || !data) return;
+    const half = Number(layout?.span_h) === 0.5;
+    const oldState = Array.from(preview.children).find(el => el.classList.contains('tile-switch-state'));
+    preview.dataset.switchStateText = oldState ? oldState.textContent : '';
+    for (const el of Array.from(preview.children)) {
+      if (el.classList.contains('tile-switch-state') || el.classList.contains('tile-switch')) el.remove();
+    }
+    preview.insertAdjacentHTML('beforeend', switchPreviewExtraHtml(data.switch_style, half));
+    applySwitchPreviewLayout(preview, data.switch_style, half);
+  }
+
+  // Once the copy is in the grid (the bar measures itself): the state from
+  // the entity cache, else the text the tile showed.
+  function finishSwitchResizePreview(preview, data) {
+    if (!preview || !data) return;
+    const entity = data.sensor_entity || '';
+    const values = (typeof sensorMetaCache === 'object' && sensorMetaCache?.values) || {};
+    if (entity && values[entity] !== undefined) {
+      applySwitchPreviewState(preview, parseSwitchPayload(values[entity]), entity);
+      return;
+    }
+    const label = Array.from(preview.children).find(el => el.classList.contains('tile-switch-state'));
+    if (label && preview.dataset.switchStateText) label.textContent = preview.dataset.switchStateText;
+  }
+
+  function applySwitchPreviewState(tileElem, state, entity) {
     if (!tileElem) return;
     applySwitchPreviewColors(tileElem, state);
-    // The icon disc follows the state color like on the device.
+    // The disc and the control fill follow the state color like the device.
     applyIconDiscTint(tileElem);
+    applySwitchPreviewBar(tileElem, state, entity);
   }
 
   function applySwitchPreviewColors(tileElem, state) {
     const iconEl = tileElem.querySelector('.tile-icon');
-    const switchEl = tileElem.querySelector('.tile-switch');
-    const isToggleStyle = tileElem.classList.contains('switch-toggle');
-    syncSwitchPreviewPalette(tileElem);
+    if (!iconEl) return;
     if (state.available === false) {
-      if (iconEl) iconEl.style.color = SWITCH_ICON_OFF;
-      if (switchEl) {
-        switchEl.classList.remove('is-on');
-        if (isToggleStyle) {
-          switchEl.style.setProperty('--switch-on-color', SWITCH_TOGGLE_ON);
-        } else {
-          switchEl.style.removeProperty('--switch-on-color');
+      iconEl.style.color = SWITCH_ICON_OFF;
+      return;
+    }
+    if (!state.hasState && !state.hasColor) return;
+    const isOn = state.hasState ? state.isOn : state.hasColor;
+    iconEl.style.color = isOn ? (state.hasColor ? state.color : SWITCH_ICON_ON) : SWITCH_ICON_OFF;
+  }
+
+  // show_state_text(): the same words as the device, from the central
+  // translations (SWITCH_I18N, types/switch/web_scripts.cpp).
+  function switchPreviewStateText(state, dimmable, level, on) {
+    const i18n = typeof SWITCH_I18N === 'object' ? SWITCH_I18N : {};
+    if (state.available === false) return i18n.unavailable || 'Unavailable';
+    if (state.unknown) return i18n.unknown || 'Unknown';
+    if (!state.hasState && !state.hasBrightness) return '--';
+    if (!on) return i18n.off || 'Off';
+    if (dimmable) return level + ' %';
+    return i18n.on || 'On';
+  }
+
+  function applySwitchPreviewBar(tileElem, state, entity) {
+    // Each appears once per tile, directly in it.
+    const label = tileElem.querySelector('.tile-switch-state');
+    const bar = tileElem.querySelector('.tile-switch');
+    if (!label && !bar) return;
+    const halfHeight = tileElem.classList.contains('sensor-half');
+    const style = tileElem.dataset.switchLayout || '0';
+    const dimmable = String(entity || '').startsWith('light.') && !!state.supportsBrightness;
+    const available = state.available !== false;
+    let on = state.hasState ? !!state.isOn : (!!state.hasBrightness && state.brightness > 0);
+    if (!available) on = false;
+    // A dimmable light on without a reported brightness: On without a level.
+    const level = on ? (state.hasBrightness ? Math.max(1, state.brightness) : (dimmable ? 0 : 100)) : 0;
+    if (label) label.textContent = switchPreviewStateText(state, dimmable && level > 0, level, on);
+    if (!bar) return;
+    const kind = switchBarKind(style, halfHeight, dimmable);
+    bar.dataset.bar = kind;
+    bar.classList.toggle('is-on', on);
+    bar.classList.toggle('is-unavailable', !available);
+    // Accent = the color the icon shows, card = the tile, thumb off = one
+    // OKLCH step above the control fill (tone_color::lifted).
+    const iconEl = tileElem.querySelector('.tile-icon');
+    const accent = iconEl ? getComputedStyle(iconEl).color : (state.hasColor ? state.color : SWITCH_ICON_ON);
+    bar.style.setProperty('--switch-accent', accent);
+    bar.style.setProperty('--switch-card', getComputedStyle(tileElem).backgroundColor);
+    const control = cssColorChannels(getComputedStyle(bar).backgroundColor);
+    if (control) {
+      const base = toneOklch(control);
+      bar.style.setProperty('--switch-thumb-off', toneHex(toneRgb(base.L + 0.06, base.C, base.h)));
+    }
+    const symbol = bar.querySelector('.tile-switch-symbol');
+    if (symbol) symbol.className = 'mdi ' + (on ? 'mdi-power' : 'mdi-circle-outline') + ' tile-switch-symbol';
+    bar.__switchFill = {kind, level};
+    drawSwitchPreviewFill(bar);
+    // The fill is measured in pixels, but the grid gives the tile its size
+    // only after the render (layoutTiles), and a hidden tab measures 0: the
+    // fill used the one-cell bar. It is drawn again whenever the bar's size
+    // changes.
+    if (switchBarObserver && !bar.__switchObserved) {
+      bar.__switchObserved = true;
+      switchBarObserver.observe(bar);
+    }
+  }
+
+  const switchBarObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const bar = entry.target;
+        if (!bar.isConnected) {
+          switchBarObserver.unobserve(bar);
+          bar.__switchObserved = false;
+          continue;
         }
+        // A bar whose content depends on its width (the Alarm panel's
+        // mode slots) rebuilds itself first.
+        if (typeof bar.__onResize === 'function') bar.__onResize();
+        drawSwitchPreviewFill(bar);
       }
-      return;
-    }
-    if (!state.hasState && !state.hasColor) {
-      if (iconEl && isToggleStyle) iconEl.style.color = SWITCH_ICON_NEUTRAL;
-      return;
-    }
-    let isOn = state.hasState ? state.isOn : state.hasColor;
-    let color = SWITCH_ICON_OFF;
-    if (isOn) color = state.hasColor ? state.color : SWITCH_ICON_ON;
-    if (iconEl) iconEl.style.color = isToggleStyle ? SWITCH_ICON_NEUTRAL : color;
-    if (switchEl) {
-      if (isOn) switchEl.classList.add('is-on');
-      else switchEl.classList.remove('is-on');
-      if (isToggleStyle) {
-        switchEl.style.setProperty('--switch-on-color', SWITCH_TOGGLE_ON);
-      } else if (isOn && state.hasColor) {
-        switchEl.style.setProperty('--switch-on-color', state.color);
-      } else {
-        switchEl.style.removeProperty('--switch-on-color');
-      }
-    }
+    })
+    : null;
+
+  function drawSwitchPreviewFill(bar) {
+    const fill = bar?.querySelector('.tile-switch-fill');
+    const drawn = bar?.__switchFill;
+    if (!fill || !drawn) return;
+    const {kind, level} = drawn;
+    const width = bar.clientWidth;
+    const height = bar.clientHeight;
+    const radius = Math.min(parseFloat(getComputedStyle(bar).borderTopLeftRadius) || 0, height / 2);
+    const base = parseFloat(getComputedStyle(bar).getPropertyValue('--switch-bar-height')) || height;
+    const geometry = switchDimmerGeometry(width, height, radius, Math.min(base, height));
+    const fillWidth = kind === 'dimmer' ? geometry.fillWidth(level) : 0;
+    const endRadius = geometry.endRadiusFor(fillWidth);
+    // The fill element starts one end radius left of the bar, so only the
+    // bar's round start shows (overflow hidden).
+    fill.style.width = (fillWidth ? fillWidth + endRadius : 0) + 'px';
+    bar.style.setProperty('--switch-end-radius', endRadius + 'px');
+    bar.style.setProperty('--switch-handle-margin', geometry.margin + 'px');
+    bar.style.setProperty('--switch-handle-w', geometry.handleWidth + 'px');
+    bar.style.setProperty('--switch-handle-h', geometry.handleHeight + 'px');
   }
 
   function updateSwitchValuePreview(tab) {
@@ -10802,11 +12487,10 @@ function maybeFillTitleFromSwitch(tab) {
     const entity = entitySelect.value;
     const tileElem = document.getElementById(tab + '-tile-' + currentTileIndex);
     if (!entity || !tileElem) return;
-    syncSwitchPreviewPalette(tileElem);
     const applyMeta = (meta) => {
       const values = (meta && meta.values) || {};
       const state = parseSwitchPayload(values[entity] ?? '');
-      applySwitchPreviewState(tileElem, state);
+      applySwitchPreviewState(tileElem, state, entity);
     };
     const metaPromise = isSensorMetaCacheLoaded() ? Promise.resolve(sensorMetaCache) : fetchSensorMetaCache();
     metaPromise
@@ -10821,12 +12505,16 @@ function maybeFillTitleFromSwitch(tab) {
     if (entityEl) entityEl.value = data.sensor_entity || data.switch_entity || '';
     const styleEl = document.getElementById(prefix + '_switch_style');
     if (styleEl) {
-      styleEl.value = (data.switch_style !== undefined && data.switch_style !== null) ? String(data.switch_style) : '0';
+      styleEl.value = (data.switch_style !== undefined && data.switch_style !== null)
+        ? String(switchLayoutValue(data.switch_style)) : '0';
     }
+    const fontEl = document.getElementById(prefix + '_switch_value_font');
+    if (fontEl) fontEl.value = switchValueFont(data.sensor_value_font);
     const popupModeEl = document.getElementById(prefix + '_switch_popup_open_mode');
     if (popupModeEl) {
       popupModeEl.value = (data.popup_open_mode !== undefined) ? String(data.popup_open_mode) : '1';
     }
+    syncSwitchChoices(tab);
     maybeFillTitleFromSwitch(tab);
   }
 
@@ -10835,7 +12523,8 @@ function maybeFillTitleFromSwitch(tab) {
     const prefix = tab;
     formData.append('switch_entity', document.getElementById(prefix + '_switch_entity')?.value || '');
     const styleEl = document.getElementById(prefix + '_switch_style');
-    formData.append('switch_style', styleEl ? styleEl.value : '0');
+    formData.append('switch_style', styleEl ? String(switchLayoutValue(styleEl.value)) : '0');
+    formData.append('sensor_value_font', switchValueFont(document.getElementById(prefix + '_switch_value_font')?.value));
     formData.append('popup_open_mode', document.getElementById(prefix + '_switch_popup_open_mode')?.value || '1');
   }
 
@@ -10845,9 +12534,12 @@ function maybeFillTitleFromSwitch(tab) {
     const entityEl = document.getElementById(prefix + '_switch_entity');
     if (entityEl) entityEl.value = '';
     const styleEl = document.getElementById(prefix + '_switch_style');
-    if (styleEl) styleEl.value = '0';
+    if (styleEl) styleEl.value = SWITCH_LAYOUT_NEW_TILE;
+    const fontEl = document.getElementById(prefix + '_switch_value_font');
+    if (fontEl) fontEl.value = '0';
     const popupModeEl = document.getElementById(prefix + '_switch_popup_open_mode');
     if (popupModeEl) popupModeEl.value = '1';
+    syncSwitchChoices(tab);
   }
 
   function parseCoverPreviewPayload(value) {
@@ -10856,11 +12548,15 @@ function maybeFillTitleFromSwitch(tab) {
       position: null,
       tiltPosition: null,
       deviceClass: '',
-      available: true
+      available: true,
+      // A state was reported (the device's CoverState::valid).
+      reported: false,
+      supportedFeatures: null
     };
     if (value === undefined || value === null) return out;
     const text = String(value).trim();
     if (!text.length) return out;
+    out.reported = true;
     if (!text.startsWith('{')) {
       out.state = text.toLowerCase();
       out.available = out.state !== 'unavailable';
@@ -10884,6 +12580,10 @@ function maybeFillTitleFromSwitch(tab) {
         out.tiltPosition = Math.max(0, Math.min(100, Math.round(Number(tilt))));
       }
       out.deviceClass = String(obj.device_class ?? attrs.device_class ?? '').toLowerCase();
+      const features = obj.supported_features ?? attrs.supported_features;
+      if (features !== undefined && features !== null && Number.isFinite(Number(features))) {
+        out.supportedFeatures = Math.max(0, Math.min(255, Math.round(Number(features))));
+      }
     } catch (e) {}
     return out;
   }
@@ -10932,13 +12632,76 @@ function maybeFillTitleFromSwitch(tab) {
       'arrow-down-box', 'arrow-up-box');
   }
 
+  // The state color of icon and position fill (cover renderer
+  // cover_icon_color): closed keeps the active color, unknown and
+  // unavailable take the inactive grey.
   function coverPreviewColor(state) {
     const value = String(state?.state || 'unknown').toLowerCase();
-    if (state?.available === false ||
-        value === 'closed' || value === 'unknown' || value === 'unavailable') {
+    if (state?.available === false || value === 'unknown' || value === 'unavailable') {
       return '#9e9e9e';
     }
     return '#926bc7';
+  }
+
+  // A full tile of a Cover with a position (or not reported yet) shows the
+  // header and the position bar (cover renderer show_view); without
+  // supported_features the device assumes open, close and stop, plus the
+  // position when one is reported. Bit 4 is SET_POSITION.
+  function coverPreviewPositionable(state) {
+    if (!state || !state.reported) return true;
+    const features = state.supportedFeatures ?? (11 | (state.position !== null ? 4 : 0));
+    return (features & 4) !== 0;
+  }
+
+  // cover_state_line(): "Open · 58 %".
+  function coverPreviewStateLine(state) {
+    if (!state || !state.reported) return '--';
+    const text = coverPreviewStateText(state);
+    return state.available !== false && state.position !== null ? text + ' \u00B7 ' + state.position + ' %' : text;
+  }
+
+  // Markup after the icon and title: half height and full tiles of a
+  // positionable Cover show the state line beside the disc, full tiles also
+  // the position bar (the Switch preview's bar); other Covers keep the
+  // centered state and position.
+  function coverPreviewExtraHtml(state, halfHeight) {
+    if (!halfHeight && !coverPreviewPositionable(state)) {
+      const value = state?.position !== null && state?.position !== undefined
+        ? String(state.position) + '%' : '--%';
+      return '<div class="tile-value tile-cover-value">' + escapeHtml(coverPreviewStateText(state)) +
+        '<br>' + escapeHtml(value) + '</div>';
+    }
+    let html = '<div class="tile-value tile-switch-state">' + escapeHtml(coverPreviewStateLine(state)) + '</div>';
+    if (!halfHeight) {
+      html += '<div class="tile-switch" data-bar="dimmer">' +
+        '<div class="tile-switch-fill"><span class="tile-switch-handle"></span></div></div>';
+    }
+    return html;
+  }
+
+  // The header layout class and the position fill, drawn like the Switch
+  // dimmer (drawSwitchPreviewFill) in the state color with the handle in the
+  // tile color.
+  function applyCoverPreview(tileElem, state, halfHeight) {
+    if (!tileElem) return;
+    tileElem.classList.toggle('switch-bar', !halfHeight && coverPreviewPositionable(state));
+    const bar = tileElem.querySelector('.tile-switch');
+    if (!bar) return;
+    const available = state?.available !== false && !!state?.reported;
+    // The closed part like Home Assistant's cover position feature (and the
+    // popup's shutter): 75 % open fills a quarter; fully open keeps the
+    // smallest piece with the handle (cover renderer cover_fill_level).
+    const level = available && state.position !== null ? Math.max(1, 100 - state.position) : 0;
+    bar.dataset.bar = 'dimmer';
+    bar.classList.toggle('is-unavailable', !available);
+    bar.style.setProperty('--switch-accent', coverPreviewColor(state));
+    bar.style.setProperty('--switch-card', getComputedStyle(tileElem).backgroundColor);
+    bar.__switchFill = {kind: 'dimmer', level};
+    drawSwitchPreviewFill(bar);
+    if (switchBarObserver && !bar.__switchObserved) {
+      bar.__switchObserved = true;
+      switchBarObserver.observe(bar);
+    }
   }
 
   function coverPreviewStateText(state) {
@@ -10973,11 +12736,15 @@ function maybeFillTitleFromSwitch(tab) {
       }
       entity.value = configured;
     }
+    // State size like the Switch tile (Tile::sensor_value_font).
+    const font = document.getElementById(tab + '_cover_value_font');
+    if (font) font.value = switchValueFont(data.sensor_value_font);
     const popup = document.getElementById(tab + '_cover_popup_open_mode');
     if (popup) {
       popup.value = data.popup_open_mode !== undefined
         ? String(data.popup_open_mode) : '1';
     }
+    if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
     maybeFillTitleFromEntity(tab, '_cover_entity');
   }
 
@@ -10986,6 +12753,7 @@ function maybeFillTitleFromSwitch(tab) {
     const entity = document.getElementById(tab + '_cover_entity')?.value || '';
     formData.append('cover_entity', entity);
     formData.append('sensor_entity', entity);
+    formData.append('sensor_value_font', switchValueFont(document.getElementById(tab + '_cover_value_font')?.value));
     const popup = document.getElementById(tab + '_cover_popup_open_mode');
     if (popup) formData.append('popup_open_mode', popup.value || '1');
   }
@@ -10997,17 +12765,324 @@ function maybeFillTitleFromSwitch(tab) {
       entity.value = '';
       delete entity.dataset.configuredValue;
     }
+    const font = document.getElementById(tab + '_cover_value_font');
+    if (font) font.value = '0';
     const popup = document.getElementById(tab + '_cover_popup_open_mode');
     if (popup) popup.value = '1';
+    if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
   }
+  // Lock (24), Alarm panel (25) and Fan (26): the Switch tile's header with
+  // a control bar (types/device/device_tile.cpp). The preview mirrors the
+  // device: the state colors and icons of device_visual.h, the bar of
+  // bar_model() and the words of DEVICE_I18N (types/device/web.cpp).
+  const DEVICE_COLORS = {green: '#4CAF50', red: '#F44336', orange: '#FF9800', grey: '#9E9E9E', cyan: '#00BCD4'};
+  // Home Assistant's alarm modes: state, feature bit, icon.
+  const DEVICE_ALARM_MODES = [
+    ['armed_home', 1, 'home'], ['armed_away', 2, 'lock'], ['armed_night', 4, 'moon-waning-crescent'],
+    ['armed_vacation', 32, 'airplane'], ['armed_custom_bypass', 16, 'shield']
+  ];
+
+  function devicePreviewKind(type) {
+    const value = String(type);
+    return value === '24' ? 'lock' : (value === '25' ? 'alarm' : (value === '26' ? 'fan' : ''));
+  }
+
+  // The retained detail state (/api/sensor_values device_values).
+  function deviceDetailPayload(entity, meta = sensorMetaCache) {
+    return entity ? (meta?.deviceValues?.[entity] ?? '') : '';
+  }
+
+  // device_detail::parse(): a missing state stays apart from a known one.
+  function parseDevicePreviewPayload(value) {
+    const out = {valid: false, available: false, state: '', features: 0, percentage: null,
+      step: null, preset: ''};
+    const text = value === undefined || value === null ? '' : String(value).trim();
+    if (!text.startsWith('{')) return out;
+    try {
+      const obj = JSON.parse(text);
+      if (!obj || typeof obj !== 'object') return out;
+      out.valid = true;
+      out.state = typeof obj.state === 'string' ? obj.state.toLowerCase() : '';
+      out.available = !!out.state && out.state !== 'unavailable';
+      out.features = Number.isFinite(Number(obj.supported_features)) ? Number(obj.supported_features) : 0;
+      if (typeof obj.percentage === 'number' && Number.isFinite(obj.percentage)) {
+        out.percentage = Math.max(0, Math.min(100, Math.round(obj.percentage)));
+      }
+      if (typeof obj.percentage_step === 'number' && obj.percentage_step > 0 && obj.percentage_step <= 100) {
+        out.step = obj.percentage_step;
+      }
+      out.preset = typeof obj.preset_mode === 'string' ? obj.preset_mode : '';
+    } catch (e) {}
+    return out;
+  }
+
+  function deviceSpeedCount(d) {
+    if (!d.step) return 100;
+    return Math.max(1, Math.min(100, Math.round(100 / d.step)));
+  }
+
+  function deviceLevelText(count, percentage) {
+    const i18n = typeof DEVICE_I18N === 'object' ? DEVICE_I18N.fan : {};
+    if (count < 100) {
+      const speed = Math.max(1, Math.min(count, Math.round(percentage * count / 100)));
+      return String(i18n.speed || 'Speed %u').replace('%u', String(speed));
+    }
+    return percentage + ' %';
+  }
+
+  // device_visual::visual(): label, icon and state color.
+  function devicePreviewVisual(kind, d) {
+    const words = typeof DEVICE_I18N === 'object' ? (DEVICE_I18N[kind] || {}) : {};
+    const out = {label: '--', icon: kind === 'lock' ? 'lock' : (kind === 'alarm' ? 'shield' : 'fan-off'),
+      color: DEVICE_COLORS.grey, waiting: false};
+    if (!d.valid) return out;
+    const state = d.available ? d.state : 'unavailable';
+    if (kind === 'lock') {
+      out.label = words[state] || words.unknown || state;
+      if (!d.available) return out;
+      if (state === 'locked') out.color = DEVICE_COLORS.green;
+      else if (state === 'unlocked' || state === 'open') {
+        out.icon = 'lock-open-variant';
+        out.color = DEVICE_COLORS.red;
+      } else if (['locking', 'unlocking', 'opening'].includes(state)) {
+        out.icon = 'lock-clock';
+        out.color = DEVICE_COLORS.orange;
+        out.waiting = true;
+      } else if (state === 'jammed') {
+        out.icon = 'lock-alert';
+        out.color = DEVICE_COLORS.red;
+        out.waiting = true;
+      }
+      return out;
+    }
+    if (kind === 'alarm') {
+      out.label = words[state] || words.unknown || state;
+      if (!d.available) return out;
+      const looks = {
+        disarmed: ['shield-off', 'grey'], armed_home: ['shield-home', 'green'], armed_away: ['shield-lock', 'green'],
+        armed_night: ['shield-moon', 'green'], armed_vacation: ['shield-airplane', 'green'],
+        armed_custom_bypass: ['security', 'green'], arming: ['shield', 'orange'], pending: ['shield-outline', 'orange'],
+        disarming: ['shield', 'orange'], triggered: ['bell-ring', 'red']
+      };
+      const look = looks[state];
+      if (look) {
+        out.icon = look[0];
+        out.color = DEVICE_COLORS[look[1]];
+        out.waiting = look[1] === 'orange' || state === 'triggered';
+      }
+      return out;
+    }
+    if (!d.available) {
+      out.label = words.unavailable || 'Unavailable';
+      return out;
+    }
+    if (state === 'unknown') {
+      out.label = words.unknown || 'Unknown';
+      return out;
+    }
+    if (state !== 'on') {
+      out.label = words.off || 'Off';
+      return out;
+    }
+    out.icon = 'fan';
+    out.color = DEVICE_COLORS.cyan;
+    if (d.preset) {
+      const preset = d.preset.replace(/_/g, ' ');
+      out.label = preset.charAt(0).toUpperCase() + preset.slice(1);
+    } else if ((d.features & 1) && d.percentage !== null) {
+      out.label = deviceLevelText(deviceSpeedCount(d), d.percentage);
+    } else {
+      out.label = words.on || 'On';
+    }
+    return out;
+  }
+
+  function devicePreviewIcon(kind, d, fallback = '') {
+    return fallback || devicePreviewVisual(kind, d).icon;
+  }
+
+  function devicePreviewColor(kind, d) {
+    return devicePreviewVisual(kind, d).color;
+  }
+
+  // The state line beside the disc and, for full tiles, the bar.
+  function devicePreviewExtraHtml(kind, d, halfHeight) {
+    let html = '<div class="tile-value tile-switch-state">' + escapeHtml(devicePreviewVisual(kind, d).label) + '</div>';
+    if (!halfHeight) {
+      html += '<div class="tile-switch" data-bar="none">' +
+        '<div class="tile-switch-fill"><span class="tile-switch-handle"></span></div>' +
+        '<div class="tile-switch-knob"><i class="mdi tile-switch-symbol"></i></div>' +
+        '<div class="tile-device-parts"></div></div>';
+    }
+    return html;
+  }
+
+  function devicePart(icon, cls) {
+    return '<span class="tile-device-part' + (cls ? ' ' + cls : '') + '">' +
+      (icon ? '<i class="mdi mdi-' + escapeHtml(icon) + '"></i>' : '') + '</span>';
+  }
+
+  // bar_model(): the bar the device draws for this state.
+  function applyDevicePreview(tileElem, kind, d, halfHeight) {
+    if (!tileElem) return;
+    tileElem.classList.toggle('switch-bar', !halfHeight);
+    const bar = tileElem.querySelector('.tile-switch');
+    if (!bar) return;
+    const visual = devicePreviewVisual(kind, d);
+    const iconEl = tileElem.querySelector('.tile-icon');
+    const accent = iconEl ? getComputedStyle(iconEl).color : visual.color;
+    const card = getComputedStyle(tileElem).backgroundColor;
+    bar.style.setProperty('--switch-accent', accent);
+    bar.style.setProperty('--switch-card', card);
+    const control = cssColorChannels(getComputedStyle(bar).backgroundColor);
+    if (control) {
+      const base = toneOklch(control);
+      bar.style.setProperty('--switch-thumb-off', toneHex(toneRgb(base.L + 0.06, base.C, base.h)));
+      bar.style.setProperty('--device-button', toneHex(toneRgb(base.L + 0.04, base.C, base.h)));
+    }
+    bar.classList.toggle('is-unavailable', !d.valid || !d.available);
+    bar.classList.remove('is-on', 'knob-accent');
+    const parts = bar.querySelector('.tile-device-parts');
+    const symbol = bar.querySelector('.tile-switch-symbol');
+    let barKind = 'none';
+    let onResize = null;
+    let partsHtml = '';
+    let gapped = false;
+    let level = 0;
+    if (kind === 'lock') {
+      const s = d.state;
+      if (!['locked', 'locking', 'unlocked', 'unlocking', 'open', 'opening'].includes(s)) {
+        barKind = 'parts';
+        gapped = true;
+        partsHtml = devicePart('lock-open-variant', 'button') + devicePart('lock', 'button');
+      } else {
+        barKind = 'toggle';
+        bar.classList.toggle('is-on', s === 'locked' || s === 'locking');
+        bar.classList.add('knob-accent');
+        if (symbol) symbol.className = 'mdi mdi-' + visual.icon + ' tile-switch-symbol';
+      }
+    } else if (kind === 'alarm') {
+      if (['arming', 'pending', 'triggered'].includes(d.state)) {
+        barKind = 'parts';
+        partsHtml = devicePart('shield-off', 'button');
+      } else {
+        barKind = 'parts';
+        // alarm_slots(): Disarm first, then the supported modes in reverse.
+        const iconWidth = parseFloat(getComputedStyle(tileElem).getPropertyValue('--icon-size')) || 24;
+        const fitNow = () => Math.max(2, Math.min(6, Math.floor((bar.clientWidth || 60) / iconWidth)));
+        const fit = fitNow();
+        // The device counts the slots for the tile's size; here they follow
+        // the bar's width, also when the tile is resized or laid out later
+        // (a 2x1 tile kept the three slots of 1x1 and lit none).
+        onResize = () => {
+          if (fitNow() !== fit) applyDevicePreview(tileElem, kind, d, halfHeight);
+        };
+        const modes = DEVICE_ALARM_MODES.filter(mode => d.features & mode[1]).slice(0, fit - 1);
+        const slots = [['disarmed', 0, 'shield-off'], ...modes.reverse()];
+        partsHtml = slots.map(slot => devicePart(slot[2], slot[0] === d.state ? 'lit' : '')).join('');
+      }
+    } else {
+      const on = d.state === 'on';
+      const percentage = on ? (d.percentage ?? 100) : 0;
+      const count = deviceSpeedCount(d);
+      if (!(d.features & 1)) {
+        barKind = 'toggle';
+        bar.classList.toggle('is-on', on);
+        if (symbol) symbol.className = 'mdi mdi-' + (on ? 'fan' : 'fan-off') + ' tile-switch-symbol';
+      } else if (count >= 2 && count <= 4) {
+        barKind = 'parts';
+        gapped = true;
+        const speed = percentage > 0 ? Math.max(1, Math.min(count, Math.round(percentage * count / 100))) : 0;
+        for (let i = 0; i < count; ++i) partsHtml += devicePart('', i < speed ? 'lit' : 'button');
+      } else {
+        barKind = 'dimmer';
+        level = on ? Math.max(1, percentage) : 0;
+      }
+    }
+    bar.dataset.bar = barKind;
+    if (parts) {
+      parts.classList.toggle('gapped', gapped);
+      parts.innerHTML = partsHtml;
+    }
+    bar.__switchFill = {kind: barKind === 'dimmer' ? 'dimmer' : 'none', level};
+    bar.__onResize = onResize;
+    drawSwitchPreviewFill(bar);
+    if (switchBarObserver && !bar.__switchObserved) {
+      bar.__switchObserved = true;
+      switchBarObserver.observe(bar);
+    }
+  }
+
+  function loadDeviceFields(tab, data, prefix) {
+    loadIconColorFields(tab, data);
+    const entity = document.getElementById(tab + '_' + prefix + '_entity');
+    const configured = data.sensor_entity || data[prefix + '_entity'] || '';
+    if (entity) {
+      if (configured) {
+        entity.dataset.configuredValue = configured;
+        if (!Array.from(entity.options).some(option => option.value === configured)) {
+          const option = document.createElement('option');
+          option.value = configured;
+          option.textContent = configured;
+          entity.appendChild(option);
+        }
+      } else {
+        delete entity.dataset.configuredValue;
+      }
+      entity.value = configured;
+    }
+    // State size like the Switch tile (Tile::sensor_value_font).
+    const font = document.getElementById(tab + '_' + prefix + '_value_font');
+    if (font) font.value = switchValueFont(data.sensor_value_font);
+    const popup = document.getElementById(tab + '_' + prefix + '_popup_open_mode');
+    if (popup) popup.value = data.popup_open_mode !== undefined ? String(data.popup_open_mode) : '1';
+    if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
+    maybeFillTitleFromEntity(tab, '_' + prefix + '_entity');
+  }
+
+  function saveDeviceFields(tab, formData, prefix) {
+    saveIconColorFields(tab, formData);
+    const entity = document.getElementById(tab + '_' + prefix + '_entity')?.value || '';
+    formData.append(prefix + '_entity', entity);
+    formData.append('sensor_entity', entity);
+    formData.append('sensor_value_font',
+      switchValueFont(document.getElementById(tab + '_' + prefix + '_value_font')?.value));
+    const popup = document.getElementById(tab + '_' + prefix + '_popup_open_mode');
+    if (popup) formData.append('popup_open_mode', popup.value || '1');
+  }
+
+  function resetDeviceFields(tab, prefix) {
+    resetIconColorFields(tab);
+    const entity = document.getElementById(tab + '_' + prefix + '_entity');
+    if (entity) {
+      entity.value = '';
+      delete entity.dataset.configuredValue;
+    }
+    const font = document.getElementById(tab + '_' + prefix + '_value_font');
+    if (font) font.value = '0';
+    const popup = document.getElementById(tab + '_' + prefix + '_popup_open_mode');
+    if (popup) popup.value = '1';
+    if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
+  }
+
+  // The registry calls these by name (TileTypeDescriptor js_load/js_save/js_reset).
+  function loadLockFields(tab, data) { loadDeviceFields(tab, data, 'lock'); }
+  function saveLockFields(tab, formData) { saveDeviceFields(tab, formData, 'lock'); }
+  function resetLockFields(tab) { resetDeviceFields(tab, 'lock'); }
+  function loadAlarmFields(tab, data) { loadDeviceFields(tab, data, 'alarm'); }
+  function saveAlarmFields(tab, formData) { saveDeviceFields(tab, formData, 'alarm'); }
+  function resetAlarmFields(tab) { resetDeviceFields(tab, 'alarm'); }
+  function loadFanFields(tab, data) { loadDeviceFields(tab, data, 'fan'); }
+  function saveFanFields(tab, formData) { saveDeviceFields(tab, formData, 'fan'); }
+  function resetFanFields(tab) { resetDeviceFields(tab, 'fan'); }
 
 function maybeFillTitleFromMedia(tab) {
     maybeFillTitleFromEntity(tab, '_media_entity');
   }
 
   function updateMediaValuePreview(tab) {
-    // Media tiles stay intentionally simple in the WebUI preview:
-    // only icon and configured tile title are shown.
+    // The tile preview renders the media state with the tile
+    // (applyMediaPreview in updateTilePreview); nothing to refresh here.
   }
 
   function loadMediaFields(tab, data) {
@@ -11032,6 +13107,192 @@ function maybeFillTitleFromMedia(tab) {
     const prefix = tab;
     const el = document.getElementById(prefix + '_media_entity');
     if (el) el.value = '';
+  }
+
+  // --- Tile preview -------------------------------------------------------
+  // What types/media/renderer.cpp builds and update_media_tile_state()
+  // (tiles/runtime/tile_renderer.cpp) fills from the cached payload, placed
+  // by set_media_cover_text_layout() (content_layout.cpp) in display pixels
+  // (MEDIA_TILE_LAYOUT).
+
+  // sanitize_media_display_text().
+  function mediaPreviewText(value) {
+    return typeof value === 'string'
+      ? value.replaceAll('`', "'").replace(/[\r\n]/g, ' ').trim() : '';
+  }
+
+  function parseMediaPreviewPayload(raw) {
+    const text = String(raw ?? '').trim();
+    if (!text) return null;
+    if (!text.startsWith('{')) return {state: text};
+    let data;
+    try { data = JSON.parse(text); } catch (_) { return null; }
+    if (!data || typeof data !== 'object') return null;
+    const field = key => mediaPreviewText(data[key]);
+    return {
+      state: field('state'), title: field('media_title'), artist: field('media_artist'),
+      album: field('media_album_name'), app: field('app_name'), source: field('source'),
+      channel: field('media_channel'),
+      cover: field('entity_picture') || field('media_image_url')
+    };
+  }
+
+  // media_empty_title_label(): like Home Assistant, "Unavailable" and
+  // "Unknown", else the player state or "No playback".
+  function mediaPreviewEmptyTitle(state) {
+    const key = String(state || '').trim().toLowerCase();
+    const labels = {unavailable: 'unavailable', unknown: 'unknown', playing: 'playing', paused: 'paused',
+                    idle: 'idle', standby: 'standby', off: 'off'};
+    return MEDIA_I18N[labels[key]] || MEDIA_I18N.noPlayback;
+  }
+
+  // Positions the title and subtitle like set_media_cover_text_layout().
+  function mediaPreviewTextLayout(L, width, height, large, coverVisible, hasSubtitle) {
+    const top = large ? L.coverTop : L.coverTopSmall;
+    const footer = L.button - L.buttonBottom + L.footerGap;
+    const side = Math.max(1, Math.min(L.maxCover, Math.trunc(width * 42 / 100), height - top - footer));
+    const textX = coverVisible ? side + L.textAfterCover : L.textLeft;
+    const titleHeight = (large ? L.title : L.titleSmall).line;
+    const gap = hasSubtitle ? L.subtitleGap : 0;
+    const block = titleHeight + gap + (hasSubtitle ? L.subtitle.line : 0);
+    const center = coverVisible ? top + Math.trunc(side / 2) : Math.trunc((top + height - footer) / 2);
+    const titleY = Math.max(top, Math.min(center - Math.trunc(block / 2), height - footer - block));
+    return {side, top, textX, textWidth: Math.max(1, width - textX - L.textRight), titleY,
+            subtitleY: titleY + titleHeight + gap};
+  }
+
+  // "From cover" (tile_icon_source.cpp apply_cover): the icon color and the
+  // tile tint take the color the panel sampled from the cover it shows. A
+  // rule's tile tint and "From icon" win over the cover tint, a rule's icon
+  // color over the cover icon color.
+  function applyMediaCoverTint(el, record, coverColor) {
+    if (!el || !coverColor || typeof parseIconColorRecord !== 'function') return;
+    const parsed = parseIconColorRecord(record || '');
+    const cover = parsed.cover || {icon: false, tile: 0};
+    const layer = typeof iconColorRecordSource === 'function' ? iconColorRecordSource(record || '') : null;
+    if (cover.icon && !(layer && layer.enabled && layer.icon)) {
+      const icon = el.querySelector(':scope > .tile-icon');
+      if (icon) icon.style.color = coverColor;
+    }
+    if (cover.tile && !parsed.fill && el.dataset.ruleTint !== '1' && typeof setTileTintBackground === 'function') {
+      setTileTintBackground(el, coverColor, cover.tile);
+    }
+  }
+
+  // An artwork loaded: the texts move beside it like on the device.
+  function mediaPreviewCoverLoaded(image) {
+    const tile = image?.closest('.tile');
+    const cover = image?.parentElement;
+    if (!tile || !cover) return;
+    cover.hidden = false;
+    tile.querySelectorAll(':scope > [data-cover-style]').forEach(node => {
+      node.setAttribute('style', node.dataset.coverStyle);
+    });
+  }
+
+  // Fills a rendered media preview tile: header fallbacks, title, subtitle,
+  // artwork and the three controls. iconName is the tile's resolved icon,
+  // displayName the entity's name for a tile without its own title.
+  function applyMediaPreview(el, state, tile, iconName, displayName) {
+    if (!el || typeof MEDIA_TILE_LAYOUT === 'undefined') return;
+    const L = MEDIA_TILE_LAYOUT;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const scale = parseFloat(rootStyle.getPropertyValue('--radius-preview-scale')) || 0.5;
+    const entity = String(tile?.sensor_entity || '');
+
+    // Header: the television icon and the entity's name stand in like on
+    // the device.
+    if (!iconName && !el.querySelector(':scope > .tile-icon')) {
+      el.insertAdjacentHTML('afterbegin', '<i class="mdi mdi-television tile-icon"></i>');
+    }
+    if (!el.querySelector(':scope > .tile-title')) {
+      const name = displayName || (entity && typeof titleFromEntity === 'function' ? titleFromEntity(entity) : '') ||
+        'Media';
+      const icon = el.querySelector(':scope > .tile-icon');
+      const title = '<div class="tile-title">' + tileTitleHtml(name) + '</div>';
+      if (icon) icon.insertAdjacentHTML('afterend', title);
+      else el.insertAdjacentHTML('afterbegin', title);
+    }
+
+    const spanW = Math.max(1, Number(tile?.span_w) || 1);
+    const spanH = Math.max(1, Number(tile?.span_h) || 1);
+    const large = spanW > 1 || spanH > 1;
+    const cellW = parseFloat(rootStyle.getPropertyValue('--preview-cell-w'));
+    const cellH = parseFloat(rootStyle.getPropertyValue('--preview-cell-h'));
+    const previewGap = parseFloat(rootStyle.getPropertyValue('--preview-gap')) || 0;
+    // The card in display pixels, from the preview tile's size like the grid
+    // gives it (.fractional-tile), never measured: a re-rendered tile at a
+    // half position is placed only after it is filled.
+    const cardW = Math.round((cellW > 0 ? spanW * (cellW + previewGap) - previewGap : el.offsetWidth) / scale);
+    const cardH = Math.round((cellH > 0 ? spanH * (cellH + previewGap) - previewGap : el.offsetHeight) / scale);
+    const width = cardW - 2 * L.padH;
+    const height = cardH - 2 * L.padV;
+    // Unrounded sizes, the glyphs on the LVGL baseline as this browser draws
+    // them (text-baseline.js).
+    const font = f => {
+      const size = Math.max(6, f.px * scale);
+      const line = f.line * scale;
+      return {size, line, shift: typeof previewBaselineShift === 'function'
+        ? previewBaselineShift(size, line, (f.line - f.base) * scale)
+        : (f.line / 2 - f.base - 0.364 * f.px) * scale};
+    };
+    const fontCss = f => 'font-size:' + f.size.toFixed(2) + 'px;line-height:' + f.line.toFixed(2) + 'px;';
+    // Display pixels in the content area to the preview's absolute position
+    // inside the 3 px editor border.
+    const at = (x, y) => 'left:' + ((L.padH + x) * scale - 3).toFixed(2) + 'px;top:' +
+      ((L.padV + y) * scale - 3).toFixed(2) + 'px;';
+
+    const titleText = state ? (state.title || state.channel) : '';
+    const mainText = titleText || mediaPreviewEmptyTitle(state?.state);
+    let subtitle = state ? (state.artist || state.album || state.app || state.source) : '';
+    if (subtitle && subtitle.toLowerCase() === mainText.trim().toLowerCase()) subtitle = '';
+    const titleFont = font(large ? L.title : L.titleSmall);
+    const subtitleFont = font(L.subtitle);
+    const plain = mediaPreviewTextLayout(L, width, height, large, false, !!subtitle);
+    const covered = mediaPreviewTextLayout(L, width, height, large, true, !!subtitle);
+    const textStyle = (layout, y, f) => at(layout.textX, y) + 'width:' + (layout.textWidth * scale).toFixed(2) + 'px;' +
+      fontCss(f) + 'margin-top:' + f.shift.toFixed(2) + 'px;';
+
+    let html = '';
+    if (state?.cover && /^(https?:|data:image\/)/i.test(state.cover)) {
+      const side = (plain.side * scale).toFixed(2) + 'px';
+      html += '<div class="media-preview-cover" hidden style="' + at(L.coverLeft, plain.top) + 'width:' + side +
+        ';height:' + side + ';border-radius:' + (L.coverRadius * scale).toFixed(2) + 'px">' +
+        '<img src="' + escapeHtml(state.cover) + '" alt="" referrerpolicy="no-referrer" ' +
+        'onload="mediaPreviewCoverLoaded(this)" onerror="this.parentElement.remove()"></div>';
+    }
+    html += '<div class="media-preview-title' + (titleText ? '' : ' media-preview-state') + '" style="' +
+      textStyle(plain, plain.titleY, titleFont) + '" data-cover-style="' +
+      escapeHtml(textStyle(covered, covered.titleY, titleFont)) + '">' + escapeHtml(mainText) + '</div>';
+    if (subtitle) {
+      html += '<div class="media-preview-subtitle" style="' + textStyle(plain, plain.subtitleY, subtitleFont) +
+        '" data-cover-style="' + escapeHtml(textStyle(covered, covered.subtitleY, subtitleFont)) + '">' +
+        escapeHtml(subtitle) + '</div>';
+    }
+
+    // Previous, play/pause and next at the bottom middle; an unavailable
+    // player dims them. Play is a white circle with the icon in the tile color.
+    if (entity) {
+      const unavailable = String(state?.state || '').trim().toLowerCase() === 'unavailable';
+      const playing = String(state?.state || '').trim().toLowerCase() === 'playing';
+      const cardColor = el.style.background || 'var(--tile-default-bg, #1A1A1A)';
+      const buttonY = height - L.button + L.buttonBottom;
+      const iconTop = (Math.trunc((L.button - L.iconLine) / 2) + L.iconEmDy) * scale;
+      for (const [offset, icon, primary] of [[-L.buttonSide, 'skip-previous', false],
+        [0, playing ? 'pause' : 'play', true], [L.buttonSide, 'skip-next', false]]) {
+        const x = Math.trunc((width - L.button) / 2) + offset;
+        html += '<div class="media-preview-control' + (primary ? ' media-preview-play' : '') +
+          (unavailable ? ' media-preview-disabled' : '') + '" style="' + at(x, buttonY) +
+          'width:' + (L.button * scale).toFixed(2) + 'px;height:' + (L.button * scale).toFixed(2) + 'px;' +
+          (primary ? 'color:' + escapeHtml(cardColor) + ';' : '') + '">' +
+          '<i class="mdi mdi-' + icon + '" style="top:' + iconTop.toFixed(2) + 'px"></i></div>';
+      }
+    }
+    el.querySelectorAll(':scope > :is(.media-preview-cover, .media-preview-title, .media-preview-subtitle, ' +
+      '.media-preview-control)').forEach(node => node.remove());
+    const handles = el.querySelector(':scope > .tile-resize-handle');
+    if (handles) handles.insertAdjacentHTML('beforebegin', html);
+    else el.insertAdjacentHTML('beforeend', html);
   }
 
   const CLIMATE_TILE_CONTENT = Object.freeze({
@@ -11502,7 +13763,8 @@ function maybeFillTitleFromMedia(tab) {
       spanH,
       configured,
       state.layouts,
-      state.geometry);
+      state.geometry,
+      document.getElementById(tab + '_climate_view')?.value === '1');
   }
 
   function requestClimatePreviewSelection(
@@ -11766,6 +14028,7 @@ function maybeFillTitleFromMedia(tab) {
 
   function climateAutomaticEditorKinds(tab) {
     const state = climateEditorState(tab);
+    const header = document.getElementById(tab + '_climate_view')?.value === '1';
     const spanW = Math.max(1, Math.floor(Number(
       document.getElementById(
         tab + '_tile_span_w')?.value) || 1));
@@ -11794,18 +14057,18 @@ function maybeFillTitleFromMedia(tab) {
     };
 
     if (spanW === 1 && rows === 1) {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       } else {
         addPrimaryTarget();
       }
     } else if (spanW >= 2 && rows === 1) {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       addPrimaryTarget();
     } else if (spanW === 1) {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       addPrimaryTarget();
@@ -11817,7 +14080,7 @@ function maybeFillTitleFromMedia(tab) {
         add(CLIMATE_TILE_CONTENT.TARGET_HUMIDITY);
       }
     } else {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         add(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       if (state.currentHumidity !== null) {
@@ -12978,6 +15241,9 @@ function maybeFillTitleFromMedia(tab) {
     const popup = document.getElementById(tab + '_climate_popup_open_mode');
     if (popup) popup.value = (data.popup_open_mode !== undefined)
       ? String(data.popup_open_mode) : '1';
+    const view = document.getElementById(tab + '_climate_view');
+    if (view) view.value = Number(data.sensor_display_mode) === 1 ? '1' : '0';
+    if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
     const slots = decodeClimateSlotConfig(
       data.climate_slots_packed ?? data.sensor_gauge_min ?? 0);
     slots.forEach((value, index) => {
@@ -13128,7 +15394,8 @@ function maybeFillTitleFromMedia(tab) {
   function climatePreviewColor(state) {
     const action = String(state?.action || '').toLowerCase();
     const mode = String(state?.mode || '').toLowerCase();
-    if (state?.available === false || mode === 'unavailable') {
+    // Unknown is inactive like unavailable (climate_visuals: 0x9E9E9E).
+    if (state?.available === false || mode === 'unavailable' || mode === 'unknown') {
       return '#9e9e9e';
     }
     if (action === 'heating' || action === 'preheating') return '#ff8a3d';
@@ -13144,9 +15411,27 @@ function maybeFillTitleFromMedia(tab) {
     return '#ffffff';
   }
 
+  // The header value pair of the Layout "with value" and half height
+  // (climate_header_text): the action or mode and the current temperature.
+  function climatePreviewHeaderText(state) {
+    if (!state?.valid) return '--';
+    const actions = {
+      heating: CLIMATE_I18N.heating, preheating: CLIMATE_I18N.preheating, cooling: CLIMATE_I18N.cooling,
+      drying: CLIMATE_I18N.drying, fan: CLIMATE_I18N.fan, defrosting: CLIMATE_I18N.defrosting,
+      idle: CLIMATE_I18N.idle
+    };
+    const action = String(state.action || '').toLowerCase();
+    const label = state.available !== false && actions[action] ? actions[action] : climateModeText(state);
+    if (state.available === false || state.current === '--') return label;
+    return label + ' \u00B7 ' + state.current + ' ' + state.unit;
+  }
+
+  // `header`: the Layout "with value" shows the current temperature in the
+  // header, so the automatic fields start with the target
+  // (build_automatic_slot_kinds).
   function climatePreviewSlots(
       state, spanW, spanH, slotConfig = null,
-      targetLayoutConfig = null, geometryConfig = null) {
+      targetLayoutConfig = null, geometryConfig = null, header = false) {
     // Layout variants follow whole cells in width and mini-grid rows in
     // height (half steps add a row), like build_automatic_slot_kinds.
     const w = Math.max(1, Math.floor(Number(spanW) || 1));
@@ -13200,18 +15485,18 @@ function maybeFillTitleFromMedia(tab) {
         entityState === 'unknown') {
       addAutomatic(CLIMATE_TILE_CONTENT.HVAC_MODE);
     } else if (w === 1 && rows === 1) {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       } else {
         addPrimaryTarget();
       }
     } else if (w >= 2 && rows === 1) {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       addPrimaryTarget();
     } else if (w === 1) {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       addPrimaryTarget();
@@ -13223,7 +15508,7 @@ function maybeFillTitleFromMedia(tab) {
         addAutomatic(CLIMATE_TILE_CONTENT.TARGET_HUMIDITY);
       }
     } else {
-      if (!state.valid || state.current !== '--') {
+      if (!header && (!state.valid || state.current !== '--')) {
         addAutomatic(CLIMATE_TILE_CONTENT.CURRENT_TEMPERATURE);
       }
       if (state.currentHumidity !== null) {
@@ -13514,6 +15799,9 @@ function maybeFillTitleFromMedia(tab) {
       document.getElementById(tab + '_climate_entity')?.value || '');
     formData.append('popup_open_mode',
       document.getElementById(tab + '_climate_popup_open_mode')?.value || '1');
+    const view = document.getElementById(tab + '_climate_view')?.value === '1' ? '1' : '0';
+    formData.append('climate_view', view);
+    formData.append('sensor_display_mode', view);
     formData.append('climate_slots_packed', String(packed));
     formData.append('climate_layouts_packed', String(packedLayouts));
     formData.append('climate_geometry', geometry);
@@ -13535,6 +15823,9 @@ function maybeFillTitleFromMedia(tab) {
     }
     const popup = document.getElementById(tab + '_climate_popup_open_mode');
     if (popup) popup.value = '1';
+    const view = document.getElementById(tab + '_climate_view');
+    if (view) view.value = '0';
+    if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
     const geometry = document.getElementById(
       tab + '_climate_geometry');
     if (geometry) geometry.value = '';
@@ -13730,20 +16021,32 @@ function getClockPreviewLanguage() {
     return (v > 0) ? v : Math.round(n / 2);
   }
 
-  function getClockPreviewTextStyle(raw, fallback, color) {
-    const size = getClockPreviewCssPx(raw, fallback);
-    const safeColor = color || '#fff';
-    return 'data-clock-font="' + normalizeClockPreviewFont(raw, fallback) +
-      '" style="font-size:' + size + 'px; line-height:1; color:' + safeColor + ';"';
+  // Each clock line is as tall as its LVGL font's line height, with the
+  // glyphs on the LVGL baseline (--lh/--ldy, web_admin_styles.cpp).
+  function clockPreviewLineCss(size) {
+    return 'line-height:var(--lh' + size + '); top:var(--ldy' + size + ', 0px);';
   }
 
-  function applyClockPreviewTextStyle(el, raw, fallback, color, lineHeight) {
-    if (!el) return;
+  function applyClockPreviewLine(el, size, px) {
+    el.style.fontSize = px + 'px';
+    el.style.lineHeight = 'var(--lh' + size + ')';
+    el.style.top = 'var(--ldy' + size + ', 0px)';
+  }
+
+  function getClockPreviewTextStyle(raw, fallback, color) {
+    const font = normalizeClockPreviewFont(raw, fallback);
     const size = getClockPreviewCssPx(raw, fallback);
-    el.dataset.clockFont = String(normalizeClockPreviewFont(raw, fallback));
-    el.style.fontSize = size + 'px';
+    const safeColor = color || '#fff';
+    return 'data-clock-font="' + font + '" style="font-size:' + size + 'px; ' +
+      clockPreviewLineCss(font) + ' color:' + safeColor + ';"';
+  }
+
+  function applyClockPreviewTextStyle(el, raw, fallback, color) {
+    if (!el) return;
+    const font = normalizeClockPreviewFont(raw, fallback);
+    el.dataset.clockFont = String(font);
+    applyClockPreviewLine(el, font, getClockPreviewCssPx(raw, fallback));
     el.style.color = color || '#fff';
-    el.style.lineHeight = lineHeight || '1';
   }
 
   function normalizeClockFlags(raw) {
@@ -13845,11 +16148,11 @@ function getClockPreviewLanguage() {
 
     if (timeEl) {
       timeEl.textContent = getClockPreviewTime(timeFormat);
-      applyClockPreviewTextStyle(timeEl, timeFont, 40, '#fff', '1');
+      applyClockPreviewTextStyle(timeEl, timeFont, 40, '#fff');
     }
     if (dateEl) {
       dateEl.textContent = getClockPreviewDate(dateFormat);
-      applyClockPreviewTextStyle(dateEl, dateFont, 24, '#fff', '1.1');
+      applyClockPreviewTextStyle(dateEl, dateFont, 20, '#fff');
     }
     fitCompactClockPreview(tileElem);
   }
@@ -13882,7 +16185,8 @@ function getClockPreviewLanguage() {
     lines.forEach(el => {
       if (!el) return;
       el.hidden = false;
-      el.style.fontSize = getClockPreviewCssPx(el.dataset.clockFont, 40) + 'px';
+      const font = normalizeClockPreviewFont(el.dataset.clockFont, 40);
+      applyClockPreviewLine(el, font, getClockPreviewCssPx(font, 40));
     });
     if (!tileElem.classList.contains('clock-compact')) return;
     const style = getComputedStyle(tileElem);
@@ -13908,15 +16212,15 @@ function getClockPreviewLanguage() {
         const px = getClockPreviewCssPx(size, size);
         if (size > Number(el.dataset.clockFont || 40) || px > capPx) continue;
         const width = measureClockPreviewText(el, sample, px);
-        if (usedW + width <= availW) return { px, width };
+        if (usedW + width <= availW) return { size, px, width };
       }
       return null;
     };
-    const first = fit(primary, maxPx, 0) || { px: getClockPreviewCssPx(20, 20), width: 0 };
-    primary.style.fontSize = first.px + 'px';
+    const first = fit(primary, maxPx, 0) || { size: 20, px: getClockPreviewCssPx(20, 20), width: 0 };
+    applyClockPreviewLine(primary, first.size, first.px);
     if (!secondary) return;
     const second = fit(secondary, first.px, first.width + gap);
-    if (second) secondary.style.fontSize = second.px + 'px';
+    if (second) applyClockPreviewLine(secondary, second.size, second.px);
     else secondary.hidden = true;
   }
 

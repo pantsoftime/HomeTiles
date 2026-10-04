@@ -1,4 +1,5 @@
 #include "src/web/server/web_admin.h"
+#include "src/web/server/auth/web_admin_auth.h"
 #include "src/core/text/title_text.h"
 #include "src/ui/screensaver/screensaver_config.h"
 #include "src/web/server/render/web_admin_html.h"
@@ -7,11 +8,14 @@
 #include "src/network/bridge/device_entities.h"
 #include "src/io/hardware_io.h"
 #include "src/network/mqtt/mqtt_handlers.h"
+#include "src/core/power/power_manager.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"
+#include "src/tiles/runtime/tile_renderer.h"
 #include "src/ui/screensaver/image_screensaver.h"
 #include "src/web/server/web_admin_utils.h"
 #include "src/web/server/handlers/web_admin_tile_helpers.h"
+#include "src/web/server/handlers/preview_payload.h"
 #include "src/types/types_registry.h"
 #include "src/types/energy/energy_data.h"
 #include <algorithm>
@@ -317,6 +321,24 @@ static bool parseFolderIdArg(WebServer& server, uint16_t& out) {
 
 }  // namespace
 
+// An open screensaver shows a tile edit or move before the flash write, like
+// the visible folder (user 2026-10-02: screensaver edits were slow).
+static bool showScreensaverGridBeforeSave(const TileGridConfig& grid) {
+  if (!is_image_screensaver_visible()) return false;
+  screensaverConfig.previewTileGrid(grid);
+  return image_screensaver_show_tiles_now();
+}
+
+// A failed save takes the open screensaver back to the stored grid.
+static void restoreScreensaverGridAfterFailedSave() {
+  TileGridConfig* stored = new (std::nothrow) TileGridConfig();
+  if (stored && tileConfig.loadScreensaverGrid(*stored)) {
+    screensaverConfig.previewTileGrid(*stored);
+  }
+  delete stored;
+  image_screensaver_tiles_changed();
+}
+
 // Ignore Back tiles when checking folder contents. Treat read failures
 // as nonempty so a type change cannot orphan existing content.
 static bool folderHasContent(uint16_t folder_id) {
@@ -433,7 +455,7 @@ void WebAdminServer::handleGetTiles() {
     out += ",\"popup_open_mode\":";
     out += String(getTilePopupOpenMode(tile));
     out += ",\"switch_style\":";
-    out += String((tile.type == TILE_SWITCH && tile.sensor_decimals == 1) ? 1 : 0);
+    out += String((tile.type == TILE_SWITCH && tile.sensor_decimals <= 3) ? tile.sensor_decimals : 0);
     out += ",\"navigate_target\":";
     out += String((tile.type == TILE_FOLDER) ? getNavigateTargetId(tile) : 0);
     // The editor prevents type changes for nonempty folders to keep their
@@ -449,7 +471,8 @@ void WebAdminServer::handleGetTiles() {
     out += ",\"folder_pin\":\"";
     if (tile.type == TILE_FOLDER) {
       String folder_pin;
-      if (tileConfig.getFolderPin(getNavigateTargetId(tile), folder_pin)) {
+      if (!web_admin_auth::storedSecretsHidden() &&
+          tileConfig.getFolderPin(getNavigateTargetId(tile), folder_pin)) {
         appendJsonEscaped(out, folder_pin);
       }
       folder_pin = "";
@@ -685,6 +708,8 @@ void WebAdminServer::handleSaveTiles() {
     // Enforce the plain value mode for old imports and direct API callers too.
     tile.sensor_display_mode = 0;
   }
+  // Deletion: the old entity and options must not come back with a new tile.
+  if (tile.type == TILE_EMPTY) clearEmptyTileFields(tile);
 
   if (deleting_folder) {
     const uint16_t target_id = getNavigateTargetId(previous_tile);
@@ -712,11 +737,28 @@ void WebAdminServer::handleSaveTiles() {
     }
   }
 
+  // The visible folder shows the edit right away instead of after a quiet Web
+  // Admin: an edit that keeps the tile type (color, text, size, entity) before
+  // the flash write; a new or changed type right after it, once the saved
+  // grid carries its view ID.
+  const bool display_awake = !powerManager.isInSleep();
+  const bool shown_before_save =
+      screensaver_grid
+          ? display_awake && showScreensaverGridBeforeSave(*grid)
+          : !deleting_folder && display_awake &&
+                previous_tile.type == tile.type &&
+                tileConfig.previewActiveFolderGrid(folder_id, *grid) &&
+                tiles_show_active_layout_now();
+  const uint32_t save_started_ms = millis();
   bool success = screensaver_grid
                      ? screensaverConfig.replaceTileGrid(*grid)
                      : tileConfig.saveFolderGrid(folder_id, *grid);
+  const uint32_t save_ms = millis() - save_started_ms;
   if (success) {
-    Serial.printf("[WebAdmin] Tile in folder %u[%d] saved - type: %d\n", static_cast<unsigned>(folder_id), index, type);
+    Serial.printf("[WebAdmin] Tile in folder %u[%d] saved - type: %d shown=%u save=%lu ms\n",
+                  static_cast<unsigned>(folder_id), index, type,
+                  shown_before_save ? 1U : 0U,
+                  static_cast<unsigned long>(save_ms));
 
     const bool routes_changed =
         deleting_folder || tileChangeAffectsDynamicMqttRoutes(previous_tile, tile);
@@ -731,11 +773,17 @@ void WebAdminServer::handleSaveTiles() {
     }
 
     if (!screensaver_grid) {
-      tiles_invalidate_folder(folder_id);
-      if (tileConfig.getActiveFolderId() == folder_id) {
+      if (deleting_folder) {
+        tiles_invalidate_folder(folder_id);
+      } else {
+        // Only this folder changed; the other prepared folders stay cached.
+        tiles_invalidate_folder_only(folder_id);
+      }
+      if (!shown_before_save && tileConfig.getActiveFolderId() == folder_id &&
+          !(display_awake && tiles_show_active_layout_now())) {
         tiles_request_reload_if_loaded(GridType::TAB0);
       }
-    } else {
+    } else if (!shown_before_save) {
       image_screensaver_tiles_changed();
     }
 
@@ -749,7 +797,8 @@ void WebAdminServer::handleSaveTiles() {
                       : "false";
       response += ",\"folder_pin\":\"";
       String folder_pin;
-      if (tileConfig.getFolderPin(getNavigateTargetId(tile), folder_pin)) {
+      if (!web_admin_auth::storedSecretsHidden() &&
+          tileConfig.getFolderPin(getNavigateTargetId(tile), folder_pin)) {
         appendJsonEscaped(response, folder_pin);
       }
       folder_pin = "";
@@ -759,6 +808,12 @@ void WebAdminServer::handleSaveTiles() {
     sendChunkedResponse(server, 200, "application/json", response);
   } else {
     Serial.printf("[WebAdmin] Failed to save tile in folder %u[%d]\n", static_cast<unsigned>(folder_id), index);
+    if (screensaver_grid) {
+      if (shown_before_save) restoreScreensaverGridAfterFailedSave();
+    } else if (shown_before_save && tileConfig.setActiveFolder(folder_id)) {
+      // Back to the stored tile the failed save left.
+      tiles_request_reload(GridType::TAB0);
+    }
     server.send(500, "application/json", "{\"success\":false,\"error\":\"Save failed\"}");
   }
 }
@@ -832,22 +887,43 @@ void WebAdminServer::handleReorderTiles() {
     return;
   }
 
+  // The visible folder shows the new order before the flash write (about a
+  // second) instead of after it and a quiet Web Admin.
+  const uint32_t show_started_ms = millis();
+  const bool shown_now =
+      !powerManager.isInSleep() &&
+      (screensaver_grid ? showScreensaverGridBeforeSave(grid)
+                        : tileConfig.previewActiveFolderGrid(folder_id, grid) &&
+                              tiles_show_active_layout_now());
+  const uint32_t save_started_ms = millis();
   bool success = screensaver_grid
                      ? screensaverConfig.replaceTileGrid(grid)
                      : tileConfig.saveFolderGrid(folder_id, grid);
+  const uint32_t saved_ms = millis();
   if (success) {
     if (!screensaver_grid) {
-      tiles_invalidate_folder(folder_id);
-      if (tileConfig.getActiveFolderId() == folder_id) {
+      // Only this folder changed; the other prepared folders stay cached.
+      tiles_invalidate_folder_only(folder_id);
+      if (!shown_now && tileConfig.getActiveFolderId() == folder_id) {
         tiles_request_reload_if_loaded(GridType::TAB0);
       }
-    } else {
+    } else if (!shown_now) {
       image_screensaver_tiles_changed();
     }
     server.send(200, "application/json", "{\"success\":true}");
   } else {
+    if (screensaver_grid) {
+      if (shown_now) restoreScreensaverGridAfterFailedSave();
+    } else if (shown_now && tileConfig.setActiveFolder(folder_id)) {
+      // Back to the stored order the failed save left.
+      tiles_request_reload(GridType::TAB0);
+    }
     server.send(500, "application/json", "{\"success\":false,\"error\":\"Save failed\"}");
   }
+  Serial.printf("[WebAdmin] Reorder folder=%u shown=%u show=%lu ms save=%lu ms\n",
+                static_cast<unsigned>(folder_id), shown_now ? 1U : 0U,
+                static_cast<unsigned long>(save_started_ms - show_started_ms),
+                static_cast<unsigned long>(saved_ms - save_started_ms));
 }
 
 void WebAdminServer::handleGetSensorValues() {
@@ -903,6 +979,21 @@ void WebAdminServer::handleGetSensorValues() {
   }
   json += "}";
 
+  // Lock, Alarm panel and Fan previews read the retained detail state.
+  json += ",\"device_values\":{";
+  bool first_device_value = true;
+  for (const String* list : {&ha.locks_text, &ha.alarm_panels_text, &ha.fans_text}) {
+    for (const auto& id : parseSensorList(*list)) {
+      const String payload = haBridgeConfig.findDetailValue(id);
+      if (!payload.length()) continue;
+      if (!first_device_value) json += ',';
+      first_device_value = false;
+      json += '\"'; appendJsonEscaped(json, id); json += "\":\"";
+      appendJsonEscaped(json, payload); json += '\"';
+    }
+  }
+  json += "}";
+
   // Climate states include HVAC mode, action and unit alongside temperature.
   // Keep the complete JSON payload from the central entity cache because the
   // Web editor also uses it to derive the dynamic icon.
@@ -922,6 +1013,58 @@ void WebAdminServer::handleGetSensorValues() {
     appendJsonEscaped(json, id);
     json += "\":\"";
     appendJsonEscaped(json, payload);
+    json += '"';
+  }
+  json += "}";
+
+  // Weather and media previews draw what their tiles draw: the cached payload
+  // of each configured entity, else the retained bridge value, without the
+  // hourly forecast (popup only) and the embedded artwork, which the preview
+  // loads from its URL like the device without data.
+  auto append_preview_payloads = [&](const char* key, const String& entities) {
+    json += ",\"";
+    json += key;
+    json += "\":{";
+    bool first = true;
+    for (const auto& id : parseSensorList(entities)) {
+      String payload;
+      if (!tiles_get_cached_entity_payload(id.c_str(), payload)) {
+        payload = haBridgeConfig.findSensorInitialValue(id);
+      }
+      payload.trim();
+      if (!payload.length()) continue;
+      for (const char* heavy : {"forecast_hourly", "entity_picture_data"}) {
+        int from = 0, to = 0;
+        if (preview_payload::member_span(payload.c_str(), payload.length(), heavy, &from, &to)) {
+          payload.remove(from, to - from);
+        }
+      }
+      if (!first) json += ',';
+      first = false;
+      json += '"';
+      appendJsonEscaped(json, id);
+      json += "\":\"";
+      appendJsonEscaped(json, payload);
+      json += '"';
+    }
+    json += "}";
+  };
+  append_preview_payloads("weather_values", ha.weathers_text);
+  append_preview_payloads("media_values", ha.media_players_text);
+  // "From cover": the color a shown media card sampled from its cover.
+  json += ",\"media_cover_colors\":{";
+  bool first_cover_color = true;
+  for (const auto& id : parseSensorList(ha.media_players_text)) {
+    uint32_t rgb = 0;
+    if (!tile_renderer_media_cover_color(id, rgb)) continue;
+    char color[10];
+    snprintf(color, sizeof(color), "#%06X", static_cast<unsigned>(rgb & 0xFFFFFF));
+    if (!first_cover_color) json += ',';
+    first_cover_color = false;
+    json += '"';
+    appendJsonEscaped(json, id);
+    json += "\":\"";
+    json += color;
     json += '"';
   }
   json += "}";
@@ -1072,6 +1215,12 @@ void WebAdminServer::handleGetEntityOptions() {
   appendHumanizedList(json, "climates", parseSensorList(ha.climates_text));
   json += ",";
   appendHumanizedList(json, "covers", parseSensorList(ha.covers_text));
+  json += ",";
+  appendHumanizedList(json, "locks", parseSensorList(ha.locks_text));
+  json += ",";
+  appendHumanizedList(json, "alarm_panels", parseSensorList(ha.alarm_panels_text));
+  json += ",";
+  appendHumanizedList(json, "fans", parseSensorList(ha.fans_text));
   json += ",\"cameras\":[";
   {
     bool first = true;
@@ -1231,6 +1380,7 @@ void WebAdminServer::handleSaveFolderAccess() {
   }
 
   const uint16_t folder_id = static_cast<uint16_t>(requested_id);
+  const bool was_enabled = tileConfig.isFolderPinEnabled(folder_id);
   const bool enable = server.hasArg("enabled") &&
                       server.arg("enabled") != "0";
   bool success = false;
@@ -1255,11 +1405,15 @@ void WebAdminServer::handleSaveFolderAccess() {
     sendError(500, tr.folder_pin_save_failed);
     return;
   }
+  // The Folder tiles show a lock while the PIN is on (navigate renderer);
+  // rebuild them in the loop, never inside the WebServer callback.
+  if (tileConfig.isFolderPinEnabled(folder_id) != was_enabled) tiles_request_reload_all();
   String json = "{\"success\":true,\"pin_enabled\":";
   json += tileConfig.isFolderPinEnabled(folder_id) ? "true" : "false";
   json += ",\"folder_pin\":\"";
   String stored_pin;
-  if (tileConfig.getFolderPin(folder_id, stored_pin)) {
+  if (!web_admin_auth::storedSecretsHidden() &&
+      tileConfig.getFolderPin(folder_id, stored_pin)) {
     appendJsonEscaped(json, stored_pin);
   }
   stored_pin = "";

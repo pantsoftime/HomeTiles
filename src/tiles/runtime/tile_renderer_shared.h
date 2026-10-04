@@ -6,18 +6,18 @@
 
 static constexpr int32_t GAUGE_ARC_STEPS = 1000;
 
-// Extern declarations for global widget arrays
-extern SensorTileWidgets g_tab0_sensors[];
-extern SensorTileWidgets g_tab1_sensors[];
-extern SensorTileWidgets g_tab2_sensors[];
-extern SensorTileWidgets g_screensaver_sensors[];
+// Per-slot widget state of every grid. PSRAM storage, valid after
+// tile_renderer_init_cold_storage() ran in setup().
+extern SensorTileWidgets* g_tab0_sensors;
+extern SensorTileWidgets* g_tab1_sensors;
+extern SensorTileWidgets* g_tab2_sensors;
+extern SensorTileWidgets* g_screensaver_sensors;
 
-extern SwitchTileWidgets g_tab0_switches[];
-extern SwitchTileWidgets g_tab1_switches[];
-extern SwitchTileWidgets g_tab2_switches[];
-extern SwitchTileWidgets g_screensaver_switches[];
+extern SwitchTileWidgets* g_tab0_switches;
+extern SwitchTileWidgets* g_tab1_switches;
+extern SwitchTileWidgets* g_tab2_switches;
+extern SwitchTileWidgets* g_screensaver_switches;
 
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
 extern WeatherTileWidgets* g_tab0_weather;
 extern WeatherTileWidgets* g_tab1_weather;
 extern WeatherTileWidgets* g_tab2_weather;
@@ -26,25 +26,15 @@ extern MediaTileWidgets* g_tab0_media;
 extern MediaTileWidgets* g_tab1_media;
 extern MediaTileWidgets* g_tab2_media;
 extern MediaTileWidgets* g_screensaver_media;
-#else
-extern WeatherTileWidgets g_tab0_weather[];
-extern WeatherTileWidgets g_tab1_weather[];
-extern WeatherTileWidgets g_tab2_weather[];
 
-extern MediaTileWidgets g_tab0_media[];
-extern MediaTileWidgets g_tab1_media[];
-extern MediaTileWidgets g_tab2_media[];
-extern MediaTileWidgets g_screensaver_media[];
-#endif
+extern SwitchState* g_tab0_switch_states;
+extern SwitchState* g_tab1_switch_states;
+extern SwitchState* g_tab2_switch_states;
+extern SwitchState* g_screensaver_switch_states;
 
-extern SwitchState g_tab0_switch_states[];
-extern SwitchState g_tab1_switch_states[];
-extern SwitchState g_tab2_switch_states[];
-extern SwitchState g_screensaver_switch_states[];
-
-extern ClimateTileWidgets g_tab0_climate[];
-extern ClimateTileWidgets g_tab1_climate[];
-extern ClimateTileWidgets g_tab2_climate[];
+extern ClimateTileWidgets* g_tab0_climate;
+extern ClimateTileWidgets* g_tab1_climate;
+extern ClimateTileWidgets* g_tab2_climate;
 
 void set_label_style(lv_obj_t* lbl, lv_color_t c, const lv_font_t* f);
 void set_tile_grid_cell(lv_obj_t* obj, uint8_t col, uint8_t row, uint8_t span_w, uint8_t span_h);
@@ -64,6 +54,9 @@ void tile_renderer_set_build_grid(const TileGridConfig* grid);
 
 bool is_light_entity_id(const String& entity_id);
 void update_switch_tile_state(GridType grid_type, uint8_t grid_index, const char* payload);
+// A Switch tile's current card color: the color of its dimmer handle line,
+// which the Light popup's brightness handle takes (types/switch/renderer.cpp).
+bool switch_tile_card_color(GridType grid_type, uint8_t index, uint32_t& rgb);
 void update_media_tile_state(GridType grid_type, uint8_t grid_index, const char* payload);
 
 // Call when a media card is destroyed (LV_EVENT_DELETE): clears every widget
@@ -88,6 +81,17 @@ static inline void disable_pressed_button_animation(lv_obj_t* obj) {
   lv_obj_set_style_transform_height(obj, 0, LV_PART_MAIN | LV_STATE_PRESSED);
   // A state-specific translate property forces LVGL to refresh every child's
   // layout even when its value is zero. The theme does not translate buttons.
+}
+
+// Every tile presses the same way: its own lighter pressed color, with the
+// circles fading along (tile_icon_disc::fade_with_card). The default theme
+// also darkens a pressed button with a black recolor over its whole content,
+// except inline-colored text such as the colored weather icons, and not at
+// all on tiles that are no buttons (Switch with its toggle). It stays off, so
+// icons never change on press.
+static inline void disable_pressed_recolor(lv_obj_t* obj) {
+  if (!obj) return;
+  lv_obj_set_style_recolor_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_PRESSED);
 }
 
 // Release the source and let the regular refresh draw the complete popup.

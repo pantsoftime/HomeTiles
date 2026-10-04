@@ -22,14 +22,11 @@ void disable_tile_border(lv_obj_t* obj);
 void apply_tile_border(lv_obj_t* obj, bool enabled);
 void apply_global_tile_border(lv_obj_t* obj);
 
-// Tile icon discs. A disc that follows the global icon disc option shows
-// `opa` while the option is on and stays transparent while it is off; other
-// discs always use `opa`. Shared styles update cached and hidden discs
-// without rebuilding them.
-// Glow strength of the icon discs (global display setting, icon_glow.h): the
-// glowing and the white disc opacity before the dark-tile contrast scaling.
-lv_opa_t icon_glow_opa();
-lv_opa_t icon_neutral_opa();
+// Tile icon discs. Every disc and control carries its own color
+// (tone_color::fill) and one shared opacity: opaque, or the veil of the
+// global Circle strength (icon_glow.h) on see-through cards, so cached and
+// hidden discs follow the global options without a rebuild.
+uint8_t icon_glow_percent();
 // The global icon disc option, which discs in Global mode follow.
 bool icon_discs_shown();
 // Gives a tile card's border hairline (found from obj or up to three parents)
@@ -40,9 +37,15 @@ void clear_tile_border_tint(lv_obj_t* obj);
 // The popup card hairline: follows the global Tile borders option, drawn like
 // the tile border.
 void apply_popup_border(lv_obj_t* obj, lv_color_t color, lv_opa_t opa);
-// Gives a disc the shared opacity style of its kind (glowing or white), the
-// tile's contrast step (0..3, tile_icon_disc::contrast_step) and its mode.
-void apply_icon_disc(lv_obj_t* obj, bool glow, uint8_t step, bool off, bool follows_global);
+// Gives a disc the shared opacity of its mode (tone_color::disc_opa: opaque,
+// a veil on a `see_through` card, none at 0 %), transparent for Off discs and
+// for Global discs while the global option is off.
+void apply_icon_disc(lv_obj_t* obj, bool off, bool follows_global, bool see_through = false);
+// Gives a tile control the control fill for `selector` (pressed for buttons,
+// the main part for surfaces): `color` (tone_color::Fill::control_color) at
+// the shared control opacity (tone_color::control_opa). Local opacities of
+// the owner still win.
+void apply_control_fill(lv_obj_t* obj, lv_color_t color, lv_style_selector_t selector, bool see_through = false);
 
 // Safe to call from the Web handler: only sets a flag. Apply the actual
 // LVGL update later during the safe UI service pass.

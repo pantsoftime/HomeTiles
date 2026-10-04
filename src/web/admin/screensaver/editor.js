@@ -21,6 +21,46 @@
     return Math.max(min, Math.min(max, Number.isFinite(n) ? n : min));
   }
 
+  // The image frame stands for the panel's screen: its box in the grid's
+  // padding box (where the clock is positioned) and on the page.
+  function ssPreviewScreenRect(preview) {
+    const frame = preview.querySelector('.screensaver-grid-image-frame');
+    return (frame || preview).getBoundingClientRect();
+  }
+
+  // One background opacity for every screensaver tile (tile_opacity, set in
+  // the screensaver footer): the draft once loaded, else the server-rendered
+  // slider.
+  function screensaverTileOpacity() {
+    const value = screensaverDraft?.tile_opacity ??
+      document.getElementById('screensaverTileOpacity')?.value;
+    return Math.round(ssClamp(value ?? SCREENSAVER_TILE_DEFAULT_OPACITY, 0, 255));
+  }
+
+  // The new opacity on every screensaver tile preview and in the footer.
+  function refreshScreensaverTileOpacity() {
+    const value = screensaverTileOpacity();
+    const output = document.getElementById('screensaverTileOpacityValue');
+    if (output) output.textContent = Math.round(value * 100 / 255) + ' %';
+    const tiles = tilesData.screensaver || [];
+    tiles.forEach((tile, index) => {
+      if (tile && Number(tile.type)) renderTileFromData('screensaver', index, tile, sensorMetaCache);
+    });
+    layoutTiles('screensaver', tiles);
+    if (currentTileTab === 'screensaver' && currentTileIndex >= 0) updateTilePreview('screensaver');
+  }
+
+  function ssPreviewScreen(preview) {
+    const frame = preview.querySelector('.screensaver-grid-image-frame');
+    const rect = ssPreviewScreenRect(preview);
+    return {
+      left: frame ? frame.offsetLeft : 0,
+      top: frame ? frame.offsetTop : 0,
+      width: rect.width || 800,
+      height: rect.height || 500
+    };
+  }
+
   function ssNearestClockFont(value, dateLine = false) {
     const wanted = Number(value) || 20;
     const sizes = dateLine ? screensaverDateFontSizes : screensaverTimeFontSizes;
@@ -132,6 +172,7 @@
       shuffle: !!d.shuffle,
       tile_shadow: !!d.tile_shadow,
       tile_border: d.tile_border !== false,
+      tile_opacity: Math.round(ssClamp(d.tile_opacity ?? SCREENSAVER_TILE_DEFAULT_OPACITY, 0, 255)),
       show_time: !!d.show_time,
       show_date: !!d.show_date,
       show_weekday: !!d.show_weekday,
@@ -280,8 +321,11 @@
     if (!preview || !image || !clock) return;
     preview.classList.toggle('selected-background', screensaverSelected.kind === 'background');
     clock.classList.toggle('selected-clock', screensaverSelected.kind === 'clock');
-    const width = preview.getBoundingClientRect().width || 800;
-    const scale = width / Number(d.screen_width || 1280);
+    // The image frame is the panel's screen. The grid around it is wider
+    // (editor padding and gaps), so the clock is placed and scaled on the
+    // frame; on the grid it sat about 10 px up and right, against the edge.
+    const screen = ssPreviewScreen(preview);
+    const scale = screen.width / Number(d.screen_width || 1280);
     const rootStyles = getComputedStyle(document.documentElement);
     const devicePx = (name, fallback) => {
       const value = parseFloat(rootStyles.getPropertyValue(name));
@@ -315,8 +359,8 @@
       image.removeAttribute('src');
       delete image.dataset.src;
     }
-    clock.style.left = (d.clock_x / 10) + '%';
-    clock.style.top = (d.clock_y / 10) + '%';
+    clock.style.left = (screen.left + d.clock_x * screen.width / 1000) + 'px';
+    clock.style.top = (screen.top + d.clock_y * screen.height / 1000) + 'px';
     const time = document.getElementById('screensaverClockTime');
     const date = document.getElementById('screensaverClockDate');
     time.hidden = !d.show_time;
@@ -325,6 +369,26 @@
       Math.max(10, deviceClockFontPx(d.time_font_size, 48) * scale) + 'px';
     date.style.fontSize =
       Math.max(8, deviceClockFontPx(d.date_font_size, 28) * scale) + 'px';
+    // Each line is as tall as its LVGL font's line height, the glyphs on the
+    // LVGL baseline, with the device gap between the lines (clock/renderer.cpp).
+    const applyClockLine = (el, raw, fallback, minPx) => {
+      const size = Number(raw || fallback);
+      const fontPx = deviceClockFontPx(raw, fallback) * scale;
+      // Tiny previews keep a readable font; the line box grows with it.
+      const lineScale = fontPx < minPx ? minPx / fontPx : 1;
+      const linePx = devicePx('--screensaver-lh' + size, size * 1.21) * scale * lineScale;
+      // The glyphs on the LVGL baseline, measured in this browser and zoom
+      // (text-baseline.js).
+      const base = parseFloat(rootStyles.getPropertyValue('--screensaver-lb' + size));
+      el.style.lineHeight = linePx + 'px';
+      el.style.position = 'relative';
+      el.style.top = (Number.isFinite(base)
+        ? previewBaselineShift(Math.max(minPx, fontPx), linePx, base * scale * lineScale) : 0) + 'px';
+    };
+    applyClockLine(time, d.time_font_size, 48, 10);
+    applyClockLine(date, d.date_font_size, 28, 8);
+    date.style.marginTop = !time.hidden && !date.hidden
+      ? devicePx('--screensaver-clock-gap', 6) * scale + 'px' : '0px';
     time.textContent = getClockPreviewTime(d.time_format);
     date.textContent = getScreensaverClockPreviewDate(d);
     time.style.width = 'auto';
@@ -347,6 +411,8 @@
     document.getElementById('screensaverShuffle').checked = !!d.shuffle;
     document.getElementById('screensaverTileShadow').checked = !!d.tile_shadow;
     document.getElementById('screensaverTileBorder').checked = d.tile_border !== false;
+    const opacityInput = document.getElementById('screensaverTileOpacity');
+    if (opacityInput) opacityInput.value = String(screensaverTileOpacity());
     document.getElementById('screensaverShowTime').checked = !!d.show_time;
     document.getElementById('screensaverShowDate').checked = !!d.show_date;
     document.getElementById('screensaverShowWeekday').checked = !!d.show_weekday;
@@ -421,7 +487,7 @@
     });
     clock.addEventListener('pointermove', e => {
       if (!clockDrag || clockDrag.id !== e.pointerId) return;
-      const rect = preview.getBoundingClientRect();
+      const rect = ssPreviewScreenRect(preview);
       const centerX = e.clientX - clockDrag.offsetX;
       const centerY = e.clientY - clockDrag.offsetY;
       screensaverDraft.clock_x = Math.round(ssClamp((centerX - rect.left) * 1000 / rect.width, 0, 1000));
@@ -487,6 +553,11 @@
     bind('screensaverShuffle', 'change', el => { screensaverDraft.shuffle = el.checked; });
     bind('screensaverTileShadow', 'change', el => { screensaverDraft.tile_shadow = el.checked; });
     bind('screensaverTileBorder', 'change', el => { screensaverDraft.tile_border = el.checked; });
+    bind('screensaverTileOpacity', 'input', el => {
+      screensaverDraft.tile_opacity = Number(el.value);
+      refreshScreensaverTileOpacity();
+    }, false);
+    bind('screensaverTileOpacity', 'change', el => { screensaverDraft.tile_opacity = Number(el.value); });
     bind('screensaverShowTime', 'change', el => { screensaverDraft.show_time = el.checked; });
     bind('screensaverShowDate', 'change', el => { screensaverDraft.show_date = el.checked; });
     bind('screensaverShowWeekday', 'change', el => { screensaverDraft.show_weekday = el.checked; });

@@ -1,10 +1,12 @@
 
   document.addEventListener('DOMContentLoaded', () => {
+    bindPreviewBaselines();
     toggleStaticNetworkFields();
     toggleNetworkSettings();
     toggleSettingsAccessFields();
     initSettingsAccessControls();
     initAdminSettingsSave();
+    initWebAdminPasswordSettings();
     initTileTabs();
     let initialTab = '';
     try { initialTab = localStorage.getItem('activeAdminTab') || ''; } catch (e) {}
@@ -45,4 +47,8 @@
     fillStaticClockPreviews();
     setInterval(fillStaticClockPreviews, 30000);
     updateTileSettingsMaxHeight();
+    // Any editing postpones the background folder tab prefetch.
+    ['pointerdown', 'keydown', 'input'].forEach(type =>
+      document.addEventListener(type, noteAdminInteraction, true));
+    scheduleFolderTabPrefetch();
   });

@@ -24,6 +24,9 @@ struct ScreensaverConfigData {
   bool shuffle = false;
   bool tile_shadow = false;
   bool tile_border = true;
+  // One background opacity for every screensaver tile (user 2026-10-02:
+  // set beside borders, radius and shadows instead of per tile).
+  uint8_t tile_opacity = kScreensaverDefaultTileOpacity;
   bool show_time = true;
   bool show_date = true;
   bool show_weekday = false;
@@ -53,20 +56,30 @@ class ScreensaverConfigStore {
   const ScreensaverConfigData& get() const { return data_; }
   ScreensaverConfigData& mutableData() { return data_; }
 
-  const TileGridConfig& tileGrid() const { return tile_grid_; }
-  TileGridConfig& mutableTileGrid() { return tile_grid_; }
+  const TileGridConfig& tileGrid() const { return gridStorage(); }
+  TileGridConfig& mutableTileGrid() { return gridStorage(); }
   bool replaceTileGrid(const TileGridConfig& grid);
+  // Sets only the RAM grid, normalized like a save, so an open screensaver
+  // shows an edit before its flash write (replaceTileGrid follows).
+  void previewTileGrid(const TileGridConfig& grid);
   const Tile* tile(size_t index) const;
 
  private:
   ScreensaverConfigData data_;
-  TileGridConfig tile_grid_;
+  // PSRAM, allocated with transparent defaults on first use (load() in
+  // setup()) because PSRAM is not ready while the global constructors run.
+  // Never freed.
+  mutable TileGridConfig* tile_grid_ = nullptr;
+  TileGridConfig& gridStorage() const;
   Tile legacy_tiles_[GRID_COLS];
   size_t legacy_slot_count_ = 0;
   bool legacy_slots_loaded_ = false;
+  // The last loaded file carried tile_opacity; older files kept it per tile.
+  bool tile_opacity_stored_ = false;
 
   void resetDefaults();
-  void resetGrid(TileGridConfig& grid, bool transparent_defaults);
+  void resetSettings();
+  static void resetGrid(TileGridConfig& grid, bool transparent_defaults);
   void normalize();
   void normalizeTileGrid(TileGridConfig& grid);
   bool loadPath(const char* path);

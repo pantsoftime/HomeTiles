@@ -12,6 +12,8 @@
 #include "src/network/transport/network_transport.h"
 #include "src/network/transport/usb_ethernet_backend.h"
 #include "src/web/server/render/web_admin_scripts.h"
+#include "src/web/server/render/web_admin_html.h"
+#include "src/web/server/auth/web_admin_auth.h"
 #include "src/web/server/render/web_admin_styles.h"
 #include "src/web/server/assets/web_admin_fonts.h"
 #include "src/web/server/handlers/web_admin_tile_helpers.h"
@@ -503,7 +505,7 @@ static void appendTileTabHTML(
       // through one CSS variable, so the preview repaints them live.
       if (screensaver_mode) {
         tileStyle = "background:color-mix(in srgb,var(--tile-default-bg) ";
-        tileStyle += String(tile.background_opacity * 100.0f / 255.0f, 2);
+        tileStyle += String(screensaverConfig.get().tile_opacity * 100.0f / 255.0f, 2);
         tileStyle += "%,transparent)";
       } else {
         tileStyle = "background:var(--tile-default-bg)";
@@ -515,9 +517,10 @@ static void appendTileTabHTML(
       if (bg_color == 0) bg_color = 0x353535;
       char colorHex[10];
       if (screensaver_mode) {
+        // One opacity for every screensaver tile (ScreensaverConfigData).
         snprintf(colorHex, sizeof(colorHex), "#%06X%02X",
                  (unsigned int)bg_color,
-                 static_cast<unsigned int>(tile.background_opacity));
+                 static_cast<unsigned int>(screensaverConfig.get().tile_opacity));
       } else {
         snprintf(colorHex, sizeof(colorHex), "#%06X", (unsigned int)bg_color);
       }
@@ -538,6 +541,11 @@ static void appendTileTabHTML(
         row < (GRID_ROWS > 1 ? GRID_ROWS - 2 : 0)) {
       tileStyle += "display:none;";
     }
+    // A fully transparent screensaver card casts no shadow
+    // (apply_slot_tile_shadows).
+    if (screensaver_mode && tile.type != TILE_EMPTY && screensaverConfig.get().tile_opacity == 0) {
+      cssClass += " screensaver-bg-clear";
+    }
 
     if (tile_geometry::fraction_bits(col, row, span_w, span_h)) {
       cssClass += " fractional-tile";
@@ -550,9 +558,22 @@ static void appendTileTabHTML(
       cssClass += " sensor-compact";
       if (span_h == 0.5f) cssClass += " sensor-half";
     }
-    if (tile_geometry::compact_clock(tile.type, span_w, span_h)) cssClass += " clock-compact";
+    if (tile_geometry::compact_clock(tile.type, span_w, span_h)) {
+      cssClass += " clock-compact";
+    } else if (tile.type == TILE_CLOCK &&
+               (tile.title.length() || normalizeMdiIconName(tile.icon_name).length())) {
+      // A title or icon moves the clock down (clock/renderer.cpp).
+      cssClass += " clock-has-header";
+    }
     if (tile_geometry::compact_icon_title(tile.type, span_w, span_h)) {
       cssClass += " sensor-compact sensor-half compact-title-only";
+    }
+    if (tile_geometry::compact_switch(tile.type, span_w, span_h) ||
+        tile_geometry::compact_cover(tile.type, span_w, span_h) ||
+        tile_geometry::compact_device_control(tile.type, span_w, span_h) ||
+        tile_geometry::compact_climate(tile.type, span_w, span_h) ||
+        tile_geometry::compact_editable(tile.type, span_w, span_h)) {
+      cssClass += " sensor-compact sensor-half";
     }
     html += "<div class=\"";
     html += cssClass;
@@ -572,9 +593,16 @@ static void appendTileTabHTML(
     html += String(tile.icon_disc_mode);
     html += "\" data-icon-glow=\"";
     html += tile.icon_glow ? "1" : "0";
+    // A PIN-protected Folder or Settings tile shows a lock in its icon
+    // (navigate renderer, previewTileLocked in the browser).
+    const bool tile_locked =
+        (tile.type == TILE_SETTINGS && configManager.getConfig().settings_pin_enabled) ||
+        (tile.type == TILE_FOLDER && tileConfig.isFolderPinEnabled(getNavigateTargetId(tile)));
     if (tile.type == TILE_FOLDER) {
       html += "\" data-navigate-target=\"";
       html += String(getNavigateTargetId(tile));
+      html += "\" data-folder-pin-enabled=\"";
+      html += tile_locked ? "1" : "0";
     }
     html += "\" draggable=\"true\" id=\"";
     html += tab_id;
@@ -625,6 +653,9 @@ static void appendTileTabHTML(
         }
       }
 
+      // Without an own icon a protected tile shows the lock as its icon.
+      const bool lock_is_icon = tile_locked && !iconName.length();
+      if (lock_is_icon) iconName = "lock";
       bool hasIcon = iconName.length() > 0;
 
       if (hasIcon) {
@@ -645,7 +676,11 @@ static void appendTileTabHTML(
           html += color_hex;
           html += "\"";
         }
-        html += "></i>";
+        html += ">";
+        if (tile_locked && !lock_is_icon) {
+          html += "<span class=\"tile-icon-lock mdi mdi-lock\" aria-hidden=\"true\"></span>";
+        }
+        html += "</i>";
       }
 
       // Show a title only when one is configured.
@@ -660,12 +695,8 @@ static void appendTileTabHTML(
       }
     }
 
-    if (preview_kind && strcmp(preview_kind, "weather") == 0) {
-      html += "<div class=\"tile-ghost-icon\"><i class=\"mdi mdi-weather-partly-cloudy\"></i></div>";
-    }
-    if (preview_kind && strcmp(preview_kind, "media") == 0) {
-      html += "<div class=\"tile-ghost-icon\"><i class=\"mdi mdi-music\"></i></div>";
-    }
+    // Weather and media tiles get their state from the preview script
+    // (applyWeatherPreview, applyMediaPreview) once the values arrive.
     if (preview_kind && strcmp(preview_kind, "sensor") == 0) {
       html += "<div class=\"tile-value\" id=\"";
       html += tab_id;
@@ -728,11 +759,25 @@ static void appendTileTabHTML(
       if (flags == 0xFF) flags = 1;
       flags &= 0x03;
       if (flags == 0) flags = 1;
+      // Each line in its stored size with the LVGL line height
+      // (getClockPreviewTextStyle in the browser).
+      auto append_line = [&html](const char* css_class, uint8_t size, const char* placeholder) {
+        char attributes[200];
+        snprintf(attributes, sizeof(attributes),
+                 "<div class=\"%s\" data-clock-font=\"%u\" style=\"font-size:var(--fs%u);"
+                 "line-height:var(--lh%u);top:var(--ldy%u, 0px)\">",
+                 css_class, static_cast<unsigned>(size), static_cast<unsigned>(size),
+                 static_cast<unsigned>(size), static_cast<unsigned>(size));
+        html += attributes;
+        html += placeholder;
+        html += "</div>";
+      };
       if (flags & 1) {
-        html += "<div class=\"tile-clock-time\">--:--</div>";
+        append_line("tile-clock-time", clock_tile::normalize_font_size(tile.key_code, 40), "--:--");
       }
       if (flags & 2) {
-        html += "<div class=\"tile-clock-date\">--.--.----</div>";
+        append_line("tile-clock-date", clock_tile::normalize_date_font_size(tile.key_modifier, 20),
+                    "--.--.----");
       }
     }
 
@@ -798,19 +843,42 @@ static void appendTileTabHTML(
             "\" style=\"background:" +
             String(hidden ? hidden_color_hex : "transparent") + "\"";
     if (hidden) {
+      // A parked Settings tile shows the lock of the Settings PIN too
+      // (previewTileLocked in the browser); without an icon the lock is it.
+      const bool hidden_locked = cfg.settings_pin_enabled;
+      if (hidden_locked && !hidden_icon.length()) hidden_icon = "lock";
       html += "><i class=\"mdi mdi-";
       appendHtmlEscaped(html, hidden_icon);
-      html += " tile-icon\"></i><div class=\"tile-title\">";
+      html += " tile-icon\">";
+      if (hidden_locked && hidden_icon != "lock") {
+        html += "<span class=\"tile-icon-lock mdi mdi-lock\" aria-hidden=\"true\"></span>";
+      }
+      html += "</i><div class=\"tile-title\">";
       appendTileTitleHtml(html, hidden_title);
       html += "</div>";
     } else {
       html += "><i class=\"mdi mdi-tray-arrow-down tile-icon\"></i>";
     }
-    html += "</div></div><div id=\"settingsHiddenHint\" class=\"settings-hidden-hint";
+    // Beside the slot: its drop hint while it is empty, and the tile editing
+    // hint the other grids show in their footer.
+    html += "</div></div><div class=\"settings-parking-texts\"><div id=\"settingsHiddenHint\" class=\"settings-hidden-hint";
     if (hidden) html += " is-hidden";
     html += "\">";
     appendHtmlEscaped(html, tr.settings_tile_parking);
-    html += "</div></div>";
+    html += "</div><p class=\"hint\">";
+    html += tr.admin_tile_hint;
+    html += "</p></div></div>";
+  } else if (!screensaver_mode) {
+    // A folder shows the editing hint and Delete Folder where Home keeps its
+    // Settings parking slot: beside the grid on four-column devices, below
+    // it on the others.
+    html += "<div class=\"settings-hidden-parking folder-side\"><div class=\"settings-parking-texts\"><p class=\"hint\">";
+    html += tr.admin_tile_hint;
+    html += "</p><button type=\"button\" class=\"btn btn-danger btn-delete-folder\" onclick=\"deleteFolder('";
+    html += tab_id;
+    html += "')\">";
+    html += tr.admin_delete_folder_tab;
+    html += "</button></div></div>";
   }
   html += R"html(          <div class="folder-footer">
 )html";
@@ -883,9 +951,8 @@ static void appendTileTabHTML(
             "onclick=\"saveDefaultTileColor('";
     html += factory_color_hex;
     html += "')\"><i class=\"mdi mdi-restore\"></i></button></div></div></div></section>\n";
-    html += R"html(            <p class="hint">)html";
   } else {
-    html += R"html(            <div class="folder-footer-options">
+    html += R"html(            <div class="folder-footer-options screensaver-tile-options">
               <label class="inline-checkbox"><input id="screensaverTileBorder" type="checkbox"> )html";
     html += tr.screensaver_tile_border;
     html += R"html(</label>
@@ -899,22 +966,21 @@ static void appendTileTabHTML(
     html += tr.screensaver_tile_shadow;
     html += R"html(</label>
 )html";
+    // One opacity for every screensaver tile, beside its other tile options.
+    const uint8_t tile_opacity = screensaverConfig.get().tile_opacity;
+    html += "<label class=\"tile-radius-control\"><span>";
+    appendHtmlEscaped(html, tr.screensaver_background_opacity);
+    html += "</span><input id=\"screensaverTileOpacity\" type=\"range\" min=\"0\" max=\"255\" step=\"1\" value=\"";
+    html += String(tile_opacity);
+    html += "\"><output id=\"screensaverTileOpacityValue\" class=\"global-tile-opacity-value\">";
+    html += String((tile_opacity * 100 + 127) / 255);
+    html += " %</output></label>";
     html += R"html(            </div>
             <p class="hint">)html";
   }
   if (screensaver_mode) {
     html += tr.screensaver_hint;
-  } else {
-    html += tr.admin_tile_hint;
-  }
-  html += R"html(</p>
-)html";
-  if (!screensaver_mode && folder_id != 0) {
-    html += R"html(            <button type="button" class="btn btn-danger btn-delete-folder" onclick="deleteFolder(')html";
-    html += tab_id;
-    html += R"html(')">)html";
-    html += tr.admin_delete_folder_tab;
-    html += R"html(</button>
+    html += R"html(</p>
 )html";
   }
   html += R"html(          </div>
@@ -1128,33 +1194,39 @@ static void appendTileTabHTML(
   html += R"html(_tile_icon_glow" checked> )html";
   appendHtmlEscaped(html, tr.icon_glow);
   html += R"html(</label>
-            </div>
+)html";
+  // Weather only: filled, colored weather icons or the white outlines.
+  if (!screensaver_mode) {
+    html += R"html(              <label class="inline-checkbox hidden" id=")html";
+    html += tab_id;
+    html += R"html(_weather_colored_icons_row"><input type="checkbox" id=")html";
+    html += tab_id;
+    html += R"html(_weather_colored_icons" checked> )html";
+    appendHtmlEscaped(html, tr.weather_colored_icons);
+    html += R"html(</label>
+)html";
+  }
+  html += R"html(            </div>
 
             <div class="tile-settings-group">)html";
   appendHtmlEscaped(html, tr.tile_group_tile);
   html += R"html(</div>
-            <div class="tile-color-label-row no-reset)html";
-  if (screensaver_mode) html += " has-opacity";
-  html += R"html("><span>)html";
+            <div class="tile-color-label-row no-reset"><span>)html";
   html += tr.admin_color;
-  html += R"html(</span>)html";
-  if (screensaver_mode) {
-    html += R"html(<span>)html";
-    html += tr.screensaver_background_opacity;
-    html += R"html(</span>)html";
-  }
-  html += R"html(</div>
+  html += R"html(</span></div>
             <div class="icon-color-segmented tile-color-modes" role="group" id=")html";
   html += tab_id;
   html += R"html(_tile_color_modes">)html";
-  // Tile color is one choice: the global tile color, an own color, or a tint
-  // that follows the icon color (only for tiles with icon colors).
+  // Tile color is one choice: the global tile color, an own color, a tint
+  // that follows the icon color (only for tiles with icon colors) or, on
+  // Media tiles, a tint from the album cover.
   const struct {
     const char* mode;
     const char* label;
   } tile_color_modes[] = {{"global", tr.tile_color_mode_global},
                           {"custom", tr.tile_color_mode_custom},
-                          {"icon", tr.tile_color_mode_from_icon}};
+                          {"icon", tr.tile_color_mode_from_icon},
+                          {"cover", tr.tile_color_mode_from_cover}};
   for (const auto& entry : tile_color_modes) {
     html += R"html(<button type="button" id=")html";
     html += tab_id;
@@ -1171,19 +1243,14 @@ static void appendTileTabHTML(
     html += "</button>";
   }
   html += R"html(</div>
-            <div class="tile-color-row no-reset)html";
-  if (screensaver_mode) html += " has-opacity";
-  html += R"html(" id=")html";
+            <div class="tile-color-row no-reset" id=")html";
   html += tab_id;
   html += R"html(_tile_color_row">
             <input type="color" id=")html";
   html += tab_id;
   html += R"html(_tile_color" value="#2A2A2A">
 )html";
-  if (screensaver_mode) {
-    html += R"html(              <input type="range" id="screensaver_tile_opacity" min="0" max="255" step="1" value="0">
-)html";
-  }
+  // Screensaver tiles share one opacity (screensaver footer, tile_opacity).
   html += R"html(            </div>
 )html";
   append_tile_color_from_icon_html(html, tab_id);
@@ -1308,17 +1375,14 @@ static String buildFolderTabButtonHtml(const FolderEntry& entry) {
   html += tab_id;
   html += R"html(" data-tab-target="tab-tiles-)html";
   html += tab_id;
-  html += R"html(" type="button" onclick="switchTab('tab-tiles-)html";
+  html += R"html(" type="button")html";
+  html += R"html( onclick="switchTab('tab-tiles-)html";
   html += tab_id;
-  html += R"html(')">)html";
-  if (icon.length()) {
-    html += R"html(
-          <i class="mdi mdi-)html";
-    html += icon;
-    html += R"html(" style="font-size:24px;"></i>)html";
-  }
-  html += R"html(
-          <span style="font-size:14px;font-weight:600;">)html";
+  html += R"html(')">
+          <span class="tab-disc"><i class="mdi mdi-)html";
+  html += icon.length() ? icon : String(entry.id == 0 ? "home" : "folder");
+  html += R"html("></i></span>
+          <span class="tab-label">)html";
   appendHtmlEscaped(html, name);
   html += R"html(</span>
         </button>
@@ -1513,13 +1577,18 @@ String WebAdminServer::getAdminPage() {
   html += R"html(</title>
 )html";
 
+  appendWebAdminCsrfMeta(html, server);
   appendAdminStyles(html);
   appendAdminScripts(html);
 
   html += R"html(
 </head>
 <body>
-  <div class="wrapper">
+  <div class="wrapper)html";
+  // Four-column devices keep their preview size on the wide page; the
+  // Settings slot moves beside it (admin.css .compact-grid).
+  if (GRID_COLS <= 4) html += " compact-grid";
+  html += R"html(">
     <div class="card">
       <div class="brand">
         <svg width="44" height="44" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -1536,9 +1605,23 @@ String WebAdminServer::getAdminPage() {
   html += admin_heading_subtitle;
   html += R"html(</div>
         </div>
-        <div class="brand-links">
+        <div class="brand-side">
+        <div class="brand-links">)html";
+  appendWebAdminPasswordBadgeHtml(html, tr);
+  html += R"html(
           <a class="brand-link" href="https://galusperes.github.io/HomeTiles/" target="_blank" rel="noopener"><i class="mdi mdi-book-open-variant"></i>Docs</a>
           <a class="brand-link" href="https://github.com/GalusPeres/HomeTiles" target="_blank" rel="noopener"><i class="mdi mdi-github"></i>GitHub</a>
+        </div>)html";
+  // Small support line: a GitHub star (GitHub has no direct star URL, the
+  // repository page has the button) or a coffee.
+  html += R"html(
+        <div class="brand-support">)html";
+  appendHtmlEscaped(html, String(tr.web_support_prefix));
+  html += R"html( <a class="brand-star" href="https://github.com/GalusPeres/HomeTiles" target="_blank" rel="noopener"><i class="mdi mdi-star"></i>)html";
+  appendHtmlEscaped(html, String(tr.web_support_stars));
+  html += R"html(</a> )html";
+  appendHtmlEscaped(html, String(tr.web_support_or));
+  html += R"html( <a class="brand-coffee" href="https://buymeacoffee.com/galusperes" target="_blank" rel="noopener"><i class="mdi mdi-coffee"></i>Buy Me a Coffee</a></div>
         </div>
       </div>
       
@@ -1546,30 +1629,57 @@ String WebAdminServer::getAdminPage() {
       <div class="tab-nav">
 )html";
 
+  // Home stands alone on the left. A divider separates it from the folders,
+  // which follow in tree order, all as wide as Home, and wrap into more rows.
+  // A second divider separates Screensaver, I/O and Settings on the right. The
+  // folder buttons keep their classes and data, so switching, renaming and
+  // lazily added folders work as before (folders/navigation.js).
   for (const auto& entry : folders) {
-    html += buildFolderTabButtonHtml(entry);
+    if (entry.id == 0) html += buildFolderTabButtonHtml(entry);
   }
-
   html += R"html(
+        <span class="tab-sep" aria-hidden="true"></span>
+        <div class="tab-folders" id="folderTabs" role="group" aria-label=")html";
+  appendHtmlEscaped(html, String(tr.admin_folders));
+  html += R"html(">)html";
+  auto append_children = [&](auto&& self, uint16_t parent, int depth) -> void {
+    if (depth > 8) return;
+    for (const auto& entry : folders) {
+      if (entry.id == 0 || entry.parent_id != parent) continue;
+      html += buildFolderTabButtonHtml(entry);
+      self(self, entry.id, depth + 1);
+    }
+  };
+  append_children(append_children, 0, 0);
+  // A folder whose parent no longer exists still gets its button.
+  for (const auto& entry : folders) {
+    if (entry.id != 0 && entry.parent_id != 0 && !tileConfig.getFolder(entry.parent_id)) {
+      html += buildFolderTabButtonHtml(entry);
+    }
+  }
+  html += R"html(</div>
+        <span class="tab-sep" aria-hidden="true"></span>
+        <div class="tab-system">
         <button class="tab-btn" type="button" data-tab-target="tab-tiles-screensaver"
                 onclick="switchTab('tab-tiles-screensaver')">
-          <i class="mdi mdi-monitor" style="font-size:24px;"></i>
-          <span style="font-size:14px;font-weight:600;">Screensaver</span>
+          <span class="tab-disc"><i class="mdi mdi-monitor"></i></span>
+          <span class="tab-label">Screensaver</span>
         </button>
         <button class="tab-btn" type="button" data-tab-target="tab-hardware"
                 onclick="switchTab('tab-hardware')">
-          <i class="mdi mdi-electric-switch" style="font-size:24px;"></i>
-          <span style="font-size:14px;font-weight:600;">)html";
+          <span class="tab-disc"><i class="mdi mdi-electric-switch"></i></span>
+          <span class="tab-label">)html";
   html += tr.admin_io;
   html += R"html(</span>
         </button>
         <button class="tab-btn" type="button" data-tab-target="tab-network"
                 onclick="switchTab('tab-network')">
-          <i class="mdi mdi-cog" style="font-size:24px;"></i>
-          <span style="font-size:14px;font-weight:600;">)html";
+          <span class="tab-disc"><i class="mdi mdi-cog"></i></span>
+          <span class="tab-label">)html";
   html += tr.tile_type_settings;
   html += R"html(</span>
         </button>
+        </div>
       </div>
 )html";
 
@@ -1631,7 +1741,10 @@ String WebAdminServer::getAdminPage() {
 
       <!-- Tab 3: Settings (Network/MQTT Configuration) -->
       <div id="tab-network" class="tab-content">
-        <form id="admin_settings_form" action="/mqtt" method="POST" autocomplete="on">
+        <form id="admin_settings_form" action="/mqtt" method="POST" autocomplete="on">)html";
+  // The Web Admin password comes first, above the network settings.
+  appendWebAdminPasswordSettingsHtml(html, tr);
+  html += R"html(
           <div class="settings-section">
             <div class="section-title-row">
               <div class="section-title">)html";
@@ -1708,7 +1821,7 @@ String WebAdminServer::getAdminPage() {
                 <div class="password-field">
                   <input type="password" id="wifi_pass" name="wifi_pass"
                          autocomplete="new-password" value=")html";
-  appendHtmlEscaped(html, cfg.wifi_pass);
+  appendStoredSecretValue(html, cfg.wifi_pass, tr);
   html += R"html(">
                   <button type="button" class="password-toggle" data-label-show=")html";
   html += tr.password_show;
@@ -1821,7 +1934,7 @@ String WebAdminServer::getAdminPage() {
                 <div class="password-field">
                   <input type="password" id="mqtt_pass" name="mqtt_pass"
                          autocomplete="new-password" value=")html";
-  appendHtmlEscaped(html, cfg.mqtt_pass);
+  appendStoredSecretValue(html, cfg.mqtt_pass, tr);
   html += R"html(">
                   <button type="button" class="password-toggle" data-label-show=")html";
   html += tr.password_show;

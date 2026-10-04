@@ -24,7 +24,7 @@ A protected folder asks for its PIN first; see [Folder](tiles.md#folder).
 
 For tiles with detail controls, choose a tap or long press as the popup trigger in the Web Admin. Popups take on the look of their tile: the header shows the tile's icon and circle, and most popups use the tile's color.
 
-History popups have **24H** and **7D** views; the previous data stays visible until the new period arrives. To read an earlier value, touch a graph and move your finger along it, or tap an Energy bar. The time and value appear above the graph, and the marker stays where you let go.
+History popups have **7D** and **24H** views (Energy: **7D** and **Today**); the previous data stays visible until the new period arrives. To read an earlier value, touch a graph and move your finger along it, or tap an Energy bar. The time and value appear above the graph, and the marker stays where you let go.
 
 Each type's popup is shown with its tile:
 
@@ -91,7 +91,9 @@ Select a network and enter its password. The connected network is checked, and i
 
 ### Localization
 
-Choose English or German, time zone, date/time formats, and keyboard layout. Tile titles also support Cyrillic characters.
+Choose English, German, French, or Polish, time zone, date/time formats, and keyboard layout. Tile titles also support Cyrillic characters.
+
+The keyboard follows the language when set to **Auto**: German uses QWERTZ with ä, ö, ü, and ß; French uses AZERTY; Polish and English use QWERTY. In French and Polish, the keyboard key at the bottom left switches to their letters: the Polish letters on their AltGr keys (ą on a, ł on l, ż on z, and so on), the French accents à, â, é, è, ê, ë, î, ï, ô, ç, œ, ù, û, ü, and ÿ. Press it again to return; a highlighted key shows that the letters are active.
 
 <figure class="ht-screenshot">
 <img src="../images/8in-localization-popup.png" alt="Localization settings" width="1272" height="792" loading="lazy">
@@ -111,7 +113,11 @@ View the firmware version and device name, or use the maintenance actions:
 <figcaption>System information and firmware update</figcaption>
 </figure>
 
-- **Check for updates:** find and install a new release; see [Firmware Updates](updating.md).
+- **Updates:** find and install a new release; see [Firmware Updates](updating.md).
 - **Restart:** reboot the display.
-- **Pairing:** reconnect MQTT and announce the display to Home Assistant again.
 - **GitHub:** show a QR code for the project.
+- **Security:** [encrypted Bridge commands](bridge.md#encrypted-commands) and the [Web Admin password](web-admin.md#web-admin-password). **Encrypt** sets up encryption with Home Assistant by a six-digit number, **Turn off** switches it off on both sides, and **Password** removes a forgotten Web Admin password. Both ask before they act.
+
+Below the version and device name, System shows three rows: **Home Assistant** with a check while the display is connected, and **Encryption** and **Web Admin password** with a green shield while they are on. GitHub and Security are colored while their view is open; tap them again to return.
+
+The Settings tiles, the Back button and the Settings popups use the tile color from the [global settings](web-admin.md#global-settings).

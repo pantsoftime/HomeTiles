@@ -48,7 +48,8 @@ String operator+(const String& a,const String& b){return String(std::string(a)+s
 String operator+(const String& a,const char* b){return String(std::string(a)+b);}
 String operator+(const char* a,const String& b){return String(a+std::string(b));}
 enum TileType { TILE_EMPTY, TILE_NUMBER, TILE_SELECT, TILE_DATETIME, TILE_SENSOR, TILE_BINARY_SENSOR, TILE_SWITCH,
-  TILE_WEATHER, TILE_ENERGY, TILE_MEDIA, TILE_CLIMATE, TILE_COVER, TILE_CAMERA, TILE_SCENE };
+  TILE_WEATHER, TILE_ENERGY, TILE_MEDIA, TILE_CLIMATE, TILE_COVER, TILE_CAMERA, TILE_SCENE,
+  TILE_LOCK, TILE_ALARM, TILE_FAN };
 constexpr size_t TILES_PER_GRID = 6;
 struct Tile { TileType type = TILE_EMPTY; uint16_t view_id = 0; String sensor_entity; int popup = 0; };
 struct TileGridConfig { Tile tiles[TILES_PER_GRID]; };
@@ -118,12 +119,15 @@ void hide_energy_popup(){card.hidden=true;}
 void hide_media_popup(){card.hidden=true;}
 void hide_climate_popup(){card.hidden=true;}
 void hide_cover_popup(){card.hidden=true;}
+void hide_device_popup(){card.hidden=true;}
 void viewNavigationSource(lv_obj_t*);
 void viewNavigationPopupShown(lv_obj_t*,const char*);
 void lv_obj_send_event(lv_obj_t* obj,int event,void*){
   if(event==LV_EVENT_PRESSED)return;
   const auto& tile=tileConfig.grid.tiles[0];
-  const int popup_event=tile.type==TILE_CAMERA||tile.type==TILE_MEDIA||tile.type==TILE_WEATHER||tile.popup==1 ? 1:2;
+  // Like the renderers: Camera and Media open on a tap, every other type
+  // (Weather included) on its popup mode's gesture.
+  const int popup_event=tile.type==TILE_CAMERA||tile.type==TILE_MEDIA||tile.popup==1 ? 1:2;
   if(event==popup_event){++opens;card.hidden=false;viewNavigationSource(obj);viewNavigationPopupShown(&card,tile.sensor_entity.c_str());}
   else ++toggles;
 }
@@ -155,6 +159,8 @@ struct Preferences {
   + definition(navigation, 'void viewNavigationClosePopups(')
   + definition(navigation, 'void viewNavigationSource(')
   + definition(navigation, 'void viewNavigationPopupShown(')
+  + definition(navigation, 'uint16_t viewNavigationVisiblePopupTile(')
+  + definition(navigation, 'void viewNavigationReopenPopup(')
   + definition(persistence, 'static uint16_t reserveNavigationId(')
   + definition(persistence, 'static bool ensureNavigationIds(')
   + String.raw`
@@ -225,7 +231,7 @@ int main(){
   assert(!pending.active&&opens==1);connected=true;
   prepare(2,id,{0,2});viewNavigationSource(&object);assert(!pending.active);
   prepare(2,id,{0,2});servicePending(61000);assert(!pending.active);
-  for(auto type:{TILE_CAMERA,TILE_MEDIA,TILE_WEATHER,TILE_SENSOR,TILE_SWITCH,TILE_CLIMATE,TILE_COVER,TILE_ENERGY,TILE_BINARY_SENSOR,TILE_NUMBER,TILE_SELECT,TILE_DATETIME}){
+  for(auto type:{TILE_CAMERA,TILE_MEDIA,TILE_WEATHER,TILE_SENSOR,TILE_SWITCH,TILE_CLIMATE,TILE_COVER,TILE_ENERGY,TILE_BINARY_SENSOR,TILE_NUMBER,TILE_SELECT,TILE_DATETIME,TILE_LOCK,TILE_ALARM,TILE_FAN}){
     tileConfig.grid.tiles[0].type=type;
     for(int mode:{0,1}){tileConfig.grid.tiles[0].popup=mode;assert(tiles_open_view_popup(id));}
   }
@@ -233,6 +239,19 @@ int main(){
   assert(!tiles_open_view_popup(60000));
   g_folder_switch_pending=true;assert(!tiles_open_view_popup(id));g_folder_switch_pending=false;
   g_tiles_reload_requested[0]=true;assert(!tiles_open_view_popup(id));g_tiles_reload_requested[0]=false;
+  // A grid reload (a Web Admin save) reopens the visible popup from its new
+  // tile, so it reads the tile's new colors (regression: only a manual
+  // reopen showed them). A hidden popup, another entity and Camera (its
+  // stream) do not reopen.
+  tileConfig.grid.tiles[0].type=TILE_SENSOR;tileConfig.grid.tiles[0].popup=1;
+  assert(tiles_open_view_popup(id)&&!card.hidden);
+  const int reopened=opens;assert(viewNavigationVisiblePopupTile()==id);
+  viewNavigationReopenPopup(viewNavigationVisiblePopupTile());assert(opens==reopened+1&&toggles==0);
+  tileConfig.grid.tiles[0].sensor_entity="sensor.other";viewNavigationReopenPopup(id);assert(opens==reopened+1);
+  tileConfig.grid.tiles[0].sensor_entity="camera.door";tileConfig.grid.tiles[0].type=TILE_CAMERA;
+  viewNavigationReopenPopup(id);assert(opens==reopened+1);
+  tileConfig.grid.tiles[0].type=TILE_SENSOR;card.hidden=true;assert(viewNavigationVisiblePopupTile()==0);
+  viewNavigationReopenPopup(viewNavigationVisiblePopupTile());assert(opens==reopened+1);
   viewNavigationClosePopups();assert(camera_stops==1&&card.hidden);
   auto before=opens;
 

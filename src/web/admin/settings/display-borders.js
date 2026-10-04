@@ -38,6 +38,8 @@ function applyIconDiscsPreview(enabled) {
   document.querySelectorAll('.global-icon-disc-toggle').forEach(input => {
     input.checked = !!enabled;
   });
+  // A dark icon is lifted against its circle or, without one, the tile.
+  document.querySelectorAll('.tile').forEach(tile => applyIconDiscTint(tile));
 }
 async function saveIconDiscs(enabled) {
   const wanted = !!enabled;
@@ -115,6 +117,9 @@ function previewDefaultTileColor(value) {
   document.documentElement.style.setProperty('--tile-default-bg', color);
   Object.values(typeof TILE_TYPE_REGISTRY === 'object' ? TILE_TYPE_REGISTRY : {})
     .forEach(meta => { if (meta && meta.sharedBg) meta.defaultBg = color; });
+  // Circles are opaque steps above their tile (tone_color.h): recompute them
+  // for the new background.
+  if (typeof applyIconDiscTint === 'function') document.querySelectorAll('.tile').forEach(tile => applyIconDiscTint(tile));
   document.querySelectorAll('.global-tile-color').forEach(input => { input.value = color; });
   // Open editors of tiles without their own color show the new default.
   document.querySelectorAll('input[type="color"][id$="_tile_color"]').forEach(input => {
@@ -183,7 +188,9 @@ function previewTileRadius(value) {
     tileRadiusConfirmed = Number(getComputedStyle(root).getPropertyValue('--tile-radius-device'));
   }
   const scale = Number(getComputedStyle(root).getPropertyValue('--radius-preview-scale'));
-  root.style.setProperty('--tile-radius', Math.max(1, Math.round(radius * scale)) + 'px');
+  // Unrounded like the server's --tile-radius: the corner disc is concentric
+  // with the card corner only at the exact device radius.
+  root.style.setProperty('--tile-radius', (radius * scale).toFixed(2) + 'px');
   root.style.setProperty('--tile-radius-device', String(radius));
   document.querySelectorAll('.global-tile-radius').forEach(control => { control.value = radius; });
   document.querySelectorAll('.global-tile-radius-value').forEach(output => { output.textContent = radius; });

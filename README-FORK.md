@@ -170,6 +170,20 @@ every value-size option it does not list, so `syncCompactValueFontOptions()` in
 
 Guarded by `tools/tests/tiles/test-compact-tile-fork-integration.mjs`.
 
+### Fork fields in upstream's no-op check (since v0.8.01)
+
+Upstream v0.8.0 skips a tile save -- and the display rebuild -- when
+`tileContentEquals()` (`tile_config.h`) finds nothing changed but the cell. Every
+fork-only `Tile` field must be compared there, or editing just that field is
+silently dropped: `sensor_navigate_target` (a sensor tile's tap-to-folder
+target) is. `tools/tests/tiles/test-tile-move-fast-path.mjs` parses the struct
+and fails on any missing field.
+
+v0.8.0 also dropped the `GridType` argument from `render_navigate_tile()`. The
+fork keeps it (folder value and battery caption need the grid's widget table and
+the screensaver check); the registry passes it, and upstream's 5-argument
+declaration in `tile_renderer.h` is left unused, as it already was in v0.7.01.
+
 ## Regenerating the WebUI assets
 
 `src/web/assets/admin.css` is a source. Since v0.7.0 `src/web/assets/admin.js`

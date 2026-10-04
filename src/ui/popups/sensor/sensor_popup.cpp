@@ -1,4 +1,5 @@
 #include "src/ui/popups/popup_shell.h"
+#include "src/ui/popups/popup_nav_style.h"
 #include "src/ui/popups/popup_open.h"
 #include "src/types/value/value_control.h"
 #include "src/network/bridge/ha_bridge_config.h"
@@ -11,12 +12,14 @@
 #include "src/ui/popups/energy/energy_popup.h"
 #include "src/ui/popups/media/media_popup.h"
 #include "src/ui/popups/cover/cover_popup.h"
+#include "src/ui/popups/device/device_popup.h"
 #include "src/ui/popups/pin/pin_popup.h"
 #include "src/ui/popups/popup_layout.h"
 #include "src/ui/popups/popup_first_frame.h"
 #include "src/ui/popups/popup_graph_readout.h"
 #include "src/core/config/config_manager.h"
 #include "src/core/display/display_manager.h"
+#include "src/core/memory/psram_allocator.h"
 #include "src/core/i18n/i18n.h"
 #include "src/fonts/ui_fonts.h"
 #include "src/io/hardware_io.h"
@@ -193,22 +196,25 @@ struct SensorPopupContext {
   uint64_t binary_range_end = 0;
   uint32_t state_history_last_request_ms = 0;
   bool state_history_refresh_pending = false;
+  // The history stays with the resident popup until the next response, so its
+  // buffers (up to 96 segments and 96 activity rows, several KB) live in PSRAM:
+  // in the internal heap they fragmented the S3's 44 KB after a few openings.
   struct BinarySegment {
     uint64_t start = 0;
     uint64_t end = 0;
     uint8_t state = 2;
     String value;
   };
-  std::vector<BinarySegment> binary_segments;
-  std::vector<uint8_t> binary_timeline_bins;
-  std::vector<String> state_history_palette;
+  PsVector<BinarySegment> binary_segments;
+  PsVector<uint8_t> binary_timeline_bins;
+  PsVector<String> state_history_palette;
   bool state_history_palette_complete = true;
   struct BinaryActivityEntry {
     uint64_t timestamp = 0;
     uint8_t state = 2;
     String value;
   };
-  std::vector<BinaryActivityEntry> binary_activity;
+  PsVector<BinaryActivityEntry> binary_activity;
   size_t binary_activity_first_row = kBinaryMaxActivityEntries;
   size_t binary_activity_row_indices[kBinaryActivityPoolRows] = {};
   uint32_t binary_activity_date_key = 0;
@@ -258,7 +264,9 @@ struct PendingValueUpdate {
 
 struct PendingHistoryUpdate {
   String entity_id;
-  String payload;
+  // Kept until the next response; an Arduino String would hold its buffer
+  // (several KB) in the internal heap.
+  PsString payload;
   bool valid = false;
 };
 
@@ -393,6 +401,8 @@ static bool popup_icon_state_known(const String& raw) {
          state != "none" && state != "null";
 }
 
+static void update_range_buttons(SensorPopupContext* ctx);
+
 static void apply_popup_icon_color(SensorPopupContext* ctx, bool known, const char* state,
                                    const char* display, lv_color_t fallback) {
   if (!ctx || !ctx->icon_label) return;
@@ -406,6 +416,10 @@ static void apply_popup_icon_color(SensorPopupContext* ctx, bool known, const ch
                              display, lv_color_to_u32(fallback) & 0xFFFFFF));
   if (!lv_color_eq(lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN), color)) {
     lv_obj_set_style_text_color(ctx->icon_label, color, 0);
+    // The range buttons and the editor surfaces take the control fill, which
+    // follows the icon.
+    update_range_buttons(ctx);
+    editable_control_follow_colors(ctx->control);
   }
 }
 
@@ -461,45 +475,25 @@ static String sensor_value_display(const String& value, const String& unit,
   return display;
 }
 
-static void style_range_button(lv_obj_t* btn, bool active) {
-  if (!btn) return;
-  lv_color_t active_text_color = lv_color_hex(0x2A2A2A);
-  lv_obj_t* row = lv_obj_get_parent(btn);
-  lv_obj_t* card = row ? lv_obj_get_parent(row) : nullptr;
-  if (card) {
-    active_text_color = lv_obj_get_style_bg_color(card, LV_PART_MAIN);
-  }
-  auto apply_selector = [&](lv_style_selector_t selector) {
-    const bool pressed = selector == LV_STATE_PRESSED;
-    lv_obj_set_style_bg_color(btn, lv_color_white(), selector);
-    lv_obj_set_style_bg_opa(btn, active ? LV_OPA_COVER : (pressed ? LV_OPA_20 : LV_OPA_TRANSP), selector);
-    lv_obj_set_style_border_color(btn, lv_color_white(), selector);
-    lv_obj_set_style_border_width(btn, 0, selector);
-    lv_obj_set_style_border_opa(btn, LV_OPA_TRANSP, selector);
-    lv_obj_set_style_outline_opa(btn, LV_OPA_TRANSP, selector);
-    lv_obj_set_style_shadow_opa(btn, LV_OPA_TRANSP, selector);
-    lv_obj_set_style_transform_width(btn, 0, selector);
-    lv_obj_set_style_transform_height(btn, 0, selector);
-    lv_obj_set_style_translate_y(btn, 0, selector);
-  };
-
-  apply_selector(0);
-  apply_selector(LV_STATE_PRESSED);
-
+static void style_range_button(SensorPopupContext* ctx, lv_obj_t* btn, bool active) {
+  if (!ctx || !btn) return;
+  const lv_color_t popup =
+      ctx->card ? lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN) : lv_color_hex(0x2A2A2A);
+  const lv_color_t icon =
+      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_white();
   lv_obj_t* label = lv_obj_get_child(btn, 0);
   if (label) {
     lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
     lv_obj_set_style_text_font(label, popup_layout::font24(), LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(label, active ? active_text_color : lv_color_white(), 0);
-    lv_obj_set_style_text_color(label, active ? active_text_color : lv_color_white(), LV_STATE_PRESSED);
   }
+  popup_nav_style::style_toggle(btn, label, popup, icon, active);
 }
 
 static void update_range_buttons(SensorPopupContext* ctx) {
   if (!ctx) return;
   const auto selected = ctx->editable ? ctx->editable_requested_range : ctx->history_range;
-  style_range_button(ctx->range_day_btn, selected == SensorHistoryRange::Day24);
-  style_range_button(ctx->range_week_btn, selected == SensorHistoryRange::Day7);
+  style_range_button(ctx, ctx->range_day_btn, selected == SensorHistoryRange::Day24);
+  style_range_button(ctx, ctx->range_week_btn, selected == SensorHistoryRange::Day7);
 }
 
 }  // namespace
@@ -512,6 +506,7 @@ void sensor_popup_follow_tile_color(uint32_t color) {
   ctx->bg_color = color;
   lv_obj_set_style_bg_color(ctx->card, lv_color_hex(color), 0);
   update_range_buttons(ctx);
+  editable_control_follow_colors(ctx->control);
 }
 
 namespace {
@@ -2041,7 +2036,7 @@ static void apply_timeline_readout(SensorPopupContext* ctx, const lv_point_t& po
   const String& unknown_state = binary_state_identifier_text(2);
   const String& unavailable_state = binary_state_identifier_text(3);
   if (!ctx->binary_timeline_bins.empty()) {
-    const std::vector<uint8_t>& bins = ctx->binary_timeline_bins;
+    const auto& bins = ctx->binary_timeline_bins;
     const size_t count = bins.size();
     size_t first = static_cast<size_t>(x) * count / static_cast<size_t>(width);
     size_t last = (static_cast<size_t>(x + 1) * count + static_cast<size_t>(width) - 1U) /
@@ -2467,7 +2462,7 @@ static int binary_timeline_hex_nibble(char value) {
 static bool decode_binary_timeline(JsonVariantConst points_value,
                                    JsonVariantConst encoding_value,
                                    JsonVariantConst data_value,
-                                   std::vector<uint8_t>& output) {
+                                   PsVector<uint8_t>& output) {
   output.clear();
   if (!points_value.is<uint16_t>() || !encoding_value.is<const char*>() ||
       !data_value.is<const char*>()) {
@@ -2503,8 +2498,8 @@ static bool decode_binary_timeline(JsonVariantConst points_value,
 static bool decode_state_timeline(JsonVariantConst points_value,
                                   JsonVariantConst encoding_value,
                                   JsonVariantConst data_value,
-                                  const std::vector<String>& palette,
-                                  std::vector<uint8_t>& output) {
+                                  const PsVector<String>& palette,
+                                  PsVector<uint8_t>& output) {
   output.clear();
   if (!points_value.is<uint16_t>() || !encoding_value.is<const char*>() ||
       !data_value.is<const char*>() || palette.empty() ||
@@ -3427,8 +3422,9 @@ static void build_popup_body(SensorPopupContext* ctx) {
     return btn;
   };
 
-  ctx->range_day_btn = make_range_button("24H");
+  // 7D sits left of 24H: the longer range reaches further into the past.
   ctx->range_week_btn = make_range_button("7D");
+  ctx->range_day_btn = make_range_button("24H");
   lv_obj_add_event_cb(ctx->range_day_btn, on_range_click, LV_EVENT_CLICKED, ctx);
   lv_obj_add_event_cb(ctx->range_week_btn, on_range_click, LV_EVENT_CLICKED, ctx);
   update_range_buttons(ctx);
@@ -3453,7 +3449,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
   lv_obj_align(ctx->control_row, LV_ALIGN_TOP_MID, 0, popup_layout::kValueY);
   lv_obj_remove_flag(ctx->control_row, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(ctx->control_row, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-  ctx->control = editable_control_create(ctx->control_row, card);
+  ctx->control = editable_control_create(ctx->control_row, card, ctx->icon_label);
 
   lv_obj_t* body_box = lv_obj_create(card);
   ctx->body_box = body_box;
@@ -3664,6 +3660,7 @@ void show_sensor_popup(const SensorPopupInit& init) {
   hide_weather_popup();
   hide_energy_popup();
   hide_media_popup();
+  hide_device_popup();
 
   if (!g_sensor_popup_ctx) {
     g_sensor_popup_ctx = new SensorPopupContext();
@@ -3767,7 +3764,7 @@ void queue_sensor_popup_history(const char* entity_id, const char* payload, size
   }
 
   g_pending_history.entity_id = incoming_entity;
-  g_pending_history.payload = payload_text;
+  g_pending_history.payload.assign(payload_text.c_str(), payload_text.length());
   g_pending_history.valid = true;
 }
 

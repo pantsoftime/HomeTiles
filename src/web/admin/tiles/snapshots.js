@@ -48,10 +48,12 @@
     const typeValue = document.getElementById(tab + '_tile_type')?.value || '0';
     const discToggle = tileTypeHasDiscToggle(typeValue);
     const colored = tileTypeHasColoredIcon(typeValue);
+    const weather = typeValue === '12';
     document.getElementById(tab + '_tile_icon_disc_fields')
-      ?.classList.toggle('hidden', !tileTypeHasIcon(typeValue) || (!discToggle && !colored));
+      ?.classList.toggle('hidden', !tileTypeHasIcon(typeValue) || (!discToggle && !colored && !weather));
     document.getElementById(tab + '_tile_icon_disc_row')?.classList.toggle('hidden', !discToggle);
     document.getElementById(tab + '_tile_icon_glow_row')?.classList.toggle('hidden', !colored);
+    document.getElementById(tab + '_weather_colored_icons_row')?.classList.toggle('hidden', !weather);
   }
 
   function collectTypeFieldValues(tab) {
@@ -98,9 +100,6 @@
       span_w: document.getElementById(prefix + '_tile_span_w')?.value || '1',
       span_h: document.getElementById(prefix + '_tile_span_h')?.value || '1'
     };
-    if (isScreensaverTileTab(tab)) {
-      snapshot.background_opacity = document.getElementById('screensaver_tile_opacity')?.value || '0';
-    }
     Object.assign(snapshot, collectTypeFieldValues(tab));
     return snapshot;
   }
@@ -117,7 +116,9 @@
     if (!Array.isArray(tiles) || index < 0) return;
 
     const prev = tiles[index] || {};
-    const tile = Object.assign({}, prev);
+    // A deleted (empty) tile starts from nothing: merged over the previous
+    // data, its entity and options returned with the next tile in the slot.
+    const tile = Number(snapshot?.type) === 0 ? {} : Object.assign({}, prev);
     const layout = normalizeSnapshotLayout(snapshot, index, tab);
     const numericFields = ['type', 'sensor_decimals', 'sensor_value_font', 'sensor_display_mode', 'sensor_gauge_min', 'sensor_gauge_max', 'switch_style', 'navigate_target', 'popup_open_mode', 'key_code', 'key_modifier', 'background_opacity', 'icon_disc', 'icon_glow'];
 
@@ -166,6 +167,9 @@
     if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'camera_entity')) {
       tile.sensor_entity = snapshot.camera_entity || '';
     }
+    for (const kind of ['lock', 'alarm', 'fan']) {
+      if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, kind + '_entity')) tile.sensor_entity = snapshot[kind + '_entity'] || '';
+    }
     if (snapshot && (Object.prototype.hasOwnProperty.call(snapshot, 'clock_show_time') || Object.prototype.hasOwnProperty.call(snapshot, 'clock_show_date'))) {
       let flags = 0;
       if (String(snapshot.clock_show_time || '0') === '1') flags |= 1;
@@ -192,6 +196,9 @@
 
     if ([8,9,10].includes(Number(tile.type)) && snapshot?.tile_border !== undefined) {
       tile.sensor_display_mode = ['0','false'].includes(String(snapshot.tile_border)) ? 1 : 0;
+    }
+    if (Number(tile.type) === 12 && snapshot?.weather_colored_icons !== undefined) {
+      tile.sensor_display_mode = ['0','false'].includes(String(snapshot.weather_colored_icons)) ? 1 : 0;
     }
     tiles[index] = tile;
     tilesData[tab] = tiles;

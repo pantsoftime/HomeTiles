@@ -21,6 +21,7 @@
 #include "src/types/navigate/renderer.h"
 #include "src/network/bridge/device_entities.h"
 #include "src/types/energy/energy_data.h"
+#include "src/types/media/artwork_payload.h"
 #include "src/web/server/web_admin.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/runtime/tile_icon_source.h"
@@ -71,8 +72,15 @@ static constexpr uint32_t kFolderCacheMinLargestDmaBlock = 24UL * 1024UL;
 static constexpr uint32_t kFolderCacheInitialEstimatedCost = 8UL * 1024UL;
 #else
 static constexpr size_t kMaxResidentFolderUiCaches = 4;
-static constexpr uint32_t kFolderCacheGrowMinInternalFreeBytes = 112UL * 1024UL;
-static constexpr uint32_t kFolderCacheGrowMinLargestInternalBytes = 72UL * 1024UL;
+// Guition S3 logs (b85): a 16-tile folder grid costs 1-2 KB internal RAM,
+// since LVGL objects live in PSRAM; runtime free internal RAM is 43-48 KB
+// (b87: 43 KB at the first growth check, so the floor sits a little lower).
+// The former 112/72 KB floor dated from internal LVGL memory and kept every
+// S3 at three grids, rebuilding a fourth folder on each visit. The largest
+// free block sits at 20 KB whether 2 or 3 grids are resident (b88), since a
+// grid only makes small allocations, so its floor stays below that.
+static constexpr uint32_t kFolderCacheGrowMinInternalFreeBytes = 40UL * 1024UL;
+static constexpr uint32_t kFolderCacheGrowMinLargestInternalBytes = 16UL * 1024UL;
 #endif
 
 struct FolderCacheEntry {
@@ -99,6 +107,11 @@ static FolderCacheEntry* g_active_cache = nullptr;
 // Set from the web-server task, drained in the render loop: dropping cached
 // folder grids and LVGL is not safe to do off the loop thread.
 static volatile bool g_folder_cache_invalidate_requested = false;
+// Folders whose own grid changed (tiles_invalidate_folder_only); more than
+// fit falls back to dropping every hidden cache.
+static constexpr size_t kMaxFolderOnlyInvalidations = 8;
+static uint16_t g_folder_only_invalidations[kMaxFolderOnlyInvalidations] = {};
+static size_t g_folder_only_invalidation_count = 0;
 static TileWidgetCache* g_cache_build_saved_widgets = nullptr;
 static bool g_folder_switch_pending = false;
 static uint16_t g_pending_folder_id = kInvalidFolderId;
@@ -344,16 +357,12 @@ struct EntityCacheEntry {
 };
 
 static constexpr size_t kEntityCacheSize = TILES_PER_GRID * 8;
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
+// PSRAM on every chip; allocated on first use.
 static EntityCacheEntry* g_entity_cache = nullptr;
 static bool g_entity_cache_init_attempted = false;
-#else
-static EntityCacheEntry g_entity_cache[kEntityCacheSize];
-#endif
 static size_t g_entity_cache_cursor = 0;
 
 static bool ensure_entity_cache_storage() {
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
   if (g_entity_cache) return true;
   if (g_entity_cache_init_attempted) return false;
   g_entity_cache_init_attempted = true;
@@ -374,7 +383,6 @@ static bool ensure_entity_cache_storage() {
   Serial.printf("[Tiles/Mem] Entity cache=%u bytes in PSRAM\n",
                 static_cast<unsigned>(sizeof(EntityCacheEntry) *
                                       kEntityCacheSize));
-#endif
   return true;
 }
 
@@ -399,12 +407,15 @@ static void refresh_entity_payload_signature(EntityCacheEntry& entry) {
 // entry outright would discard embedded artwork, leaving covers empty
 // after a grid reload/Web Admin save until the next track change.
 // Bridge appends the three entity_picture_* fields as one block at the
-// end of the JSON; carry that block into the new payload.
+// end of the JSON; carry that block into the new payload. A player without
+// artwork gets an explicit empty picture; carrying the old block then would
+// bring the old cover back after a grid reload.
 static bool merge_cached_cover_fields(const String& old_payload, String& new_payload) {
   // Require length > 2: inserting ",..." into empty "{}" would be invalid.
   if (new_payload.length() <= 2 || new_payload[0] != '{' ||
       new_payload[new_payload.length() - 1] != '}') return false;
   if (new_payload.indexOf("\"entity_picture_data\"") >= 0) return false;
+  if (media_artwork::clears_cover(new_payload.c_str())) return false;
   const int cover_start = old_payload.indexOf("\"entity_picture_data\"");
   if (cover_start < 1) return false;
   const int cover_end = old_payload.lastIndexOf('}');
@@ -1617,6 +1628,10 @@ void build_tiles_tab(lv_obj_t *parent, GridType grid_type, scene_publish_cb_t sc
 
 /* === Reload layout (unified) === */
 void tiles_reload_layout(GridType grid_type) {
+  const uint32_t reload_started_ms = millis();
+  // The visible popup's tile, reopened from its new tile at the end.
+  const uint16_t reopen_popup_tile =
+      grid_type == GridType::TAB0 ? viewNavigationVisiblePopupTile() : 0;
   // A light popup is bound to a concrete grid slot. Close it before replacing
   // that slot so later entity updates cannot target a stale widget binding.
   hide_light_popup();
@@ -1723,7 +1738,11 @@ void tiles_reload_layout(GridType grid_type) {
     g_active_cache->icon_generation = g_tiles_icon_generation;
     g_active_cache->last_used_ms = millis();
   }
-  Serial.printf("[%s] Layout reloaded\n", getGridName(grid_type));
+  Serial.printf("[%s] Layout reloaded in %lu ms\n", getGridName(grid_type),
+                static_cast<unsigned long>(millis() - reload_started_ms));
+  // A popup opened from a replaced tile reads the tile's new colors and
+  // options (regression: they appeared only after closing and reopening).
+  viewNavigationReopenPopup(reopen_popup_tile);
   schedule_preview_load(grid_type);
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
   if (grid_type == GridType::TAB0 && g_active_cache) {
@@ -1861,10 +1880,214 @@ void tiles_invalidate_folder(uint16_t folder_id) {
   g_folder_cache_invalidate_requested = true;
 }
 
+void tiles_invalidate_folder_only(uint16_t folder_id) {
+  for (size_t i = 0; i < g_folder_only_invalidation_count; ++i) {
+    if (g_folder_only_invalidations[i] == folder_id) return;
+  }
+  if (g_folder_only_invalidation_count >= kMaxFolderOnlyInvalidations) {
+    g_folder_cache_invalidate_requested = true;
+    return;
+  }
+  g_folder_only_invalidations[g_folder_only_invalidation_count++] = folder_id;
+}
+
+static void rebuild_tile_at_index(GridType grid_type, uint8_t index);
+
+// A Web Admin edit changes a few tiles: unchanged tiles stay, moved tiles take
+// their new cells, and only changed, new or removed tiles are built or deleted
+// (rebuild_tile_at_index), instead of the whole grid being rebuilt
+// (tiles_reload_layout, about 340 ms on the V2; user 2026-10-02: moving,
+// resizing and recoloring must all be fast). False, with nothing changed,
+// when the grid holds anything unexpected; the caller then rebuilds as before.
+static bool update_active_layout() {
+  const uint8_t idx = static_cast<uint8_t>(GridType::TAB0);
+  lv_obj_t* grid = g_tiles_grids[idx];
+  if (!grid || !g_active_cache || !g_active_cache->grid_loaded) return false;
+  const TileGridConfig& shown = g_active_cache->grid_config;
+  const TileGridConfig& next = tileConfig.getActiveGrid();
+
+  float col = 0;
+  float row = 0;
+  float span_w = 1;
+  float span_h = 1;
+  bool rebuilds = false;
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    const Tile& after = next.tiles[i];
+    if (after.type != TILE_EMPTY && !get_tile_layout(after, col, row, span_w, span_h)) return false;
+    if (shown.tiles[i].type == TILE_EMPTY && after.type == TILE_EMPTY) continue;
+    if (!tileContentEquals(shown.tiles[i], after) || !g_tiles_objs[idx][i]) rebuilds = true;
+  }
+  // Only tiles and the empty cell placeholders (render_empty_tile) live in
+  // the grid; anything else rebuilds.
+  lv_obj_t* placeholders[GRID_ROWS * GRID_COLS] = {};
+  size_t placeholder_count = 0;
+  const uint32_t child_count = lv_obj_get_child_count(grid);
+  for (uint32_t c = 0; c < child_count; ++c) {
+    lv_obj_t* child = lv_obj_get_child(grid, static_cast<int32_t>(c));
+    bool is_tile = false;
+    for (size_t i = 0; i < TILES_PER_GRID && !is_tile; ++i) is_tile = g_tiles_objs[idx][i] == child;
+    if (is_tile) continue;
+    if (lv_obj_get_child_count(child) != 0 || placeholder_count >= GRID_ROWS * GRID_COLS) return false;
+    placeholders[placeholder_count++] = child;
+  }
+
+  const uint32_t started_ms = millis();
+  // Only the tiles that move, change or go are drawn again, at their old and
+  // new places: redrawing the whole grid took about 140 ms on the V2 even when
+  // nothing changed (user 2026-10-02). Their old places are marked before
+  // anything changes, as a rebuilt tile's renderer may update the layout;
+  // LVGL keeps those marks until the next frame.
+  bool redraw[TILES_PER_GRID] = {};
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    const Tile& before = shown.tiles[i];
+    const Tile& after = next.tiles[i];
+    if (before.type == TILE_EMPTY && after.type == TILE_EMPTY) continue;
+    lv_obj_t* obj = g_tiles_objs[idx][i];
+    const bool same = after.type != TILE_EMPTY && obj && tileContentEquals(before, after);
+    if (same && before.col == after.col && before.row == after.row) continue;
+    redraw[i] = true;
+    if (obj) lv_obj_invalidate(obj);
+  }
+  // A popup reopened from a rebuilt tile (rebuild_tile_at_index) is drawn whole.
+  const bool popup_open = viewNavigationVisiblePopupTile() != 0;
+  // A light popup is bound to a grid slot (tiles_reload_layout).
+  if (rebuilds) hide_light_popup();
+  lv_display_t* disp = lv_obj_get_display(grid);
+  if (disp) lv_display_enable_invalidation(disp, false);
+  for (size_t p = 0; p < placeholder_count; ++p) lv_obj_delete(placeholders[p]);
+  bool occupied[GRID_ROWS][GRID_COLS] = {};
+  unsigned moved = 0;
+  unsigned rebuilt = 0;
+  // The rebuilt slots, for the log: an unchanged tile must never be among them.
+  char rebuilt_slots[48] = "";
+  auto note_rebuilt = [&](size_t slot) {
+    ++rebuilt;
+    const size_t used = strlen(rebuilt_slots);
+    if (used + 6 < sizeof(rebuilt_slots)) {
+      snprintf(rebuilt_slots + used, sizeof(rebuilt_slots) - used, used ? ",%u" : " (slots %u",
+               static_cast<unsigned>(slot));
+    }
+  };
+  bool folders_changed = false;
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    const Tile& before = shown.tiles[i];
+    const Tile& after = next.tiles[i];
+    if (before.type == TILE_EMPTY && after.type == TILE_EMPTY) continue;
+    if (before.type == TILE_FOLDER || after.type == TILE_FOLDER) {
+      folders_changed = folders_changed || !tileContentEquals(before, after);
+    }
+    if (after.type == TILE_EMPTY) {
+      // Removed: its widgets go with it, as in rebuild_tile_at_index.
+      if (g_tiles_objs[idx][i]) lv_obj_delete(g_tiles_objs[idx][i]);
+      g_tiles_objs[idx][i] = nullptr;
+      reset_sensor_widget(GridType::TAB0, static_cast<uint8_t>(i));
+      reset_switch_widget(GridType::TAB0, static_cast<uint8_t>(i));
+      reset_climate_widget(GridType::TAB0, static_cast<uint8_t>(i));
+      reset_cover_widget(GridType::TAB0, static_cast<uint8_t>(i));
+      reset_binary_sensor_widget(GridType::TAB0, static_cast<uint8_t>(i));
+      reset_weather_widget(GridType::TAB0, static_cast<uint8_t>(i));
+      note_rebuilt(i);
+      continue;
+    }
+    if (!get_tile_layout(after, col, row, span_w, span_h)) continue;
+    mark_occupied(occupied, col, row, span_w, span_h);
+    if (!tileContentEquals(before, after) || !g_tiles_objs[idx][i]) {
+      rebuild_tile_at_index(GridType::TAB0, static_cast<uint8_t>(i));
+      note_rebuilt(i);
+      continue;
+    }
+    if (before.col == after.col && before.row == after.row) continue;
+    Tile layout_tile = after;
+    layout_tile.col = col;
+    layout_tile.row = row;
+    layout_tile.span_w = span_w;
+    layout_tile.span_h = span_h;
+    // Whole cells follow the grid layout, half steps sit at a fixed position
+    // (place_tile_card, as render_tile placed them).
+    lv_obj_remove_flag(g_tiles_objs[idx][i], LV_OBJ_FLAG_IGNORE_LAYOUT);
+    place_tile_card(g_tiles_objs[idx][i], static_cast<int>(col), static_cast<int>(row), layout_tile);
+    ++moved;
+  }
+  for (uint8_t r = 0; r < GRID_ROWS; ++r) {
+    for (uint8_t c = 0; c < GRID_COLS; ++c) {
+      if (occupied[r][c]) continue;
+      // Behind the tiles, as tiles_reload_layout creates them first.
+      lv_obj_move_to_index(render_empty_tile(grid, c, r), 0);
+    }
+  }
+  if (rebuilt_slots[0]) strncat(rebuilt_slots, ")", sizeof(rebuilt_slots) - strlen(rebuilt_slots) - 1);
+  if (rebuilt) {
+    // Rebuilt tiles take their cached values before the frame, as after
+    // tiles_reload_layout; otherwise they showed empty for a moment (user
+    // 2026-10-02: the Weather tile blinked).
+    process_sensor_update_queue();
+    process_switch_update_queue();
+    process_climate_update_queue();
+    process_cover_update_queue();
+    process_binary_sensor_update_queue();
+    process_weather_update_queue();
+    process_media_update_queue();
+  }
+  if (disp) {
+    lv_obj_update_layout(grid);
+    lv_display_enable_invalidation(disp, true);
+    bool changed = false;
+    for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+      if (!redraw[i]) continue;
+      changed = true;
+      if (g_tiles_objs[idx][i]) lv_obj_invalidate(g_tiles_objs[idx][i]);
+    }
+    if (popup_open && rebuilt) {
+      lv_obj_invalidate(lv_screen_active());
+      lv_obj_invalidate(lv_layer_top());
+    }
+    if (changed) lv_refr_now(disp);
+  }
+  g_active_cache->grid_config = next;
+  memcpy(g_active_cache->tile_objs, g_tiles_objs[idx], sizeof(g_active_cache->tile_objs));
+  tile_renderer_snapshot_tab0(&g_active_cache->widgets);
+  g_active_cache->last_used_ms = millis();
+  Serial.printf("[%s] Layout updated: %u moved, %u rebuilt%s in %lu ms\n", getGridName(GridType::TAB0),
+                moved, rebuilt, rebuilt_slots, static_cast<unsigned long>(millis() - started_ms));
+  if (rebuilt) schedule_preview_load(GridType::TAB0);
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  // New or changed Folder tiles warm their targets, as after a rebuild.
+  if (folders_changed) schedule_navigation_preload(g_active_cache->folder_id, next);
+#endif
+  return true;
+}
+
+bool tiles_show_active_layout_now() {
+  const uint8_t idx = static_cast<uint8_t>(GridType::TAB0);
+  if (!g_active_cache || !g_active_cache->grid || !g_tiles_loaded[idx] ||
+      g_active_cache->folder_id != tileConfig.getActiveFolderId()) {
+    return false;
+  }
+  if (!update_active_layout()) tiles_reload_layout(GridType::TAB0);
+  g_tiles_reload_requested[idx] = false;
+  return true;
+}
+
 // Loop-only: actually drop the cached folder grids so they rebuild from NVS.
 static void process_folder_cache_invalidation() {
-  if (!g_folder_cache_invalidate_requested) return;
+  if (!g_folder_cache_invalidate_requested) {
+    // Only the hidden caches of the changed folders; the visible one was
+    // refreshed by the caller.
+    for (size_t n = 0; n < g_folder_only_invalidation_count; ++n) {
+      for (size_t i = 0; i < g_folder_cache_slot_count; ++i) {
+        FolderCacheEntry& entry = g_folder_cache[i];
+        if (&entry == g_active_cache ||
+            entry.folder_id != g_folder_only_invalidations[n]) {
+          continue;
+        }
+        reset_cache_entry(entry);
+      }
+    }
+    g_folder_only_invalidation_count = 0;
+    return;
+  }
   g_folder_cache_invalidate_requested = false;
+  g_folder_only_invalidation_count = 0;
 #if defined(CONFIG_IDF_TARGET_ESP32P4)
   clear_navigation_preload_plan();
 #endif
@@ -2197,6 +2420,9 @@ static void rebuild_tile_at_index(GridType grid_type, uint8_t index) {
   float span_h = 1;
   if (!get_tile_layout(tile, col, row, span_w, span_h)) return;
 
+  // A popup opened from this tile reopens from the new tile (tiles_reload_layout).
+  const uint16_t visible_popup_tile = grid_type == GridType::TAB0 ? viewNavigationVisiblePopupTile() : 0;
+  const uint16_t reopen_popup_tile = visible_popup_tile == tile.view_id ? visible_popup_tile : 0;
   if (g_tiles_objs[idx][index]) {
     lv_obj_del(g_tiles_objs[idx][index]);
     g_tiles_objs[idx][index] = nullptr;
@@ -2216,6 +2442,7 @@ static void rebuild_tile_at_index(GridType grid_type, uint8_t index) {
   g_tiles_objs[idx][index] = render_tile(g_tiles_grids[idx], col, row, layout_tile, index, grid_type, g_tiles_scene_cbs[idx]);
 
   apply_cached_state_for_index(grid_type, config, index);
+  viewNavigationReopenPopup(reopen_popup_tile);
 }
 
 static void tiles_refresh_icons_for_grid(GridType grid_type) {
@@ -2475,8 +2702,11 @@ bool tiles_open_view_popup(uint16_t view_id) {
     const Tile& tile = grid.tiles[i];
     if (tile.view_id != view_id || !g_tiles_objs[0][i]) continue;
     lv_obj_t* object = g_tiles_objs[0][i];
+    // Media and Camera open on a tap; Weather follows its popup mode like the
+    // other types (types/weather/renderer.cpp), so a long-press Weather tile
+    // gets a long press.
     const lv_event_code_t event =
-        tile.type == TILE_MEDIA || tile.type == TILE_CAMERA || tile.type == TILE_WEATHER ||
+        tile.type == TILE_MEDIA || tile.type == TILE_CAMERA ||
         getTilePopupOpenMode(tile) == TILE_POPUP_OPEN_SHORT_PRESS
             ? LV_EVENT_SHORT_CLICKED : LV_EVENT_LONG_PRESSED;
     // Deliver the same popup-only release gesture as a local user. Switches

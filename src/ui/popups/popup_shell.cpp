@@ -3,8 +3,12 @@
 #include "src/ui/popups/popup_layout.h"
 #include "src/ui/shared/title_label.h"
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/ui/shared/tone_color.h"
+#include "src/ui/shared/ui_pulse.h"
+#include "src/ui/shared/icon_lock_mark.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include <esp_heap_caps.h>
+#include <lvgl_private.h>
 #include <algorithm>
 #include <new>
 #include <cstring>
@@ -31,8 +35,15 @@ struct HeaderDisc {
   bool off = false;
   bool follows_global = false;
   bool glow = true;
+  // The popup shows the tile color "From icon" (header_fill).
+  bool from_icon = false;
+  // The strength of the tile's color "From icon", 0 for another tile color
+  // (header_fill).
+  uint8_t tile_tint = 0;
 };
 HeaderDisc g_next_disc;
+// popup_shell_hold_close_fill: a drag holds the close button's press color.
+bool g_hold_close_fill = false;
 struct Shell {
   HeaderDisc disc;
   lv_obj_t* overlay = nullptr;
@@ -64,6 +75,27 @@ void invalidate_shell() {
   if (lv_obj_get_style_bg_opa(shell.overlay, LV_PART_MAIN) != LV_OPA_TRANSP)
     lv_obj_invalidate(shell.overlay);
   else lv_obj_invalidate(shell.frame);
+}
+
+// LVGL draws dirty areas in the order they were marked. The tapped tile marks
+// itself on release, before its popup opens, so its area was drawn first: the
+// part under the popup showed a flat, popup-colored square until the popup's
+// own area reached it (V2 draws 28-line bands top to bottom; video of b92).
+// Moving the popup area to the front draws the popup first and leaves the
+// tile's area only its release, without drawing more pixels.
+void draw_shell_first() {
+  lv_display_t* display = lv_obj_get_display(shell.frame);
+  if (!display || display->inv_p < 2) return;
+  lv_area_t frame;
+  lv_obj_get_coords(shell.frame, &frame);
+  if (lv_area_is_in(&frame, &display->inv_areas[0], 0)) return;
+  for (uint32_t i = 1; i < display->inv_p; ++i) {
+    if (!lv_area_is_in(&frame, &display->inv_areas[i], 0)) continue;
+    const lv_area_t area = display->inv_areas[i];
+    for (uint32_t j = i; j > 0; --j) display->inv_areas[j] = display->inv_areas[j - 1];
+    display->inv_areas[0] = area;
+    return;
+  }
 }
 
 void draw_popup_background(lv_event_t* event) {
@@ -110,7 +142,49 @@ void create_header(lv_obj_t* parent, lv_obj_t*& title, lv_obj_t*& icon,
   popup_layout::alignHeader(parent, title, icon, disc);
 }
 
+// popup_shell_pulse_icon: opacity 1 -> 0 -> 1 in 1 s (state-control-styles),
+// in step with the popup's control and the tile (ui_pulse.h).
+void icon_pulse_exec(void* obj, int32_t) {
+  lv_obj_set_style_opa(static_cast<lv_obj_t*>(obj), ui_pulse::opa_now(), 0);
+}
+
+void stop_icon_pulse() {
+  if (!shell.icon || !lv_anim_get(shell.icon, icon_pulse_exec)) return;
+  lv_anim_delete(shell.icon, icon_pulse_exec);
+  lv_obj_set_style_opa(shell.icon, LV_OPA_COVER, 0);
+}
+
+// popup_shell_icon_lock: the header icon of a PIN-protected Folder or
+// Settings carries the lock of its tile (icon_lock_mark.h); the rim takes the
+// header disc over the popup card.
+void header_lock_event_cb(lv_event_t* event) {
+  lv_obj_t* icon = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
+  if (lv_event_get_code(event) == LV_EVENT_REFR_EXT_DRAW_SIZE) {
+    icon_lock_mark::ext_draw_size(event, icon);
+    return;
+  }
+  if (lv_event_get_code(event) != LV_EVENT_DRAW_POST || !shell.active) return;
+  const lv_color_t under = lv_obj_get_style_bg_color(shell.active->body, LV_PART_MAIN);
+  icon_lock_mark::draw(lv_event_get_layer(event), icon, icon_lock_mark::behind(shell.icon_disc, under));
+}
+
+void set_header_lock(bool on) {
+  if (!shell.icon) return;
+  bool had = false;
+  while (lv_obj_remove_event_cb(shell.icon, header_lock_event_cb)) had = true;
+  if (!on && !had) return;
+  lv_obj_invalidate(shell.icon);
+  if (on) {
+    lv_obj_add_event_cb(shell.icon, header_lock_event_cb, LV_EVENT_DRAW_POST, nullptr);
+    lv_obj_add_event_cb(shell.icon, header_lock_event_cb, LV_EVENT_REFR_EXT_DRAW_SIZE, nullptr);
+  }
+  lv_obj_refresh_ext_draw_size(shell.icon);
+  lv_obj_invalidate(shell.icon);
+}
+
 void detach() {
+  stop_icon_pulse();
+  set_header_lock(false);
   auto* binding = shell.active;
   shell.active = nullptr;
   if (!binding) return;
@@ -216,7 +290,7 @@ void ensure_shell() {
 }
 
 void copy_label(lv_obj_t* target, lv_obj_t* source, bool title,
-                const lv_font_t* font_override = nullptr) {
+                const lv_font_t* font_override = nullptr, bool copy_color = true) {
   if (!source || lv_obj_has_flag(source, LV_OBJ_FLAG_HIDDEN)) {
     lv_obj_add_flag(target, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -226,44 +300,92 @@ void copy_label(lv_obj_t* target, lv_obj_t* source, bool title,
                                    : lv_obj_get_style_text_font(source, LV_PART_MAIN);
   if (font != lv_obj_get_style_text_font(target, LV_PART_MAIN))
     lv_obj_set_style_text_font(target, font, 0);
+  // Colored icons (weather) draw their layers with recolor commands.
+  if (!title && lv_label_get_recolor(source) != lv_label_get_recolor(target))
+    lv_label_set_recolor(target, lv_label_get_recolor(source));
   const char* text = title ? hometiles_title::text(source) : lv_label_get_text(source);
   const char* current = title ? hometiles_title::text(target) : lv_label_get_text(target);
   if (strcmp(text, current) != 0) {
     if (title) hometiles_title::set(target, text, true);
     else lv_label_set_text(target, text);
   }
+  if (!copy_color) return;
   const auto color = lv_obj_get_style_text_color(source, LV_PART_MAIN);
   if (!lv_color_eq(color, lv_obj_get_style_text_color(target, LV_PART_MAIN)))
     lv_obj_set_style_text_color(target, color, 0);
+}
 
+// The header circle for a card and icon color (tone_color::fill): the icon
+// hue with "Circle in icon color" (or without a tile) when the icon is
+// colored, else neutral.
+tone_color::Fill header_fill(const HeaderDisc& options, uint32_t card, uint32_t rgb) {
+  const uint8_t r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+  const bool tinted = (r != g || g != b) && (!options.from_tile || options.glow);
+  // The circle of the tile color "From icon" like on the tiles
+  // (tile_icon_disc::circle_card): only a popup that shows that tile color
+  // computes it for its own card; every other one for the card "From icon"
+  // gives at the opening tile's strength (its default for another tile
+  // color), exactly the tile's circle.
+  const uint32_t circle_card = tinted && !options.from_icon && tone_color::g_from_icon_card
+                                   ? tone_color::g_from_icon_card(rgb, false, options.tile_tint)
+                                   : card;
+  return tone_color::fill(circle_card, rgb, tinted, ui_surface_style::icon_glow_percent());
+}
+
+// The controls around it (pressed close, footer toggles, pills, arrows,
+// editors, keys) take the circle's color whenever the circle is tinted, in
+// every tile color and popup (user 2026-10-01); else the neutral step.
+tone_color::Fill controls_fill(const HeaderDisc& options, uint32_t card, uint32_t rgb) {
+  return header_fill(options, card, rgb);
+}
+
+void control_fill(const HeaderDisc& options, uint32_t card, uint32_t rgb, lv_color_t& color, lv_opa_t& opa) {
+  const tone_color::Fill fill = controls_fill(options, card, rgb);
+  color = lv_color_hex(fill.control_color);
+  opa = fill.control_opa;
 }
 
 // The header disc looks like the opening tile's disc: shown or hidden by its
-// Icon circle mode, and with "Circle in icon color" a colored icon (binary
-// on, light color, climate mode, ...) tints it; white and grey icons keep the
-// neutral white disc. Same rule and opacities as the tile discs
-// (tile_icon_disc::apply_fill, the global Glow strength, kOpa). Popups
-// opened without a tile tint by a colored icon and always show the disc.
-void apply_header_disc_tint(lv_obj_t* disc, lv_obj_t* icon) {
-  if (!disc || !icon) return;
+// Icon circle mode, tinted like it (header_fill) at the Circle strength.
+// Popups opened without a tile tint by a colored icon and always show the
+// disc. The header icon shows the source icon's color, lighter only where it
+// would be hard to read, like on the tile (tone_color::readable_icon).
+void apply_header_disc_tint(lv_obj_t* disc, lv_obj_t* icon, lv_obj_t* source) {
+  if (!disc || !icon || !source) return;
   const uint32_t rgb =
-      lv_color_to_u32(lv_obj_get_style_text_color(icon, LV_PART_MAIN)) & 0xFFFFFFu;
+      lv_color_to_u32(lv_obj_get_style_text_color(source, LV_PART_MAIN)) & 0xFFFFFFu;
   const uint32_t card = lv_color_to_u32(lv_obj_get_style_bg_color(shell.frame, LV_PART_MAIN)) & 0xFFFFFFu;
-  const uint8_t r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
   const HeaderDisc& options = shell.disc;
-  const bool tinted = (r != g || g != b) && (!options.from_tile || options.glow);
   const bool shown = !options.from_tile ||
                      (!options.off && (!options.follows_global || ui_surface_style::icon_discs_shown()));
-  const lv_color_t color = tinted ? lv_color_hex(rgb) : lv_color_white();
-  const uint8_t step = popup_layout::headerDiscContrastStep(card);
-  const lv_opa_t opa = shown ? static_cast<lv_opa_t>(popup_layout::headerDiscScaledOpa(
-                                   tinted ? ui_surface_style::icon_glow_opa()
-                                          : ui_surface_style::icon_neutral_opa(),
-                                   step))
-                             : LV_OPA_TRANSP;
+  const tone_color::Fill fill = header_fill(options, card, rgb);
+  const lv_color_t color = lv_color_hex(fill.disc_color);
+  const lv_opa_t opa = shown ? fill.disc_opa : static_cast<lv_opa_t>(LV_OPA_TRANSP);
   if (!lv_color_eq(lv_obj_get_style_bg_color(disc, LV_PART_MAIN), color))
     lv_obj_set_style_bg_color(disc, color, 0);
   if (lv_obj_get_style_bg_opa(disc, LV_PART_MAIN) != opa) lv_obj_set_style_bg_opa(disc, opa, 0);
+  const lv_color_t readable =
+      lv_color_hex(tone_color::readable_icon(rgb));
+  if (!lv_color_eq(lv_obj_get_style_text_color(icon, LV_PART_MAIN), readable))
+    lv_obj_set_style_text_color(icon, readable, 0);
+  // The pressed close button has exactly the control color of the popup
+  // (controls_fill, popup_nav_style.h): the same color at rest (transparent),
+  // so the press fades from the card to it, and no theme darkening. Only a
+  // change restyles it, and not during a drag (popup_shell_hold_close_fill).
+  static lv_color_t close_color = lv_color_white();
+  static lv_opa_t close_opa = LV_OPA_20;
+  const tone_color::Fill controls = controls_fill(options, card, rgb);
+  const lv_color_t press = lv_color_hex(controls.control_color);
+  const lv_opa_t press_opa = controls.control_opa;
+  if (shell.close && !g_hold_close_fill && (!lv_color_eq(close_color, press) || close_opa != press_opa)) {
+    close_color = press;
+    close_opa = press_opa;
+    lv_obj_set_style_bg_color(shell.close, press, 0);
+    lv_obj_set_style_bg_color(shell.close, press, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(shell.close, press_opa, LV_STATE_PRESSED);
+    lv_obj_set_style_color_filter_opa(shell.close, LV_OPA_TRANSP, LV_STATE_PRESSED);
+    lv_obj_set_style_recolor_opa(shell.close, LV_OPA_TRANSP, LV_STATE_PRESSED);
+  }
   // The card hairline is the plain lighter tile border. It never follows the
   // icon color: a hairline change redraws the whole popup, and a Light popup
   // changes its icon color on every step of a dragged color or Kelvin value.
@@ -378,6 +500,12 @@ void show_popup_shell(lv_obj_t* owner, lv_obj_t* body, lv_obj_t* title,
                        lv_obj_get_style_height(body, LV_PART_MAIN));
       lv_obj_center(object);
       lv_obj_set_style_pad_all(object, lv_obj_get_style_pad_top(body, LV_PART_MAIN), 0);
+      // Apply a new size now, while invalidation is off. Left to the next
+      // layout pass, a switch from the full-screen Settings card to a tile
+      // popup repainted the whole old area (every tile behind it, ~100 ms on
+      // P4) although the hidden shell had already left it.
+      lv_obj_refr_size(object);
+      lv_obj_refr_pos(object);
     }
     lv_obj_set_style_border_width(shell.header, binding->border_width, 0);
     lv_obj_set_style_border_opa(shell.header, LV_OPA_TRANSP, 0);
@@ -392,26 +520,72 @@ void show_popup_shell(lv_obj_t* owner, lv_obj_t* body, lv_obj_t* title,
     sync_popup_shell();
   }
   invalidate_shell();
+  draw_shell_first();
 }
 
 bool popup_shell_active() { return shell.active != nullptr; }
 
-void popup_shell_use_tile_disc(bool off, bool follows_global, bool glow) {
+void popup_shell_pulse_icon(lv_obj_t* body, bool on) {
+  if (!shell.active || shell.active->body != body || !shell.icon) return;
+  if (!on) {
+    stop_icon_pulse();
+    return;
+  }
+  // A refresh keeps a running pulse instead of restarting it.
+  if (lv_anim_get(shell.icon, icon_pulse_exec)) return;
+  ui_pulse::start(shell.icon, icon_pulse_exec);
+}
+
+void popup_shell_icon_lock(lv_obj_t* body, bool on) {
+  if (!shell.active || shell.active->body != body) return;
+  set_header_lock(on);
+}
+
+void popup_shell_hold_close_fill(bool hold) { g_hold_close_fill = hold; }
+
+void popup_shell_use_tile_disc(bool off, bool follows_global, bool glow, bool from_icon, uint8_t tile_tint) {
   g_next_disc.from_tile = true;
   g_next_disc.off = off;
   g_next_disc.follows_global = follows_global;
   g_next_disc.glow = glow;
+  g_next_disc.from_icon = from_icon;
+  g_next_disc.tile_tint = tile_tint;
+}
+
+void popup_shell_use_no_tile_disc() { g_next_disc = {}; }
+
+void popup_shell_control_fill(uint32_t card_rgb, uint32_t icon_rgb, lv_color_t& color, lv_opa_t& opa,
+                              bool* tinted) {
+  // A popup styles its controls before show_popup_shell() takes the options.
+  const HeaderDisc& options = g_next_disc.from_tile ? g_next_disc : shell.disc;
+  control_fill(options, card_rgb & 0xFFFFFFu, icon_rgb & 0xFFFFFFu, color, opa);
+  if (tinted) *tinted = controls_fill(options, card_rgb & 0xFFFFFFu, icon_rgb & 0xFFFFFFu).tinted;
+}
+
+void popup_shell_control_raised_fill(uint32_t card_rgb, uint32_t icon_rgb, lv_color_t& color, lv_opa_t& opa) {
+  const HeaderDisc& options = g_next_disc.from_tile ? g_next_disc : shell.disc;
+  const tone_color::Fill fill = controls_fill(options, card_rgb & 0xFFFFFFu, icon_rgb & 0xFFFFFFu);
+  color = lv_color_hex(fill.raised_color);
+  opa = fill.control_opa;
 }
 
 void popup_shell_follow_tile_color(uint32_t color) {
   if (!shell.active || !shell.active->body) return;
   const lv_color_t value = lv_color_hex(color);
-  if (!lv_color_eq(lv_obj_get_style_bg_color(shell.active->body, LV_PART_MAIN), value))
-    lv_obj_set_style_bg_color(shell.active->body, value, 0);
+  if (lv_color_eq(lv_obj_get_style_bg_color(shell.active->body, LV_PART_MAIN), value)) return;
+  lv_obj_set_style_bg_color(shell.active->body, value, 0);
+  // The tile behind the popup was recolored and marked first, and the frame
+  // takes the color only on the next sync. Drawn in that order, the tile's
+  // part under the popup showed a flat square in the new color until the
+  // popup's bands reached it (V2 video, cover change). As on opening, the
+  // frame is marked now and drawn first.
+  lv_obj_invalidate(shell.frame);
+  draw_shell_first();
 }
 
 void hide_popup_shell(lv_obj_t* body) {
   if (!shell.active || shell.active->body != body) return;
+  g_hold_close_fill = false;
   invalidate_shell();
   SceneChange change;
   detach();
@@ -430,8 +604,8 @@ void sync_popup_shell() {
   copy_label(shell.title, shell.active->title, true,
              with_value ? popup_layout::headerCompactTitleFont() : nullptr);
   set_title_single_line(shell.title, with_value);
-  copy_label(shell.icon, shell.active->icon, false);
-  apply_header_disc_tint(shell.icon_disc, shell.icon);
+  copy_label(shell.icon, shell.active->icon, false, nullptr, false);
+  apply_header_disc_tint(shell.icon_disc, shell.icon, shell.active->icon);
   // The disc appears only behind a visible header icon.
   lv_obj_set_flag(shell.icon_disc, LV_OBJ_FLAG_HIDDEN,
                   lv_obj_has_flag(shell.icon, LV_OBJ_FLAG_HIDDEN) ||

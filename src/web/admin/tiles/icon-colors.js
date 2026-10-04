@@ -17,17 +17,20 @@
   // (tileTypeHasFixedIconColorOnly / tileTypeRulesUseOwnEntity in
   // tile_type_policy.h).
   const ICON_COLOR_FIXED_TYPES = ['2', '4', '8', '9', '10', '18'];
-  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23'];
+  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23', '24', '25', '26'];
   // The own entity field of each type (pairs, not an object with numeric keys).
   const ICON_COLOR_ENTITY_FIELDS = [['1', '_sensor_entity'], ['5', '_switch_entity'], ['12', '_weather_entity'],
     ['14', '_energy_entity'], ['15', '_media_entity'], ['17', '_climate_entity'], ['19', '_cover_entity'],
-    ['20', '_binary_sensor_entity'], ['21', '_number_entity'], ['22', '_select_entity'], ['23', '_datetime_entity']];
+    ['20', '_binary_sensor_entity'], ['21', '_number_entity'], ['22', '_select_entity'], ['23', '_datetime_entity'],
+    ['24', '_lock_entity'], ['25', '_alarm_entity'], ['26', '_fan_entity']];
   // Domains shown by the Switch tile (tile_icon_source.cpp switch_domain).
   const ICON_COLOR_SWITCH_DOMAINS = ['light', 'switch', 'input_boolean', 'automation', 'fan',
     'humidifier', 'remote', 'siren'];
   const ICON_COLOR_TYPES = ICON_COLOR_OWN_TYPES.concat(ICON_COLOR_FIXED_TYPES);
   const ICON_COLOR_BAR_TYPES = ['1', '14', '21'];
   const ICON_COLOR_ROW_TYPES = ['1', '20', '22', '23'];
+  // Media: icon color and tile color "From cover" (the "cover" line).
+  const ICON_COLOR_MEDIA_TYPE = '15';
   const ICON_COLOR_MAX_STOPS = 6;
   const ICON_COLOR_MAX_ROWS = 6;
   const ICON_COLOR_MAX_VALUE_BYTES = 32;
@@ -321,7 +324,8 @@
 
   // normalize(): any record (editor, import, b39) in the canonical v2 form;
   // numeric types keep only the bar, text types only the state lines.
-  function normalizeIconColorRecord(record, allowBar, allowRows, allowSource = false, allowSelf = false) {
+  function normalizeIconColorRecord(record, allowBar, allowRows, allowSource = false, allowSelf = false,
+    allowCover = false) {
     const text = String(record ?? '');
     const v2 = iconColorIsV2(text);
     let source = allowSource ? iconColorRecordSource(text) : null;
@@ -352,6 +356,9 @@
     let out = 'v2\n' + (fixed === null ? '' : iconColorHex(fixed));
     const fill = v2 ? iconColorFillOf(body) : 0;
     if (fill) out += '\nfill ' + fill;
+    const cover = allowCover && v2 ? iconColorCoverOf(body) : { icon: false, tile: 0 };
+    const hasCover = cover.icon || cover.tile > 0;
+    if (hasCover) out += '\ncover' + (cover.icon ? ' icon' : '') + (cover.tile ? ' tile=' + cover.tile : '');
     if (emitLayer) {
       out += '\nsrc ' + source.mode + ' ' + (source.self ? 'self' : source.entity) +
         (source.tile ? ' tile=' + source.tile : '') + (source.icon ? '' : ' noicon') + (source.enabled ? '' : ' off');
@@ -365,7 +372,7 @@
       let legacyRules = 0;
       for (const line of body) {
         if (rows >= ICON_COLOR_MAX_ROWS) break;
-        if (v2 && (line.startsWith('bar ') || line.startsWith('src '))) continue;
+        if (v2 && (line.startsWith('bar ') || line.startsWith('src ') || line.startsWith('cover'))) continue;
         const rule = iconColorParseRule(line);
         if (!rule) continue;
         const textRule = rule.op === 'is' || rule.op === 'has';
@@ -385,7 +392,7 @@
         rows++;
       }
     }
-    return fixed === null && !fill && !emitLayer && !bar && rows === 0 ? '' : out;
+    return fixed === null && !fill && !hasCover && !emitLayer && !bar && rows === 0 ? '' : out;
   }
 
   // tile_icon_colors::fill_of(): the "fill NN" tint of the fixed color in
@@ -398,9 +405,26 @@
     return Math.min(50, Math.max(10, Number(text)));
   }
 
+  // tile_icon_colors::cover_of(): "From cover" of a Media tile, the first
+  // "cover [icon] [tile=NN]" line; an unknown token makes it invalid.
+  function iconColorCoverOf(lines) {
+    const none = { icon: false, tile: 0 };
+    const line = lines.find(candidate => candidate.startsWith('cover'));
+    if (line === undefined) return none;
+    const tokens = line.split(/[ \t\r]+/).filter(Boolean);
+    if (tokens[0] !== 'cover') return none;
+    const out = { icon: false, tile: 0 };
+    for (const token of tokens.slice(1)) {
+      if (token === 'icon') out.icon = true;
+      else if (/^tile=[0-9]{1,2}$/.test(token)) out.tile = Math.min(50, Math.max(10, Number(token.slice(5))));
+      else return none;
+    }
+    return out;
+  }
+
   // Editor view of a record: fixed color, bar and state rows.
   function parseIconColorRecord(record) {
-    const lines = normalizeIconColorRecord(record, true, true, true, true).split('\n');
+    const lines = normalizeIconColorRecord(record, true, true, true, true, true).split('\n');
     const fixed = iconColorParseHex(lines[1] ?? '');
     let bar = null;
     const rows = [];
@@ -410,7 +434,8 @@
       if (rule) rows.push({ has: rule.op === 'has', color: '#' + iconColorHex(rule.color), value: rule.value });
     }
     return { color: fixed === null ? '' : '#' + iconColorHex(fixed), bar, rows,
-      fill: iconColorFillOf(lines.slice(2)), source: iconColorRecordSource(lines.join('\n')) };
+      fill: iconColorFillOf(lines.slice(2)), cover: iconColorCoverOf(lines.slice(2)),
+      source: iconColorRecordSource(lines.join('\n')) };
   }
 
   // ---- Source entity (icon-and-title tiles), mirrors tile_icon_source.cpp ----
@@ -575,6 +600,16 @@
     let out = from.map((v, i) => Math.floor((v * (100 - percent) + to[i] * percent + 50) / 100));
     for (let i = 0; i < 40 && contrast(out) < 4.5; i++) out = out.map(v => Math.floor((v * 95 + 50) / 100));
     return '#' + out.map(v => v.toString(16).toUpperCase().padStart(2, '0')).join('');
+  }
+  // Tints a preview card from the global tile color. A screensaver card keeps
+  // its own opacity (data-bg-opacity): the panel sets bg_opa after the tint
+  // (image_screensaver build_slot_tile); the opaque tint hid the wallpaper
+  // in the preview (user 2026-10-02).
+  function setTileTintBackground(el, color, percent) {
+    const base = String(getComputedStyle(document.documentElement).getPropertyValue('--tile-default-bg') || '').trim();
+    const hex = tileTintBackground(base || '#1A1A1A', color, percent);
+    const opacity = el.dataset.bgOpacity;
+    el.style.background = opacity === undefined ? hex : hex + Number(opacity).toString(16).padStart(2, '0');
   }
 
   // Entities offered as a source: the states the Bridge publishes to tiles.
@@ -830,10 +865,18 @@
   function collectIconColorRecord(tab) {
     const type = iconColorTypeOf(tab);
     const input = iconColorEl(tab, '_tile_icon_color');
-    const fixed = input && input.dataset.unset !== '1' ? normalizeIconColorHex(input.value).slice(1) : '';
+    // Media "From cover": the icon takes the cover color instead of its own.
+    const media = type === ICON_COLOR_MEDIA_TYPE;
+    const coverIcon = media && !!iconColorEl(tab, '_tile_icon_cover')?.checked;
+    const coverTile = media && !!iconColorEl(tab, '_tile_cover_fill')?.checked;
+    const fixed = input && input.dataset.unset !== '1' && !coverIcon ? normalizeIconColorHex(input.value).slice(1) : '';
     const lines = ['v2', fixed];
     if (iconColorEl(tab, '_tile_icon_fill')?.checked) {
       lines.push('fill ' + (iconColorEl(tab, '_tile_icon_fill_strength')?.value || '20'));
+    }
+    if (coverIcon || coverTile) {
+      lines.push('cover' + (coverIcon ? ' icon' : '') +
+        (coverTile ? ' tile=' + (iconColorEl(tab, '_tile_icon_fill_strength')?.value || '20') : ''));
     }
     const layer = ICON_COLOR_TYPES.includes(type) ? readIconColorSource(tab) : null;
     const bar = readIconColorBar(tab);
@@ -861,7 +904,7 @@
         (layer.tile ? ' tile=' + layer.tile : '') + (layer.icon ? '' : ' noicon') + (layer.enabled ? '' : ' off'));
     }
     return normalizeIconColorRecord(lines.join('\n'), ICON_COLOR_BAR_TYPES.includes(type),
-      ICON_COLOR_ROW_TYPES.includes(type), true, ICON_COLOR_OWN_TYPES.includes(type));
+      ICON_COLOR_ROW_TYPES.includes(type), true, ICON_COLOR_OWN_TYPES.includes(type), media);
   }
 
   // States can be numbers or text: the current state picks the bar or the
@@ -891,6 +934,18 @@
     if (typeof syncTileColorMode === 'function') syncTileColorMode(tab);
     block.classList.toggle('hidden', !visible);
     iconColorEl(tab, '_tile_icon_color_fixed')?.classList.toggle('hidden', !visible);
+    // Media offers the icon color "From cover" next to its own color.
+    const media = type === ICON_COLOR_MEDIA_TYPE;
+    const coverIconBox = iconColorEl(tab, '_tile_icon_cover');
+    if (coverIconBox && !media) coverIconBox.checked = false;
+    const coverIcon = media && !!coverIconBox?.checked;
+    iconColorEl(tab, '_tile_icon_color_modes')?.classList.toggle('hidden', !media);
+    iconColorEl(tab, '_tile_icon_color_row')?.classList.toggle('hidden', coverIcon);
+    iconColorEl(tab, '_tile_icon_color_modes')?.querySelectorAll('[data-icon-color="icon-color-mode"]').forEach(button => {
+      const active = button.dataset.mode === (coverIcon ? 'cover' : 'own');
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
     if (!visible) return;
     const own = ICON_COLOR_OWN_TYPES.includes(type);
     const kindInput = iconColorEl(tab, '_tile_icon_source_kind');
@@ -965,8 +1020,13 @@
     setIconColorInput(tab, parsed.color);
     const fill = iconColorEl(tab, '_tile_icon_fill');
     if (fill) fill.checked = parsed.fill > 0;
+    const media = type === ICON_COLOR_MEDIA_TYPE;
+    const coverIcon = iconColorEl(tab, '_tile_icon_cover');
+    if (coverIcon) coverIcon.checked = media && parsed.cover.icon;
+    const coverFill = iconColorEl(tab, '_tile_cover_fill');
+    if (coverFill) coverFill.checked = media && parsed.cover.tile > 0 && !parsed.fill;
     const fillStrength = iconColorEl(tab, '_tile_icon_fill_strength');
-    if (fillStrength) fillStrength.value = String(parsed.fill || 20);
+    if (fillStrength) fillStrength.value = String(parsed.fill || (media && parsed.cover.tile) || 20);
     const barInput = iconColorEl(tab, '_tile_icon_bar');
     if (barInput) barInput.dataset.last = '';
     writeIconColorBar(tab, parsed.bar ? parsed.bar.mode : 'off', parsed.bar ? parsed.bar.stops : []);
@@ -1092,6 +1152,9 @@
     }
     if (role === 'clear') {
       setIconColorInput(tab, '');
+    } else if (role === 'icon-color-mode') {
+      const cover = iconColorEl(tab, '_tile_icon_cover');
+      if (cover) cover.checked = button.dataset.mode === 'cover';
     } else if (role === 'source-mode') {
       const mode = iconColorEl(tab, '_tile_icon_source_mode');
       if (mode) mode.value = button.dataset.mode === 'rules' ? 'rules' : 'auto';

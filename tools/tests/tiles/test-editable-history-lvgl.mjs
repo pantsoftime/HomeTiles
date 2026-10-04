@@ -46,6 +46,9 @@ void hide_popup_shell(lv_obj_t*){}
 lv_obj_t* header_value_source=nullptr;
 void show_popup_shell(lv_obj_t*,lv_obj_t*,lv_obj_t*,lv_obj_t*,lv_obj_t*,void(*)()=nullptr,lv_obj_t* value=nullptr){header_value_source=value;}
 #include "src/ui/shared/title_label.h"
+#include "src/ui/popups/popup_nav_style.h"
+void popup_shell_control_fill(uint32_t,uint32_t,lv_color_t&c,lv_opa_t&o,bool*t){c=lv_color_white();o=40;if(t)*t=false;}
+void popup_shell_control_raised_fill(uint32_t,uint32_t,lv_color_t&c,lv_opa_t&o){c=lv_color_white();o=80;}
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -102,6 +105,7 @@ constexpr int kTimeAxisHeight=24;
 constexpr int kTimeAxisHeight=20;
 #endif
 constexpr size_t kBinaryMaxActivityEntries=96,kBinaryMaxSegments=96,kBinaryMaxTimelineBins=768,kStateHistoryMaxPaletteEntries=16;
+#include "src/core/memory/psram_allocator.h"
 struct EditableControl;
 ${popup.match(/struct HistoryRangeConfig \{[\s\S]*?\n};/)[0]}
 ${popup.match(/struct SensorPopupContext \{[\s\S]*?\n};/)[0]}
@@ -120,11 +124,11 @@ bool readout_12h=false;
 bool readout_twelve_hour(){return readout_12h;}
 char readout_decimal_separator(){return '.';}
 const char* get_weekday_abbrev(uint8_t day){static const char* names[]={"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};return names[day%7];}
-void editable_control_close(EditableControl*){}void editable_control_open(EditableControl*,const String&){}
+void editable_control_close(EditableControl*){}void editable_control_open(EditableControl*,const String&){}void editable_control_follow_colors(EditableControl*){}
 bool isMdiIconDisabled(const String&){return false;}String getMdiChar(const String&){return "";}
 
 void update_binary_state(SensorPopupContext*,const String&,bool,const String&,uint64_t,const String&){assert(false);}
-void hide_pin_popup(){}void hide_camera_popup(){}void hide_climate_popup(){}void hide_cover_popup(){}void hide_light_popup(){}void hide_weather_popup(){}void hide_energy_popup(){}void hide_media_popup(){}
+void hide_pin_popup(){}void hide_camera_popup(){}void hide_climate_popup(){}void hide_cover_popup(){}void hide_light_popup(){}void hide_weather_popup(){}void hide_energy_popup(){}void hide_media_popup(){}void hide_device_popup(){}
 void viewNavigationPopupShown(lv_obj_t*,const char*){}
 HistoryRangeConfig get_history_range_config(SensorHistoryRange r){return r==SensorHistoryRange::Day7?HistoryRangeConfig{168,35,288}:HistoryRangeConfig{24,5,288};}
 ${fn(control, 'editable_control_height')}
@@ -413,7 +417,7 @@ const selection=read('src/devices/device_select.h');
 for(const device of deviceCatalog.profiles){
  const dir=`src/devices/${device.metadataDeviceKey}`;
  const header=fs.existsSync(path.join(root,dir,'profile.h'))?`${dir}/profile.h`:`${dir}/device_${device.metadataDeviceKey}.h`;
- const dimensions=read(header).match(/kProfile\s*\{\s*"[^"]*",\s*"[^"]*",\s*(\d+),\s*(\d+),/);
+ const dimensions=read(header).match(/kProfile\s*\{\s*"[^"]*",\s*(?:"[^"]*"|\w+),\s*(\d+),\s*(\d+),/);
  assert(dimensions,`${device.buildProfile}: profile dimensions must be checked`);
  const define=['DEVICE_LAYOUT_480X480','DEVICE_LAYOUT_1024X600'].find(name=>{
   const end=selection.indexOf(`#define ${name}\n`);

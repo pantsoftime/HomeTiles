@@ -194,21 +194,10 @@ constexpr int kCloseButtonClickArea = 8;
 constexpr int kHeaderIconDiscSize = scale(72);
 constexpr int kHeaderIconDiscGap = scale(16);
 constexpr int kHeaderIconDiscOpa = 38;
-// A colored header icon tints its disc like tile glow, with the global Glow
-// strength (ui_surface_style::icon_glow_opa, scaled). The card hairline is
-// the plain white 20 % tile border.
+// A colored header icon tints its disc like the tile's circle
+// (tone_color::fill, popup_shell.cpp header_fill). The card hairline is the
+// plain white 20 % tile border.
 constexpr int kPopupBorderOpa = 51;
-// Same contrast rule as tile_icon_disc::contrast_step_for/scaled_opa: the disc
-// is subtler on dark cards (8 % instead of 15 % at luma <= 0.08).
-inline uint8_t headerDiscContrastStep(uint32_t rgb) {
-  const float luma = (0.2126f * ((rgb >> 16) & 0xFF) + 0.7152f * ((rgb >> 8) & 0xFF) +
-                      0.0722f * (rgb & 0xFF)) / 255.0f;
-  float t = (luma - 0.08f) / 0.17f;
-  if (t < 0.0f) t = 0.0f;
-  if (t > 1.0f) t = 1.0f;
-  return static_cast<uint8_t>(t * 3.0f + 0.5f);
-}
-inline int headerDiscScaledOpa(int full, uint8_t step) { return (full * (24 + 7 * step) + 22) / 45; }
 constexpr int kHeaderIconX = 0;
 constexpr int kHeaderTitleX = kHeaderIconDiscSize + kHeaderIconDiscGap;
 
@@ -224,6 +213,17 @@ constexpr int kCardWidth =
         ? (SCREEN_HEIGHT - (kCardMargin * 2))
         : (SCREEN_WIDTH - (kCardMargin * 2));
 constexpr int kCardHeight = SCREEN_HEIGHT - (kCardMargin * 2);
+// PIN keypad keys at most this share of the card height, per mille. On the
+// panels of 7 inches and more (1024x600 7", 1280x800 8" and 10.1") filling
+// the card would make them physically about twice the size of the 4" and 5"
+// boards, which fill the space (Tab5 included, 1280x720 at 5").
+#if defined(DEVICE_LAYOUT_1024X600) || defined(DEVICE_WAVESHARE_TOUCH_LCD_8) || \
+    defined(DEVICE_WAVESHARE_TOUCH_LCD_10_1) || defined(DEVICE_GUITION_JC8012P4A1) || \
+    defined(DEVICE_GUITION_JC8012P4A1_V2)
+constexpr int kKeypadKeyMaxPermille = 125;
+#else
+constexpr int kKeypadKeyMaxPermille = 1000;
+#endif
 constexpr int kCardPad = scale(20);
 constexpr int kContentWidth = kCardWidth - (kCardPad * 2);
 

@@ -29,16 +29,39 @@ for (const [label, source] of [
   if (source.includes('DEVICE_WAVESHARE_TOUCH_LCD_8')) {
     throw new Error(`${label} still limits the shared P4 cache to Waveshare 8`);
   }
+}
+for (const [label, source] of [
+  ['renderer', renderer],
+  ['folder cache', folders],
+]) {
   requireMarker(source, 'CONFIG_IDF_TARGET_ESP32P4', label);
 }
 
+// Weather/Media widget state and the entity cache live in PSRAM on every chip.
+if (rendererShared.includes('CONFIG_IDF_TARGET_ESP32P4')) {
+  throw new Error('renderer shared declarations must not split Weather/Media storage by chip');
+}
+requireMarker(rendererShared, 'extern WeatherTileWidgets* g_tab0_weather;', 'renderer shared declarations');
+requireMarker(rendererShared, 'extern MediaTileWidgets* g_screensaver_media;', 'renderer shared declarations');
 requireMarker(
   rendererHeader,
-  'On ESP32-P4 these\n// live in PSRAM; non-P4 profiles keep their established static storage.',
+  'PSRAM. Every chip uses this storage',
   'renderer storage contract');
+if (/static EntityCacheEntry g_entity_cache\[/.test(folders) ||
+    !folders.includes('static EntityCacheEntry* g_entity_cache = nullptr;')) {
+  throw new Error('the entity cache must use PSRAM on every chip');
+}
 
 if (!/#if defined\(CONFIG_IDF_TARGET_ESP32P4\)[\s\S]*?kMaxResidentFolderUiCaches = 6;[\s\S]*?#else[\s\S]*?kMaxResidentFolderUiCaches = 4;/.test(folders)) {
   throw new Error('P4 must use six folder-cache slots and non-P4 must retain four');
+}
+
+// S3 (b85/b88 logs): a folder grid costs 1-2 KB internal RAM, 40-48 KB stay
+// free at runtime and the largest free block is 20 KB, so the fourth grid
+// must be admissible there.
+const s3Floor = /kFolderCacheGrowMinInternalFreeBytes = (\d+)UL \* 1024UL;[\s\S]*?kFolderCacheGrowMinLargestInternalBytes = (\d+)UL \* 1024UL;/.exec(folders);
+if (!s3Floor || Number(s3Floor[1]) > 40 || Number(s3Floor[2]) > 20) {
+  throw new Error('the S3 folder cache must be able to grow at 40 KB free internal RAM and a 20 KB block');
 }
 
 const p4Profiles = [

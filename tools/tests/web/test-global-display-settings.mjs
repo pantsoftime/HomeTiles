@@ -31,8 +31,8 @@ assert.equal((config.match(/config\.icon_discs = true;/g) || []).length, 2, 'Bot
 // Endpoints only set flags; the UI loop applies the change.
 const handlers = read('src/web/server/handlers/web_admin_handlers.cpp');
 const routes = read('src/web/server/web_admin.cpp');
-assert.match(routes, /"\/api\/display\/icon-discs", HTTP_POST,\s*withStorageHold\(\[this\]\(\) \{ this->handleSaveIconDiscs\(\); \}\)/);
-assert.match(routes, /"\/api\/display\/tile-color", HTTP_POST,\s*withStorageHold\(\[this\]\(\) \{ this->handleSaveDefaultTileColor\(\); \}\)/);
+assert.match(routes, /"\/api\/display\/icon-discs", HTTP_POST,\s*(?:guarded\()?withStorageHold\(\[this\]\(\) \{ this->handleSaveIconDiscs\(\); \}\)/);
+assert.match(routes, /"\/api\/display\/tile-color", HTTP_POST,\s*(?:guarded\()?withStorageHold\(\[this\]\(\) \{ this->handleSaveDefaultTileColor\(\); \}\)/);
 const discHandler = handlers.slice(handlers.indexOf('void WebAdminServer::handleSaveIconDiscs()'));
 assert.match(discHandler.slice(0, discHandler.indexOf('\n}\n')), /configManager\.saveIconDiscs\(enabled\)[\s\S]*ui_surface_style::request_icon_disc_refresh\(\);/);
 const colorHandler = handlers.slice(handlers.indexOf('void WebAdminServer::handleSaveDefaultTileColor()'));
@@ -45,9 +45,9 @@ assert.doesNotMatch(colorBody + discHandler.slice(0, discHandler.indexOf('\n}\n'
 // Device: discs use one shared opacity style that follows the option, so
 // cached and hidden grids update without a rebuild.
 const surface = read('src/ui/shared/ui_surface_style.cpp');
-assert.match(surface, /if \(follows_global && !configManager\.getConfig\(\)\.icon_discs\) return LV_OPA_TRANSP;/);
+assert.match(surface, /if \(mode == kIconDiscGlobalKey && !configManager\.getConfig\(\)\.icon_discs\) return LV_OPA_TRANSP;/);
 assert.match(surface, /g_icon_disc_refresh_pending\.exchange\(false\)[\s\S]*lv_obj_report_style_change\(&entry\.style\);/);
-assert.ok(read('src/tiles/runtime/tile_icon_disc.h').includes('ui_surface_style::apply_icon_disc(disc, false, 3, false, true);'));
+assert.ok(read('src/tiles/runtime/tile_icon_disc.h').includes('ui_surface_style::apply_icon_disc(disc, false, true);'));
 
 // Device: every tile without its own color uses the global default color.
 assert.match(read('src/tiles/config/tile_config.cpp'), /uint32_t tileDefaultBgColor\(\) \{\s*return tile_color::normalize\(configManager\.getConfig\(\)\.default_tile_color\);/);
@@ -147,11 +147,12 @@ assert.doesNotMatch(css, /global-settings-rows|global-settings-label|global-sett
 // neutral hairline), and previewed live through --icon-glow-pct.
 const glow = read('src/core/config/icon_glow.h');
 for (const marker of ['inline constexpr uint8_t kMinimum = 0;', 'inline constexpr uint8_t kMaximum = 100;',
-  'return static_cast<uint8_t>((kNeutralOpa * clamp(percent) + kDefault / 2) / kDefault);',
-  'inline constexpr uint8_t kStep = 5;', 'inline constexpr uint8_t kDefault = 25;',
-  'return static_cast<uint8_t>((percent * 255 + 50) / 100);',
-  'inline uint8_t disc_opa(int percent) { return to_opa(clamp(percent)); }'])
+  'inline constexpr uint8_t kStep = 5;', 'inline constexpr uint8_t kDefault = 25;'])
   assert.ok(glow.includes(marker), `icon_glow.h: ${marker}`);
+// The percent sets the circle step; circles are opaque, only see-through
+// screensaver tiles keep the percent as a veil opacity (tone_color.h).
+assert.ok(read('src/ui/shared/tone_color.h').includes('if (!see_through) return percent ? 255 : 0;'));
+assert.ok(read('src/ui/shared/tone_color.h').includes('return static_cast<uint8_t>((percent * 255 + 50) / 100);'));
 assert.doesNotMatch(glow, /kBorderExtra|border_opa/, 'Borders take no glow');
 const configCpp = read('src/core/config/config_manager.cpp');
 for (const marker of ['config.icon_glow = icon_glow::clamp(prefs.getUChar("icon_glow", icon_glow::kDefault));',
@@ -163,7 +164,7 @@ const glowHandlers = read('src/web/server/handlers/web_admin_handlers.cpp');
 assert.match(glowHandlers, /void WebAdminServer::handleSaveIconGlow\(\) \{[\s\S]*?percent < icon_glow::kMinimum \|\| percent > icon_glow::kMaximum[\s\S]*?tiles_request_reload_all\(\);/);
 assert.ok(read('src/web/server/web_admin.cpp').includes('server.on("/api/display/icon-glow", HTTP_POST,'));
 const glowSurface = read('src/ui/shared/ui_surface_style.cpp');
-assert.ok(glowSurface.includes('return icon_glow::disc_opa(configManager.getConfig().icon_glow);'));
+assert.ok(glowSurface.includes('return tone_color::disc_opa(icon_glow_percent(), key >= kIconDiscModes);'));
 assert.ok(!glowSurface.includes('icon_glow_border_opa'), 'No glow border opacity');
 const toOpa = p => Math.floor((p * 255 + 50) / 100);
 assert.deepEqual([toOpa(25), toOpa(45), toOpa(10), toOpa(80)], [64, 115, 26, 204], 'Default glow is minimally stronger (20 -> 25 %)');
@@ -174,9 +175,10 @@ for (const marker of ["document.documentElement.style.setProperty('--icon-glow-p
   "tabEl.querySelectorAll('.global-icon-glow').forEach(input => { input.value = String(glow); });"])
   assert.ok(displayJs.includes(marker), `display JS: ${marker}`);
 const glowTint = read('src/web/admin/tiles/grid-preview.js');
-assert.ok(glowTint.includes("const glowOpa = Math.floor((glowPct * 255 + 50) / 100);") &&
+assert.ok(glowTint.includes("return { discColor: disc, controlColor: control, discOpa: percent ? 255 : 0, controlOpa: 255, disc, control, tinted };") &&
+  glowTint.includes('const discOpa = Math.floor((percent * 255 + 50) / 100);') &&
   !glowTint.includes('glowBorderOpa'), 'Preview uses the device formula');
-assert.ok(read('src/web/server/render/web_admin_styles.cpp').includes('html += "%;--icon-glow-pct:";'));
+assert.ok(read('src/web/server/render/web_admin_styles.cpp').includes('html += "--icon-glow-pct:";'));
 
 // A stored built-in default grey (older editors saved it explicitly) follows
 // the global default tile color like an unset color, on the device and in
@@ -202,7 +204,7 @@ for (const value of [0, 0x012A2A2A, 0x01222222, 0x011A1A1A, 0x01353535, 0x010000
 // marker), picking a color selects Custom. The behavior runs in
 // test-tile-color-choice.mjs.
 for (const marker of [
-  '<div class="tile-color-row no-reset)html";',
+  '<div class="tile-color-row no-reset" id=")html";',
   '_tile_color_modes">)html";',
   '{{"global", tr.tile_color_mode_global},',
   'html += R"html(" onclick="setTileColorMode(\')html";',
@@ -225,8 +227,12 @@ assert.ok(i18n.includes('"Tile color",') && i18n.includes('"Kachelfarbe",') && i
 assert.ok(gridPreview.includes('const isDefaultBg = tileBgFollowsDefault(tile.bg_color);'));
 assert.ok(gridPreview.includes("input.dataset.bgColorDefault === '1' || tileColorHexIsDefaultGrey(input.value)"));
 assert.ok(read('src/web/admin/settings/access.js').includes(': tileBgFollowsDefault(bgValue);'));
-assert.match(read('src/web/admin/tiles/live-preview.js'),
-  /const isDefaultBg = tileColorInputIsDefault\(tab\);\s*if \(isDefaultBg\) \{[\s\S]*?colorInput\.dataset\.bgColorDefault = '1';/,
-  'The live preview decides before replacing the input with the global color');
+// The live preview paints a default grey with the global color, but only the
+// Tile color buttons change the choice (a just selected Custom keeps it).
+const livePreview = read('src/web/admin/tiles/live-preview.js');
+assert.match(livePreview,
+  /const isDefaultBg = tileColorInputIsDefault\(tab\);\s*const colorInput = document\.getElementById\(prefix \+ '_tile_color'\);\s*if \(colorInput\?\.dataset\.bgColorDefault === '1'\) colorInput\.value = defaultBg;/,
+  'The live preview keeps a Global input on the global color');
+assert.doesNotMatch(livePreview, /bgColorDefault = '1'/, 'The live preview never switches Custom back to Global');
 
 console.log('Global icon discs and default tile color: config, endpoints, live apply, translations and preview pass');

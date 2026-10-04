@@ -109,7 +109,7 @@
       .map(button => {
         const folderId = Number(button.dataset.folderId);
         if (!Number.isInteger(folderId) || folderId <= 0) return null;
-        const buttonLabel = button.querySelector('span')?.textContent || '';
+        const buttonLabel = button.querySelector('.tab-label')?.textContent || '';
         return {
           value: String(folderId),
           label: String(button.dataset.folderName || buttonLabel ||
@@ -157,12 +157,8 @@
       buttonTpl.innerHTML = String(data.button_html || '').trim();
       buttonEl = buttonTpl.content.firstElementChild;
       if (!buttonEl) return false;
-      const navButtons = Array.from(nav.querySelectorAll('.tab-btn'));
-      const fixedBtn = navButtons.find(
-        btn => btn.dataset.tabTarget === 'tab-tiles-screensaver') ||
-        navButtons.find(btn => btn.dataset.tabTarget === 'tab-network');
-      if (fixedBtn) nav.insertBefore(buttonEl, fixedBtn);
-      else nav.appendChild(buttonEl);
+      // Folders go after the others in the folder row.
+      (document.getElementById('folderTabs') || nav).appendChild(buttonEl);
     }
 
     const expectedTabId = String(
@@ -255,4 +251,63 @@
     } finally {
       delete folderTabLoadPromises[folderNum];
     }
+  }
+
+  // Folder tabs not opened yet are prefetched one at a time while the Web
+  // Admin is idle, so a later click opens them at once. The device answers
+  // from its UI loop, so the prefetch waits for a quiet editor, leaves a short
+  // gap between requests and stops at the first failure.
+  const FOLDER_TAB_PREFETCH_IDLE_MS = 2500;
+  const FOLDER_TAB_PREFETCH_STEP_MS = 150;
+  let folderTabPrefetchTimer = null;
+  let folderTabPrefetchStopped = false;
+  let lastAdminInteractionMs = Date.now();
+
+  function noteAdminInteraction() {
+    lastAdminInteractionMs = Date.now();
+  }
+
+  function scheduleFolderTabPrefetch(delayMs = FOLDER_TAB_PREFETCH_IDLE_MS) {
+    if (folderTabPrefetchStopped || folderTabPrefetchTimer) return;
+    folderTabPrefetchTimer = window.setTimeout(runFolderTabPrefetch, delayMs);
+  }
+
+  function nextFolderTabToPrefetch() {
+    for (const key of Object.keys(tabByFolder)) {
+      const folderId = Number(key);
+      if (!Number.isInteger(folderId) || folderId <= 0) continue;
+      const tab = tabByFolder[folderId];
+      if (!document.getElementById('tab-tiles-' + tab)) {
+        return { folderId, tab, step: 'tab' };
+      }
+      if (!tileDataLoadedTabs.has(tab)) return { folderId, tab, step: 'tiles' };
+    }
+    return null;
+  }
+
+  async function runFolderTabPrefetch() {
+    folderTabPrefetchTimer = null;
+    if (folderTabPrefetchStopped) return;
+    const idleMs = Date.now() - lastAdminInteractionMs;
+    if (document.hidden || dragSource || resizeState || fileManagerUploadBusy ||
+        idleMs < FOLDER_TAB_PREFETCH_IDLE_MS) {
+      scheduleFolderTabPrefetch(Math.max(
+        FOLDER_TAB_PREFETCH_STEP_MS, FOLDER_TAB_PREFETCH_IDLE_MS - idleMs));
+      return;
+    }
+    const next = nextFolderTabToPrefetch();
+    if (!next) return;
+    let ok = false;
+    try {
+      ok = next.step === 'tab'
+        ? await ensureFolderTabUi(next.folderId)
+        : Array.isArray(await fetchTileGridData(next.tab, false));
+    } catch (error) {
+      ok = false;
+    }
+    if (!ok) {
+      folderTabPrefetchStopped = true;
+      return;
+    }
+    scheduleFolderTabPrefetch(FOLDER_TAB_PREFETCH_STEP_MS);
   }

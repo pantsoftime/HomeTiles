@@ -84,8 +84,12 @@
       if (slots && html) slots.outerHTML = html;
     }
     const data = getTilesData(tab)?.[resizeState?.index];
+    // A Switch tile gains or loses its bar between half and full height.
+    const isSwitch = Number(data?.type) === 5;
+    if (isSwitch) prepareSwitchResizePreview(preview, data, layout);
     applyCompactSensorPreview(preview, data?.type, layout, data?.sensor_display_mode, data?.sensor_value_font);
     placeholder.replaceChildren(preview);
+    if (isSwitch) finishSwitchResizePreview(preview, data);
   }
 
   function updateResizePlaceholder(tab, layout, valid) {
@@ -251,6 +255,9 @@
     tile.classList.add('resizing');
     tile.draggable = false;
     document.body.classList.add('tile-resize-active');
+    // The hidden card's target shows at once: before the first pointer move
+    // the tile was simply gone (user 2026-10-02).
+    updateResizePlaceholder(tab, layout, true);
     window.addEventListener('pointermove', handleTileResizeMove);
     window.addEventListener('pointerup', handleTileResizeEnd);
     window.addEventListener('pointercancel', handleTileResizeCancel);
@@ -484,7 +491,7 @@
         const layout = getTileElementLayout(tab, tileIndex) ||
                        getTileLayoutFromData(tab, tileIndex);
         const anchorCell = getDragAnchorCell(tab, layout, e.clientX, e.clientY);
-        const grabOffset = getDragAnchorOffset(tab, layout, anchorCell.col, anchorCell.row, tile.getBoundingClientRect());
+        const grabOffset = getDragGrabOffset(tile.getBoundingClientRect(), e.clientX, e.clientY);
         dragSource = {
           kind: 'grid-tile',
           tab,
@@ -494,6 +501,7 @@
           baseLayouts: captureLayoutSnapshot(tab),
           grabCellCol: anchorCell.col,
           grabCellRow: anchorCell.row,
+          dropOffset: getDragLayoutOffset(tab, layout, e.clientX, e.clientY) || grabOffset,
           previewResult: null,
           appliedPreviewResult: null,
           previewKey: '',
@@ -548,11 +556,14 @@
   async function flushSettingsTileSaveBeforeHide(tab, index) {
     if (index < 0) return true;
     const timerKey = tab + ':' + index;
+    // A pending edit needs no save of its own: the parking save carries the
+    // tile's snapshot with it, and an extra save made the device write and
+    // rebuild its grid twice. Only a save already on its way must land first.
     if (autoSaveTimers[timerKey]) {
       clearTimeout(autoSaveTimers[timerKey]);
       delete autoSaveTimers[timerKey];
     }
-    saveTile(tab, true, index);
+    clearDraft(tab, index);
     const saveKey = getTileSaveKey(tab, index);
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
@@ -567,21 +578,34 @@
     return false;
   }
 
+  // Moves of the Settings tile between the grid and the parking slot show at
+  // once and queue their saves (queueSettingsAccessSave keeps the order), so
+  // a move made while the device still saves the previous one is not lost
+  // (user 2026-10-02). Only the latest move reconciles with the device, and
+  // only when the device put the tile elsewhere than the preview: reloading
+  // the Home grid made the panel read every folder it links to.
+  function settingsTransferMatches(saved, index) {
+    return saved && Number(saved.settings_tile_index) === index;
+  }
+
   async function hideSettingsTileFromGrid() {
     const hidden = settingsAccessElement('settings_tile_hidden');
     const swipe = settingsAccessElement('settings_swipe_enabled');
-    if (!hidden || settingsTileTransferInFlight) return false;
-    settingsTileTransferInFlight = true;
+    if (!hidden) return false;
+    const settingsTile = (getTilesData('folder0') || []).findIndex(
+      tile => Number(tile?.type || 0) === 7);
+    if (settingsTile < 0) {
+      return false;
+    }
+    const snapshot = normalizeHiddenSettingsSnapshot(
+      getTileSnapshotForSave('folder0', settingsTile) ||
+      currentGridSettingsSnapshot());
+    const transfer = ++settingsTileTransferSeq;
+    settingsTileTransfersInFlight++;
     try {
-      const settingsTile = (getTilesData('folder0') || []).findIndex(
-        tile => Number(tile?.type || 0) === 7);
-      if (settingsTile < 0) {
-        return false;
-      }
-      const snapshot = normalizeHiddenSettingsSnapshot(
-        getTileSnapshotForSave('folder0', settingsTile) ||
-        currentGridSettingsSnapshot());
+      previewSettingsTileTransfer(true, snapshot);
       if (!(await flushSettingsTileSaveBeforeHide('folder0', settingsTile))) {
+        if (transfer === settingsTileTransferSeq) await reconcileSettingsTileUi(false);
         return false;
       }
       hidden.checked = true;
@@ -589,33 +613,52 @@
       toggleSettingsAccessFields();
       const saved = await queueSettingsAccessSave(
         null, null, snapshot, false);
-      if (!saved) return false;
+      if (transfer !== settingsTileTransferSeq) return saved;
+      if (!saved) {
+        await reconcileSettingsTileUi(false);
+        return false;
+      }
+      if (settingsTransferMatches(saved, -1)) return true;
       return await reconcileSettingsTileUi(true, snapshot);
     } finally {
-      settingsTileTransferInFlight = false;
+      settingsTileTransfersInFlight--;
+      flushDeferredSensorRefresh();
     }
   }
 
   async function restoreHiddenSettingsTile(col, row) {
     const hidden = settingsAccessElement('settings_tile_hidden');
-    if (!hidden || settingsTileTransferInFlight) return false;
+    if (!hidden) return false;
     const snapshot = normalizeHiddenSettingsSnapshot();
-    settingsTileTransferInFlight = true;
+    const transfer = ++settingsTileTransferSeq;
+    settingsTileTransfersInFlight++;
     try {
+      // The Settings checkbox restores without a drop spot; the device then
+      // picks the spot and the reload shows it.
+      const shownAt = Number.isFinite(col) && Number.isFinite(row)
+        ? previewSettingsTileTransfer(false, snapshot, {col, row})
+        : -1;
       hidden.checked = false;
       toggleSettingsAccessFields();
       const saved = await queueSettingsAccessSave(
         null, {col, row}, null, false);
-      if (!saved) return false;
+      if (transfer !== settingsTileTransferSeq) return saved;
+      if (!saved) {
+        await reconcileSettingsTileUi(true, snapshot);
+        return false;
+      }
+      if (shownAt >= 0 && settingsTransferMatches(saved, shownAt)) return true;
       return await reconcileSettingsTileUi(false, snapshot, true);
     } finally {
-      settingsTileTransferInFlight = false;
+      settingsTileTransfersInFlight--;
+      flushDeferredSensorRefresh();
     }
   }
 
   function enableSettingsHiddenSlot() {
     const slot = document.getElementById('settingsHiddenSlot');
     const hiddenTile = document.getElementById('settingsHiddenTile');
+    const hint = document.getElementById('settingsHiddenHint');
     if (!slot || !hiddenTile || slot.dataset.bound === '1') return;
     slot.dataset.bound = '1';
     hiddenTile.addEventListener('click', () => selectHiddenSettingsTile());
@@ -626,10 +669,20 @@
       const tile = getTilesData('folder0')?.[dragSource.index];
       return Number(dragSource.type || tile?.type || 0) === 7;
     };
+    // The slot is one more drop cell of the Settings tile and works like a
+    // grid cell (user 2026-10-02): with the pointer over it the teal
+    // placeholder shows in the slot and the grid's placeholder and reflow
+    // preview go back; a parked tile dropped on it stays parked.
+    const draggingSettings = () => acceptsGridSettings() ||
+      (dragSource?.kind === 'hidden-settings' && dragSource.tab === 'folder0');
     slot.addEventListener('dragover', event => {
-      if (!acceptsGridSettings()) return;
+      if (!draggingSettings()) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
+      if (slot.classList.contains('drop-target')) return;
+      restoreDragPreview('folder0');
+      clearDragPlaceholder();
+      if (dragSource.kind === 'hidden-settings') dragSource.hiddenTarget = null;
       slot.classList.add('drop-target');
     });
     slot.addEventListener('dragleave', event => {
@@ -638,13 +691,14 @@
       slot.classList.remove('drop-target');
     });
     slot.addEventListener('drop', event => {
-      if (!acceptsGridSettings()) return;
+      if (!draggingSettings()) return;
       event.preventDefault();
       event.stopPropagation();
       slot.classList.remove('drop-target');
       restoreDragPreview('folder0');
       clearDragPlaceholder();
-      if (dragSource) dragSource.dropCommitted = true;
+      if (dragSource.kind === 'hidden-settings') return;
+      dragSource.dropCommitted = true;
       hideSettingsTileFromGrid();
     });
 
@@ -653,15 +707,27 @@
         event.preventDefault();
         return;
       }
+      // Taking the parked tile selects it like a grid tile, so the drag image
+      // carries the teal selection.
+      if (currentTileTab !== 'folder0' || currentTileIndex !== HIDDEN_SETTINGS_TILE_INDEX) {
+        selectHiddenSettingsTile();
+      }
       const spanW = clampHalf(hiddenTile.dataset.spanW, 1, GRID_COLS, 1);
       const spanH = clampHalf(hiddenTile.dataset.spanH, 0.5, GRID_ROWS, 1);
+      // The slot shows one cell: the grabbed half of it anchors the drop like
+      // a grid tile, and the drag image stays where the pointer took it.
+      const rect = hiddenTile.getBoundingClientRect();
+      const grabOffset = getDragGrabOffset(rect, event.clientX, event.clientY);
+      const grabCellCol = spanW > 0.5 && grabOffset.x >= rect.width / 2 ? 0.5 : 0;
+      const grabCellRow = spanH > 0.5 && grabOffset.y >= rect.height / 2 ? 0.5 : 0;
       dragSource = {
         kind: 'hidden-settings',
         tab: 'folder0',
         index: -1,
         layout: {col: 0, row: 0, span_w: spanW, span_h: spanH},
-        grabCellCol: 0,
-        grabCellRow: 0,
+        grabCellCol,
+        grabCellRow,
+        dropOffset: grabOffset,
         baseLayouts: null,
         dropCommitted: false,
         hiddenTarget: null
@@ -670,13 +736,16 @@
       hiddenTile.classList.add('dragging');
       if (event.dataTransfer.setDragImage) {
         dragPreview = createDragPreview(hiddenTile);
-        event.dataTransfer.setDragImage(
-          dragPreview, hiddenTile.offsetWidth / 2, hiddenTile.offsetHeight / 2);
+        event.dataTransfer.setDragImage(dragPreview, grabOffset.x, grabOffset.y);
       }
+      // The slot it left is the empty slot at once: tray icon and hint.
+      slot.classList.add('lifting');
+      hint?.classList.remove('is-hidden');
     });
     hiddenTile.addEventListener('dragend', () => {
       hiddenTile.classList.remove('dragging');
-      slot.classList.remove('drop-target', 'invalid');
+      slot.classList.remove('drop-target', 'invalid', 'lifting');
+      hint?.classList.toggle('is-hidden', hiddenTile.dataset.hidden === '1');
       clearDragPlaceholder();
       if (dragPreview && dragPreview.parentNode) dragPreview.parentNode.removeChild(dragPreview);
       dragPreview = null;

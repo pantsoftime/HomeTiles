@@ -165,9 +165,17 @@ struct Strings {
   const char* weather_entity;
   const char* energy_entity;
   const char* switch_light;
+  // Switch tile Layout field and its options (switch_layout::Layout):
+  // icon button, switch, dimmer, automatic.
   const char* switch_display;
   const char* switch_icon_button;
-  const char* switch_lvgl_switch;
+  const char* switch_layout_switch;
+  const char* switch_layout_dimmer;
+  const char* switch_layout_automatic;
+  // Climate tile Layout field: the title only (the title top right) or with
+  // the value pair beside the disc (climateTileShowsValue).
+  const char* climate_layout_title_only;
+  const char* climate_layout_with_value;
   const char* media_entity;
   const char* show_time;
   const char* show_date;
@@ -205,6 +213,10 @@ struct Strings {
   const char* js_import_failed;
   const char* js_import_running;
   const char* js_import_complete;
+  // Import checks: {tile} and {folder} are filled in by the page.
+  const char* js_import_conflict;
+  const char* js_import_stopped;
+  const char* js_import_screensaver;
   const char* js_tile_does_not_fit;
   const char* js_no_layout_found;
   const char* js_tiles_moved_saved;
@@ -295,6 +307,9 @@ struct Strings {
   const char* tile_color_mode_global;
   const char* tile_color_mode_custom;
   const char* tile_color_mode_from_icon;
+  // Media tiles: "From cover", the color of the album cover, offered as tile
+  // color and as icon color.
+  const char* tile_color_mode_from_cover;
   // Web Admin tile editor: per-tile icon disc override.
   const char* icon_disc_label;
   const char* icon_disc_global;
@@ -520,9 +535,11 @@ struct Strings {
   const char* folder_pin_saved;
   const char* folder_pin_save_failed;
   const char* folder_pin_create_first;
-  const char* pin_popup_settings_title;
+  // PIN popup: the header state of a protected folder or Settings, and the
+  // prompt shown below the lock until the first digit.
+  const char* pin_popup_locked;
   const char* pin_popup_incorrect;
-  const char* pin_popup_unlock_format;
+  const char* pin_popup_enter;
   const char* settings_tile_parking;
   // Built-in camera opt-in (Web Admin Settings, camera profiles only).
   const char* local_camera_section;
@@ -574,6 +591,88 @@ struct Strings {
   const char* local_camera_rb_swap;
   const char* local_camera_rb_swap_note;
 
+  // Optional Web Admin password: login page, Web Admin settings section and
+  // the Security view in the device System popup. %s is a number of seconds.
+  const char* web_auth_section;
+  const char* web_auth_status_on;
+  const char* web_auth_status_off;
+  const char* web_auth_new_password;
+  const char* web_auth_repeat_password;
+  const char* web_auth_set;
+  const char* web_auth_remove;
+  const char* web_auth_logout;
+  const char* web_auth_too_short;
+  const char* web_auth_mismatch;
+  const char* web_auth_saved;
+  const char* web_auth_removed;
+  const char* web_auth_change_failed;
+  const char* web_auth_remove_confirm;
+  const char* web_auth_note;
+  const char* web_auth_login_title;
+  const char* web_auth_password_label;
+  const char* web_auth_login_button;
+  const char* web_auth_checking;
+  const char* web_auth_wrong_password;
+  const char* web_auth_wait_fmt;
+  const char* web_auth_login_failed;
+  const char* web_auth_forgot;
+  const char* security_btn;
+  const char* security_state_on;
+  const char* security_state_off;
+  // Stored Wi-Fi/MQTT passwords and PINs are not sent to browsers while a
+  // Web Admin password is set; they can only be replaced.
+  const char* secret_hidden_placeholder;
+  const char* web_auth_secrets_note;
+  const char* ap_wifi_keep_password_hint;
+  // System popup buttons: short labels that fit a half-width button; the
+  // status line above them carries the details.
+  const char* system_updates_btn;
+  const char* system_install_btn;
+  // Security view of the System popup: pairing with Home Assistant (the
+  // panel and Home Assistant show the same number) and the Web Admin password.
+  // System rows: Home Assistant connected or offline, and the Encryption
+  // row label (its value is security_state_on/off).
+  const char* security_value_connected;
+  const char* security_encryption_label;
+  const char* security_value_offline;
+  const char* security_hint_pair;
+  const char* security_hint_unpair;
+  const char* security_pair_short;
+  const char* security_pair_long;
+  const char* security_unpair_short;
+  const char* security_unpair_long;
+  const char* security_password_btn;
+  const char* security_unpair_question;
+  const char* security_unpair_question_hint;
+  const char* security_password_question;
+  const char* security_password_question_hint;
+  const char* security_remove;
+  const char* security_cancel;
+  const char* security_confirm;
+  const char* security_close;
+  const char* security_unpaired_offline;
+  const char* pairing_title;
+  const char* pairing_asking;
+  const char* pairing_compare;
+  const char* pairing_compare_hint;
+  const char* pairing_waiting;
+  const char* pairing_no_answer;
+  const char* pairing_no_answer_hint;
+  const char* pairing_already_paired;
+  const char* pairing_busy;
+  const char* pairing_rejected;
+  const char* pairing_failed;
+  // Web Admin header badge: whether a Web Admin password protects the page.
+  const char* web_auth_badge_on;
+  const char* web_auth_badge_off;
+  // Web Admin header: "<prefix> <stars> <or> Buy Me a Coffee"; both are links.
+  const char* web_support_prefix;
+  const char* web_support_stars;
+  const char* web_support_or;
+  // Weather tile setting: filled, colored weather icons (off: white outlines).
+  const char* weather_colored_icons;
+  // Web Admin navigation: the menu with every folder besides Home.
+  const char* admin_folders;
 };
 
 // Locale-specific display rules and short runtime strings shared by
@@ -586,6 +685,9 @@ struct LocaleProfile {
 
   const char* weather_today;
   const char* weather_tomorrow;
+  // Today on the round footer buttons of the Weather and Energy popups, the
+  // standard short form where the word is long (French "Auj.").
+  const char* weather_today_button;
   const char* weather_weekdays_short[7];
   const char* weather_months_short[12];
   const char* weather_conditions[15];
@@ -647,7 +749,66 @@ struct LocaleProfile {
 
   // Types, entity labels, apply, invalid value, pending, failed, input formats.
   const char* editable_labels[19];
+
+  // Lock, Alarm panel and Fan tiles and their popups, indexed by
+  // i18n::DeviceLabel.
+  const char* device_labels[42];
+  // Lock states: locked, unlocked, locking, unlocking, open, opening,
+  // jammed, unavailable, unknown.
+  const char* lock_states[9];
+  // Alarm panel states: disarmed, armed_home, armed_away, armed_night,
+  // armed_vacation, armed_custom_bypass, pending, arming, disarming,
+  // triggered, unavailable, unknown.
+  const char* alarm_states[12];
 };
+
+// Index into LocaleProfile::device_labels.
+enum class DeviceLabel : uint8_t {
+  TypeLock,
+  TypeAlarm,
+  TypeFan,
+  EntityLock,
+  EntityAlarm,
+  EntityFan,
+  OpenDoor,
+  ReallyOpen,
+  DoorOpen,
+  Unlock,
+  Lock,
+  Disarm,
+  ModeHome,
+  ModeAway,
+  ModeNight,
+  ModeVacation,
+  ModeCustom,
+  FanPreset,
+  FanNone,
+  FanOscillate,
+  FanDirection,
+  FanForward,
+  FanReverse,
+  FanSpeed,  // printf pattern with one %u
+  EnterCode,
+  WrongCode,
+  TooManyCodes,  // printf pattern with one %u (seconds)
+  NeedPairAndPassword,
+  NeedPair,
+  NeedPassword,
+  UnlockOff,
+  DisarmOff,
+  TextCodeUnsupported,
+  ResultNotAllowed,
+  ResultBusy,
+  ResultUnsupported,
+  ResultUnavailable,
+  ResultExpired,
+  ResultNoAnswer,
+  ResultFailed,
+  ClockNotSet,
+  NoReaction,  // a sent Lock command the lock never answered with a state
+  Count
+};
+static_assert(static_cast<int>(DeviceLabel::Count) == 42, "LocaleProfile::device_labels size");
 
 // Locale-independent timezone catalog with codes and group assignments.
 // LocaleProfile::timezone_labels supplies display names in the same order.
@@ -680,6 +841,7 @@ String weather_condition_label(const char* language_code, const String& conditio
 String weather_weekday_short(const char* language_code, const String& iso);
 const char* weather_month_short(const char* language_code, int month);
 const char* weather_today_label(const char* language_code);
+const char* weather_today_button_label(const char* language_code);
 const char* weather_tomorrow_label(const char* language_code);
 const char* climate_tile_type_label(const char* language_code);
 const char* climate_entity_label(const char* language_code);
@@ -710,6 +872,12 @@ const char* binary_sensor_label(const char* language_code, uint8_t index);
 const char* binary_sensor_state_label(const char* language_code,
                                       const String& state,
                                       const String& device_class);
+// Lock, Alarm panel and Fan texts (DeviceLabel) and the translated Home
+// Assistant lock and alarm panel states (raw states stay English; an unknown
+// raw state shows as Unknown).
+const char* device_label(const char* language_code, DeviceLabel label);
+const char* lock_state_label(const char* language_code, const char* state);
+const char* alarm_state_label(const char* language_code, const char* state);
 
 }  // namespace i18n
 

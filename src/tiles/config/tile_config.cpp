@@ -12,6 +12,7 @@
 #include <memory>
 #include <new>
 #include <esp_heap_caps.h>
+#include "src/core/memory/psram_allocator.h"
 
 static const char* PREF_NAMESPACE = "tab5_tiles";
 static constexpr uint8_t PACKED_GRID_VERSION = 7;
@@ -351,6 +352,33 @@ TileConfig tileConfig;
 
 TileConfig::TileConfig() = default;
 
+TileGridConfig* allocateTileGridStorage(const char* name) {
+  void* memory = heap_caps_malloc(sizeof(TileGridConfig),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!memory) {
+    memory = heap_caps_malloc(sizeof(TileGridConfig),
+                              MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (memory) {
+      Serial.printf("[TileConfig] WARN: %s grid uses %u bytes of internal RAM\n",
+                    name ? name : "?",
+                    static_cast<unsigned>(sizeof(TileGridConfig)));
+    }
+  }
+  if (!memory) {
+    Serial.printf("[TileConfig] ERROR: No storage for the %s grid (%u bytes)\n",
+                  name ? name : "?",
+                  static_cast<unsigned>(sizeof(TileGridConfig)));
+    Serial.flush();
+    abort();
+  }
+  return new (memory) TileGridConfig();
+}
+
+TileGridConfig& TileConfig::activeGrid() const {
+  if (!active_grid_) active_grid_ = allocateTileGridStorage("active");
+  return *active_grid_;
+}
+
 uint32_t tileDefaultBgColor() {
   return tile_color::normalize(configManager.getConfig().default_tile_color);
 }
@@ -587,8 +615,77 @@ static void sidecarKeyAdd(std::vector<uint32_t>& keys, uint32_t key) {
   if (!sidecarKeyPresent(keys, key)) keys.push_back(key);
 }
 
+// The text of every sidecar file read or written so far, by key, in PSRAM.
+// All sidecar changes go through the write functions below and
+// sidecarKeyRemove(), so a cached text is the file's content: grid loads and
+// unchanged saves skip the file system, which took about 300 ms per Home grid
+// load or save on the V2, one open per file (user 2026-10-02). The texts are
+// small (titles, icon color records, long entity IDs, image paths).
+struct SidecarText {
+  uint32_t key;
+  PsString text;
+};
+using SidecarTexts = std::vector<SidecarText, PsramAllocator<SidecarText>>;
+static SidecarTexts g_image_sidecar_texts;
+static SidecarTexts g_entity_sidecar_texts;
+static SidecarTexts g_title_sidecar_texts;
+static SidecarTexts g_icon_color_sidecar_texts;
+
+static SemaphoreHandle_t sidecarTextsLock() {
+  static SemaphoreHandle_t lock = xSemaphoreCreateMutex();
+  return lock;
+}
+
+class SidecarTextsGuard {
+ public:
+  SidecarTextsGuard() : lock_(sidecarTextsLock()) {
+    if (lock_) xSemaphoreTake(lock_, portMAX_DELAY);
+  }
+  ~SidecarTextsGuard() {
+    if (lock_) xSemaphoreGive(lock_);
+  }
+
+ private:
+  SemaphoreHandle_t lock_;
+};
+
+static bool sidecarTextCached(const SidecarTexts& texts, uint32_t key, String& out) {
+  SidecarTextsGuard guard;
+  for (const SidecarText& entry : texts) {
+    if (entry.key != key) continue;
+    out = entry.text.c_str();
+    return true;
+  }
+  return false;
+}
+
+static void sidecarTextStore(SidecarTexts& texts, uint32_t key, const String& text) {
+  SidecarTextsGuard guard;
+  for (SidecarText& entry : texts) {
+    if (entry.key != key) continue;
+    entry.text.assign(text.c_str(), text.length());
+    return;
+  }
+  texts.push_back(SidecarText{key, PsString(text.c_str(), text.length())});
+}
+
+static void sidecarTextForget(SidecarTexts& texts, uint32_t key) {
+  SidecarTextsGuard guard;
+  texts.erase(std::remove_if(texts.begin(), texts.end(),
+                             [key](const SidecarText& entry) { return entry.key == key; }),
+              texts.end());
+}
+
+static SidecarTexts& sidecarTextsFor(const std::vector<uint32_t>& keys) {
+  if (&keys == &g_image_sidecar_keys) return g_image_sidecar_texts;
+  if (&keys == &g_entity_sidecar_keys) return g_entity_sidecar_texts;
+  if (&keys == &g_title_sidecar_keys) return g_title_sidecar_texts;
+  return g_icon_color_sidecar_texts;
+}
+
 static void sidecarKeyRemove(std::vector<uint32_t>& keys, uint32_t key) {
   keys.erase(std::remove(keys.begin(), keys.end(), key), keys.end());
+  sidecarTextForget(sidecarTextsFor(keys), key);
 }
 
 static void scanSidecarDir(const char* dir, std::vector<uint32_t>& out) {
@@ -820,22 +917,32 @@ static bool writeImagePathSd(uint16_t folder_id, size_t index, const String& pat
   }
 
   if (has_sidecar) {
-    File current_file = storageFS().open(filePath, FILE_READ);
-    if (current_file) {
-      String current = current_file.readString();
-      current_file.close();
-      current.trim();
+    String current;
+    if (sidecarTextCached(g_image_sidecar_texts, key, current)) {
       if (current == path) return true;
+    } else {
+      File current_file = storageFS().open(filePath, FILE_READ);
+      if (current_file) {
+        current = current_file.readString();
+        current_file.close();
+        current.trim();
+        if (current == path) {
+          sidecarTextStore(g_image_sidecar_texts, key, current);
+          return true;
+        }
+      }
     }
   }
 
   if (!ensureImagePathDir()) return false;
+  sidecarTextForget(g_image_sidecar_texts, key);
   if (has_sidecar && storageFS().exists(filePath)) storageFS().remove(filePath);
   File f = storageFS().open(filePath, FILE_WRITE);
   if (!f) return false;
   f.print(path);
   f.close();
   sidecarKeyAdd(g_image_sidecar_keys, key);
+  sidecarTextStore(g_image_sidecar_texts, key, path);
   return true;
 }
 
@@ -843,13 +950,18 @@ static bool readImagePathSd(uint16_t folder_id, size_t index, String& out) {
   out = "";
   if (!storageReady()) return false;
   ensureSidecarIndexBuilt();
-  if (sidecarKeyPresent(g_image_sidecar_keys, sidecarKey(folder_id, index))) {
+  const uint32_t key = sidecarKey(folder_id, index);
+  if (sidecarKeyPresent(g_image_sidecar_keys, key)) {
+    if (sidecarTextCached(g_image_sidecar_texts, key, out)) return out.length() > 0;
     File f = storageFS().open(imagePathFile(folder_id, index), FILE_READ);
     if (f) {
       out = f.readString();
       f.close();
       out.trim();
-      if (out.length() > 0) return true;
+      if (out.length() > 0) {
+        sidecarTextStore(g_image_sidecar_texts, key, out);
+        return true;
+      }
     }
   }
   if (folder_id == 0) {
@@ -881,22 +993,32 @@ static bool writeLongEntityIdSd(uint16_t folder_id, size_t index, const String& 
   }
 
   if (has_sidecar) {
-    File current_file = storageFS().open(filePath, FILE_READ);
-    if (current_file) {
-      String current = current_file.readString();
-      current_file.close();
-      current.trim();
+    String current;
+    if (sidecarTextCached(g_entity_sidecar_texts, key, current)) {
       if (current == entity) return true;
+    } else {
+      File current_file = storageFS().open(filePath, FILE_READ);
+      if (current_file) {
+        current = current_file.readString();
+        current_file.close();
+        current.trim();
+        if (current == entity) {
+          sidecarTextStore(g_entity_sidecar_texts, key, current);
+          return true;
+        }
+      }
     }
   }
 
   if (!ensureEntityPathDir()) return false;
+  sidecarTextForget(g_entity_sidecar_texts, key);
   if (has_sidecar && storageFS().exists(filePath)) storageFS().remove(filePath);
   File f = storageFS().open(filePath, FILE_WRITE);
   if (!f) return false;
   f.print(entity);
   f.close();
   sidecarKeyAdd(g_entity_sidecar_keys, key);
+  sidecarTextStore(g_entity_sidecar_texts, key, entity);
   return true;
 }
 
@@ -910,7 +1032,9 @@ static String titlePathFile(uint16_t folder_id, size_t index) {
 static bool readLongTitleSd(uint16_t folder_id, size_t index, String& out) {
   if (!storageReady()) return false;
   ensureSidecarIndexBuilt();
-  if (!sidecarKeyPresent(g_title_sidecar_keys, sidecarKey(folder_id, index))) return false;
+  const uint32_t key = sidecarKey(folder_id, index);
+  if (!sidecarKeyPresent(g_title_sidecar_keys, key)) return false;
+  if (sidecarTextCached(g_title_sidecar_texts, key, out)) return true;
   const String path = titlePathFile(folder_id, index);
   for (const String& candidate : {path, tmpPathFor(path), backupPathFor(path)}) {
     File file = storageFS().open(candidate, FILE_READ);
@@ -921,6 +1045,7 @@ static bool readLongTitleSd(uint16_t folder_id, size_t index, String& out) {
     file.close();
     if (value.length() != size) continue;
     out = value;
+    sidecarTextStore(g_title_sidecar_texts, key, value);
     return true;
   }
   return false;
@@ -943,6 +1068,7 @@ static bool writeLongTitleSd(uint16_t folder_id, size_t index, const String& tit
   String current;
   if (readLongTitleSd(folder_id, index, current) && current == title) return true;
   if (!storageFS().exists(kTitlePathDir) && !storageFS().mkdir(kTitlePathDir)) return false;
+  sidecarTextForget(g_title_sidecar_texts, key);
   const String temporary = tmpPathFor(path);
   if (storageFS().exists(temporary)) storageFS().remove(temporary);
   File file = storageFS().open(temporary, FILE_WRITE);
@@ -954,6 +1080,7 @@ static bool writeLongTitleSd(uint16_t folder_id, size_t index, const String& tit
     return false;
   }
   sidecarKeyAdd(g_title_sidecar_keys, key);
+  sidecarTextStore(g_title_sidecar_texts, key, title);
   return true;
 }
 
@@ -982,7 +1109,9 @@ static String iconColorPathFile(uint16_t folder_id, size_t index) {
 static bool readIconColorsSd(uint16_t folder_id, size_t index, String& out) {
   if (!storageReady()) return false;
   ensureSidecarIndexBuilt();
-  if (!sidecarKeyPresent(g_icon_color_sidecar_keys, sidecarKey(folder_id, index))) return false;
+  const uint32_t key = sidecarKey(folder_id, index);
+  if (!sidecarKeyPresent(g_icon_color_sidecar_keys, key)) return false;
+  if (sidecarTextCached(g_icon_color_sidecar_texts, key, out)) return true;
   const String path = iconColorPathFile(folder_id, index);
   for (const String& candidate : {path, tmpPathFor(path), backupPathFor(path)}) {
     File file = storageFS().open(candidate, FILE_READ);
@@ -993,6 +1122,7 @@ static bool readIconColorsSd(uint16_t folder_id, size_t index, String& out) {
     file.close();
     if (value.length() != size) continue;
     out = value;
+    sidecarTextStore(g_icon_color_sidecar_texts, key, value);
     return true;
   }
   return false;
@@ -1015,6 +1145,7 @@ static bool writeIconColorsSd(uint16_t folder_id, size_t index, const String& re
   String current;
   if (readIconColorsSd(folder_id, index, current) && current == record) return true;
   if (!storageFS().exists(kIconColorPathDir) && !storageFS().mkdir(kIconColorPathDir)) return false;
+  sidecarTextForget(g_icon_color_sidecar_texts, key);
   const String temporary = tmpPathFor(path);
   if (storageFS().exists(temporary)) storageFS().remove(temporary);
   File file = storageFS().open(temporary, FILE_WRITE);
@@ -1026,6 +1157,7 @@ static bool writeIconColorsSd(uint16_t folder_id, size_t index, const String& re
     return false;
   }
   sidecarKeyAdd(g_icon_color_sidecar_keys, key);
+  sidecarTextStore(g_icon_color_sidecar_texts, key, record);
   return true;
 }
 
@@ -1096,13 +1228,18 @@ static bool readLongEntityIdSd(uint16_t folder_id, size_t index, String& out) {
   out = "";
   if (!storageReady()) return false;
   ensureSidecarIndexBuilt();
-  if (sidecarKeyPresent(g_entity_sidecar_keys, sidecarKey(folder_id, index))) {
+  const uint32_t key = sidecarKey(folder_id, index);
+  if (sidecarKeyPresent(g_entity_sidecar_keys, key)) {
+    if (sidecarTextCached(g_entity_sidecar_texts, key, out)) return out.length() > 0;
     File f = storageFS().open(entityPathFile(folder_id, index), FILE_READ);
     if (f) {
       out = f.readString();
       f.close();
       out.trim();
-      if (out.length() > 0) return true;
+      if (out.length() > 0) {
+        sidecarTextStore(g_entity_sidecar_texts, key, out);
+        return true;
+      }
     }
   }
   if (folder_id == 0) {
@@ -2604,14 +2741,14 @@ bool TileConfig::load() {
   loadFolderAccess();
 
   active_folder_id = kRootFolderId;
-  return loadGrid(active_folder_id, active_grid);
+  return loadGrid(active_folder_id, activeGrid());
 }
 
 bool TileConfig::loadFolderGrid(uint16_t folder_id, TileGridConfig& out) {
   if (!folderExists(folder_id)) return false;
   bool ok = loadGrid(folder_id, out);
   if (ok && folder_id == active_folder_id) {
-    active_grid = out;
+    activeGrid() = out;
   }
   return ok;
 }
@@ -2839,21 +2976,33 @@ bool TileConfig::saveFolderGrid(uint16_t folder_id, TileGridConfig& grid) {
   bool ok = saveGridInPlace(folder_id, grid);
   if (ok && folder_id == active_folder_id) {
     // Keep the runtime cache identical to the policy-normalized grid that was
-    // written. Normalize the existing member in place so this storage call
-    // does not add another full TileGridConfig to the WebServer task stack.
-    active_grid = grid;
-    for (size_t i = 0; i < TILES_PER_GRID; ++i) {
-      if (isRetiredTileType(active_grid.tiles[i].type)) {
-        active_grid.tiles[i] = Tile{};
-      }
-    }
-    if (folder_id == kRootFolderId) {
-      applySettingsTilePolicy(active_grid);
-    } else {
-      ensureBackTile(folder_id, active_grid);
-    }
+    // written.
+    adoptActiveGrid(folder_id, grid);
   }
   return ok;
+}
+
+bool TileConfig::previewActiveFolderGrid(uint16_t folder_id,
+                                         const TileGridConfig& grid) {
+  if (folder_id != active_folder_id || !folderExists(folder_id)) return false;
+  adoptActiveGrid(folder_id, grid);
+  return true;
+}
+
+// Normalizes the existing member in place, so no further full TileGridConfig
+// lands on the WebServer/loop task stack.
+void TileConfig::adoptActiveGrid(uint16_t folder_id, const TileGridConfig& grid) {
+  activeGrid() = grid;
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    if (isRetiredTileType(activeGrid().tiles[i].type)) {
+      activeGrid().tiles[i] = Tile{};
+    }
+  }
+  if (folder_id == kRootFolderId) {
+    applySettingsTilePolicy(activeGrid());
+  } else {
+    ensureBackTile(folder_id, activeGrid());
+  }
 }
 
 bool TileConfig::saveScreensaverGrid(const TileGridConfig& grid) {
@@ -2863,9 +3012,9 @@ bool TileConfig::saveScreensaverGrid(const TileGridConfig& grid) {
 bool TileConfig::setActiveFolder(uint16_t folder_id) {
   if (!folderExists(folder_id)) return false;
   const uint16_t previous_folder_id = active_folder_id;
-  if (!loadGrid(folder_id, active_grid)) {
+  if (!loadGrid(folder_id, activeGrid())) {
     if (previous_folder_id != folder_id && folderExists(previous_folder_id)) {
-      loadGrid(previous_folder_id, active_grid);
+      loadGrid(previous_folder_id, activeGrid());
     }
     return false;
   }
@@ -2876,7 +3025,7 @@ bool TileConfig::setActiveFolder(uint16_t folder_id) {
 bool TileConfig::setActiveFolderCached(uint16_t folder_id, const TileGridConfig& grid) {
   if (!folderExists(folder_id)) return false;
   active_folder_id = folder_id;
-  active_grid = grid;
+  activeGrid() = grid;
   return true;
 }
 
@@ -3327,14 +3476,43 @@ bool TileConfig::getFolderPin(uint16_t folder_id, String& out) const {
 }
 
 bool TileConfig::getSettingsTile(Tile& out) {
+  // The visible Home grid is the stored one: no flash read, which took about
+  // 350 ms on the V2 before a Settings parking move could show (user
+  // 2026-10-02, "[WebAdmin] Settings tile ... parse=").
   TileGridConfig grid{};
-  if (!loadGrid(kRootFolderId, grid, false)) return false;
+  if (active_folder_id == kRootFolderId) {
+    grid = activeGrid();
+  } else if (!loadGrid(kRootFolderId, grid, false)) {
+    return false;
+  }
   for (const auto& tile : grid.tiles) {
     if (tile.type != TILE_SETTINGS) continue;
     out = tile;
     return true;
   }
   return false;
+}
+
+int TileConfig::settingsTileIndex() {
+  TileGridConfig loaded{};
+  const TileGridConfig* grid = &loaded;
+  if (active_folder_id == kRootFolderId) {
+    grid = &activeGrid();
+  } else if (!loadGrid(kRootFolderId, loaded, false)) {
+    return -1;
+  }
+  for (size_t i = 0; i < TILES_PER_GRID; ++i) {
+    if (grid->tiles[i].type == TILE_SETTINGS) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+bool TileConfig::previewSettingsTileVisible(bool visible, float target_col,
+                                            float target_row) {
+  if (active_folder_id != kRootFolderId) return false;
+  TileGridConfig& grid = activeGrid();
+  return visible ? ensureSettingsTile(grid, target_col, target_row)
+                 : removeSettingsTiles(grid);
 }
 
 SettingsTileVisibilityResult TileConfig::setSettingsTileVisible(
@@ -3363,17 +3541,26 @@ SettingsTileVisibilityResult TileConfig::setSettingsTileVisible(
     changed = removeSettingsTiles(grid);
   }
 
+  // A restored Settings tile takes its navigation ID in this write; without
+  // it the next grid load assigned one and wrote the whole grid again.
+  if (changed && !ensureNavigationIds(grid, changed)) {
+    return SettingsTileVisibilityResult::StorageError;
+  }
   if (changed && !saveGridInPlace(kRootFolderId, grid, false)) {
     return SettingsTileVisibilityResult::StorageError;
   }
-  if (active_folder_id == kRootFolderId) active_grid = grid;
+  if (active_folder_id == kRootFolderId) activeGrid() = grid;
   return SettingsTileVisibilityResult::Success;
 }
 
 SettingsTileVisibilityResult TileConfig::validateSettingsTileVisible(
     bool visible, float target_col, float target_row) {
+  // Checked against the visible Home grid, which is the stored one (see
+  // getSettingsTile): no flash read before the move shows.
   TileGridConfig grid{};
-  if (!loadGrid(kRootFolderId, grid, false)) {
+  if (active_folder_id == kRootFolderId) {
+    grid = activeGrid();
+  } else if (!loadGrid(kRootFolderId, grid, false)) {
     return SettingsTileVisibilityResult::StorageError;
   }
   if (!visible) return SettingsTileVisibilityResult::Success;
@@ -3548,10 +3735,15 @@ bool TileConfig::loadGrid(uint16_t folder_id, TileGridConfig& grid,
   applyIconColorsFromSd(folder_id, grid);
 
   // Retired tile types become empty without renumbering the persisted enum.
+  // Empty tiles saved before deletion cleared them still carry the deleted
+  // tile's entity and options; they are dropped here, the file keeps them
+  // until the grid is saved again.
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     if (isRetiredTileType(grid.tiles[i].type)) {
       grid.tiles[i] = Tile{};
       changed = true;
+    } else if (grid.tiles[i].type == TILE_EMPTY) {
+      clearEmptyTileFields(grid.tiles[i]);
     }
   }
 
@@ -3590,6 +3782,8 @@ bool TileConfig::saveGridInPlace(uint16_t folder_id, TileGridConfig& grid,
     working.tiles[i].title = hometiles_title::normalize(working.tiles[i].title.c_str()).c_str();
     if (isRetiredTileType(working.tiles[i].type)) {
       working.tiles[i] = Tile{};
+    } else if (working.tiles[i].type == TILE_EMPTY) {
+      clearEmptyTileFields(working.tiles[i]);
     }
     working.tiles[i].icon_colors = normalizeTileIconColors(
         working.tiles[i].type, working.tiles[i].icon_colors.c_str());
@@ -3641,6 +3835,8 @@ bool TileConfig::saveGridInPlace(uint16_t folder_id, TileGridConfig& grid,
 #endif
 
   ScopedStorageWriteDisplayGuard storage_write_guard;
+  // Save timing (one log line per save) shows where a reorder spends time.
+  const uint32_t sidecars_started_ms = millis();
   for (size_t grid_idx = 0; grid_idx < TILES_PER_GRID; ++grid_idx) {
     const Tile& tile = working.tiles[grid_idx];
     if (!writeLongTitleSd(folder_id, grid_idx, tile.type == TILE_EMPTY ? String() : tile.title)) {
@@ -3672,6 +3868,8 @@ bool TileConfig::saveGridInPlace(uint16_t folder_id, TileGridConfig& grid,
     }
   }
 
+  const uint32_t grid_started_ms = millis();
+  const uint32_t sidecars_ms = grid_started_ms - sidecars_started_ms;
   if (!writeGridSd(folder_id, packed, QUARTERS_PER_GRID)) {
     Serial.printf("[TileConfig] Error saving grid %u (storage write failed)\n",
                   static_cast<unsigned>(folder_id));
@@ -3695,9 +3893,12 @@ bool TileConfig::saveGridInPlace(uint16_t folder_id, TileGridConfig& grid,
     }
   }
 
-  Serial.printf("[TileConfig] Grid %u saved (storage, %u x %u bytes)\n",
+  Serial.printf("[TileConfig] Grid %u saved (storage, %u x %u bytes) "
+                "sidecars=%lu ms grid=%lu ms\n",
                 static_cast<unsigned>(folder_id),
                 static_cast<unsigned>(QUARTERS_PER_GRID),
-                static_cast<unsigned>(sizeof(PackedQuarterGridV7)));
+                static_cast<unsigned>(sizeof(PackedQuarterGridV7)),
+                static_cast<unsigned long>(sidecars_ms),
+                static_cast<unsigned long>(millis() - grid_started_ms));
   return true;
 }

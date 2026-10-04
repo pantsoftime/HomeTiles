@@ -35,8 +35,11 @@ struct TileWidgetCache {
   MediaTileWidgets media[TILES_PER_GRID];
 };
 
-// Allocate the large, cold renderer bookkeeping arrays. On ESP32-P4 these
-// live in PSRAM; non-P4 profiles keep their established static storage.
+// Allocate the per-slot renderer bookkeeping of every grid (Sensor, Switch,
+// Cover, Climate, Weather, Media and Binary Sensor widgets and states) in
+// PSRAM. Every chip uses this storage; internal RAM is scarce on P4 and S3.
+// setup() calls it before the UI task and the MQTT worker start; the storage
+// is never freed.
 bool tile_renderer_init_cold_storage();
 
 // Renders a complete tile grid.
@@ -94,6 +97,8 @@ uint32_t climate_visual_color(const ClimateState& state);
 // show them; false while the payload has no available state. `active` (when
 // given) tells whether the entity is on or running rather than off.
 bool switch_payload_icon_color(const char* payload, uint32_t& rgb, bool* active = nullptr);
+// The Switch tile's icon color for a state (grey while off or unavailable).
+uint32_t switch_state_icon_color(const SwitchState& state);
 bool climate_payload_icon_color(const char* payload, uint32_t& rgb, bool* active = nullptr);
 
 CoverTileWidgets* tile_renderer_get_cover_widgets(GridType grid_type);
@@ -104,6 +109,8 @@ void queue_cover_tile_update(GridType grid_type, uint8_t grid_index,
                              const char* payload);
 void process_cover_update_queue(uint8_t max_updates = 0);
 
+// Part of tile_renderer_init_cold_storage(); true once the storage exists.
+bool binary_sensor_init_storage();
 BinarySensorTileWidgets* tile_renderer_get_binary_sensor_widgets(
     GridType grid_type);
 BinarySensorState* tile_renderer_get_binary_sensor_states(GridType grid_type);
@@ -124,6 +131,10 @@ void process_weather_update_queue(uint8_t max_updates = 0);  // 0 drains the que
 
 // UI-thread lookup for the deferred popup body; the caller copies pixels immediately.
 const lv_image_dsc_t* tile_renderer_find_media_cover(const String& entity_id, uint32_t& hash);
+// The "From cover" color a shown media card of the entity sampled from its
+// cover (media/cover_color.h); false without a shown cover or a clear color.
+// For the Web Admin preview, on the UI thread.
+bool tile_renderer_media_cover_color(const String& entity_id, uint32_t& rgb);
 void reset_media_widget(GridType grid_type, uint8_t grid_index);
 void reset_media_widgets(GridType grid_type);
 void queue_media_tile_update(GridType grid_type, uint8_t grid_index, const char* payload);

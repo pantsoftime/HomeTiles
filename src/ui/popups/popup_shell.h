@@ -35,7 +35,43 @@ void popup_shell_follow_tile_color(uint32_t color);
 // Off/Global/On and "Circle in icon color"), so the header disc looks like
 // the tile's disc. The next show_popup_shell() takes them; popups opened
 // without a tile keep the default disc (tinted by a colored icon, shown).
-void popup_shell_use_tile_disc(bool off, bool follows_global, bool glow);
+// `from_icon`: the popup shows the tile color and that is "From icon": the
+// circle is computed for the popup's own card. `tile_tint`: the strength of
+// the tile color "From icon" (0 = another tile color); every other popup
+// computes the circle for the card that strength gives, so header circle and
+// controls are exactly the tile's.
+void popup_shell_use_tile_disc(bool off, bool follows_global, bool glow, bool from_icon = false,
+                               uint8_t tile_tint = 0);
+// A popup opened without a tile (Settings) drops options a tile click left
+// behind without opening a popup, for example a folder without a PIN.
+void popup_shell_use_no_tile_disc();
+// While a control is dragged (the Light popup's color wheel and Kelvin
+// slider), the close button keeps its press color: it only shows while the
+// close button is pressed, and restyling it on every step drew one more area
+// per frame. It takes the current color once the drag ends (false) and when
+// the popup closes.
+void popup_shell_hold_close_fill(bool hold);
+// The fill of the controls around the header for a popup (card) and icon
+// color, with the options of the tile that opens (or opened) the popup: the
+// circle's color whenever the circle is tinted, else the neutral step
+// (tone_color::fill), and its control opacity. The pressed close button, the
+// footer controls (popup_nav_style.h), the editors, the PIN keys and the
+// Light popup's track and buttons use it.
+void popup_shell_control_fill(uint32_t card_rgb, uint32_t icon_rgb, lv_color_t& color, lv_opa_t& opa,
+                              bool* tinted = nullptr);
+// A control pressed on a control surface (a pressed PIN key, the date arrows
+// on their field): one more control step (tone_color::Fill::raised_color).
+void popup_shell_control_raised_fill(uint32_t card_rgb, uint32_t icon_rgb, lv_color_t& color, lv_opa_t& opa);
+
+// Home Assistant pulses the state icon while a command runs or the device
+// needs attention (Lock, Alarm panel): the shared header icon, while the
+// popup showing `body` is the active one. Another popup stops it.
+void popup_shell_pulse_icon(lv_obj_t* body, bool on);
+
+// A PIN-protected Folder or Settings: the shared header icon carries the lock
+// of its tile (icon_lock_mark.h) while the popup showing `body` is the active
+// one. Another popup removes it.
+void popup_shell_icon_lock(lv_obj_t* body, bool on);
 
 // Register an existing background tree, once after construction. Opaque popup
 // pixels can skip its covered draw calls without hiding or rebuilding widgets.

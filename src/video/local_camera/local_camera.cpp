@@ -541,7 +541,11 @@ uint32_t g_upload_log_ms = 0;
 // plain function pointer. Worker task only.
 int g_gamma_curve_contrast = 0;
 int8_t g_gamma_curve_brightness = 0;
+// Linear gain of the curve: the target (digital step times brightness) and
+// the gain written into the ISP, which glides toward the target during a
+// stream (applyPendingIspUpdates()).
 float g_gamma_curve_gain = 1.0f;
+float g_gamma_applied_gain = 1.0f;
 // Digital gain step kept across pipelines, so the next stream or snapshot
 // starts where the last one ended. Worker task only.
 uint8_t g_digital_step = 0;
@@ -560,7 +564,7 @@ std::atomic<uint16_t> g_report_luma{0};
 // contrast is an S-curve on top (identity at 0).
 uint32_t gammaCurve(uint32_t x) {
   return gammaLutValue(x, kMode.black_level, kGammaExponent, g_gamma_curve_contrast,
-                       g_gamma_curve_gain);
+                       g_gamma_applied_gain);
 }
 
 // Effective auto-exposure target: the base target scaled by the brightness.
@@ -568,8 +572,71 @@ uint32_t aeTarget() {
   return adjustedAeTarget(g_pipe.ae_target, currentImageSettings().brightness);
 }
 
-bool onGetNewTransaction(esp_cam_ctlr_handle_t, esp_cam_ctlr_trans_t* trans,
-                         void*) {
+// Gamma between the sensor and the AE statistics (1 = statistics before the
+// gamma curve, linear); stepAutoExposure() takes the luma ratio back through it.
+float aeExponent() { return g_pipe.ae_after_gamma ? kGammaExponent : 1.0f; }
+
+// White balance statistics only once the exposure is near its target: far
+// off, the frame is too dark or clipped for gray world, and every read waits
+// for one more frame (139 ms at night).
+bool nearAeTarget(uint32_t mean_luma) {
+  const uint32_t target = aeTarget();
+  const uint32_t band = 3 * 12;
+  return mean_luma + band >= target && mean_luma <= target + band;
+}
+
+// The last AE evaluations outside the target band, with the exposure they
+// measured, for /api/local-camera ("ae_trace"): a capture that stays in the
+// band records nothing. Shows on the device what the host model predicts
+// (V2 2026-10-03: a stream ended at the minimum gain in a dark room).
+struct AeTraceEntry {
+  uint32_t ms = 0;
+  char where = 0;  // s = still image, b = stream start, t = running stream.
+  uint8_t luma = 0;
+  uint8_t target = 0;
+  uint8_t digital_step = 0;
+  uint16_t lines = 0;
+  uint16_t gain_x16 = 0;
+};
+constexpr size_t kAeTraceSize = 24;
+AeTraceEntry g_ae_trace[kAeTraceSize];
+size_t g_ae_trace_count = 0;
+portMUX_TYPE g_ae_trace_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void traceAutoExposure(char where, uint32_t iteration, uint32_t elapsed_ms, uint32_t mean_luma) {
+  AeTraceEntry entry;
+  entry.ms = millis();
+  entry.where = where;
+  entry.luma = static_cast<uint8_t>(mean_luma > 255 ? 255 : mean_luma);
+  const uint32_t target = aeTarget();
+  entry.target = static_cast<uint8_t>(target > 255 ? 255 : target);
+  entry.digital_step = g_pipe.gamma_digital_step;
+  entry.lines = g_exposure.lines;
+  entry.gain_x16 = g_exposure.gain_x16;
+  portENTER_CRITICAL(&g_ae_trace_mux);
+  g_ae_trace[g_ae_trace_count % kAeTraceSize] = entry;
+  ++g_ae_trace_count;
+  portEXIT_CRITICAL(&g_ae_trace_mux);
+#if defined(HOMETILES_TEST_BETA) || defined(HOMETILES_ISSUE38_BETA) || \
+    defined(HOMETILES_CAMERA_BETA)
+  Serial.printf("[LocalCam] AE %c %u: %u ms, luma %u/%u, lines %u, gain %u/16, digital %u, frame %u ms\n",
+                where, static_cast<unsigned>(iteration), static_cast<unsigned>(elapsed_ms),
+                static_cast<unsigned>(mean_luma), static_cast<unsigned>(target),
+                static_cast<unsigned>(g_exposure.lines), static_cast<unsigned>(g_exposure.gain_x16),
+                static_cast<unsigned>(g_pipe.gamma_digital_step),
+                static_cast<unsigned>(currentFrameMs()));
+#else
+  (void)iteration;
+  (void)elapsed_ms;
+#endif
+}
+
+// The CSI driver calls both callbacks from its DMA interrupt, which is
+// cache-safe on P4 (it shares the line with the display refresh and keeps
+// running during flash writes): they stay in IRAM and touch only internal RAM
+// (g_isr and its queue).
+IRAM_ATTR bool onGetNewTransaction(esp_cam_ctlr_handle_t, esp_cam_ctlr_trans_t* trans,
+                                   void*) {
   int8_t next;
   if (g_isr.frozen >= 0) {
     next = static_cast<int8_t>(1 - g_isr.frozen);
@@ -582,8 +649,8 @@ bool onGetNewTransaction(esp_cam_ctlr_handle_t, esp_cam_ctlr_trans_t* trans,
   return false;
 }
 
-bool onTransactionFinished(esp_cam_ctlr_handle_t, esp_cam_ctlr_trans_t* trans,
-                           void*) {
+IRAM_ATTR bool onTransactionFinished(esp_cam_ctlr_handle_t, esp_cam_ctlr_trans_t* trans,
+                                     void*) {
   int8_t index = -1;
   if (trans->buffer == g_isr.buffers[0]) index = 0;
   else if (trans->buffer == g_isr.buffers[1]) index = 1;
@@ -689,8 +756,25 @@ esp_err_t sensorStandby() {
   return err;
 }
 
-void applyColorCorrection() {
-  if (!g_pipe.isp) return;
+// While a stream runs, curve and colour changes wait for the next frame end:
+// written mid-frame, the ISP drew the top of the picture with the old curve
+// and the rest with the new one, a brighter top and a darker rest at every
+// digital gain step (V2 2026-10-03). streamCaptureFrame() applies them right
+// after it froze a frame, at the start of the vertical blanking.
+bool g_defer_isp_updates = false;
+bool g_gamma_pending = false;
+bool g_ccm_pending = false;
+// A gentle change glides: the curve gain moves at most g_gamma_ramp_per_frame
+// per frame (setStreamDigital() spreads a step over up to three frames), so a
+// digital step is no visible jump (V2 2026-10-03: the steps showed even at
+// frame ends). Other changes land in one frame.
+bool g_gamma_gentle = false;
+float g_gamma_ramp_per_frame = 1.05f;
+// The stream's stepless digital gain (setStreamDigital()); 0 outside a stream
+// with continuous statistics, where the quarter-EV step applies.
+float g_stream_digital = 0.0f;
+
+void writeColorCorrection() {
   esp_isp_ccm_config_t ccm = {};
   buildImageCcm(kBaseCcm, g_gains, currentImageSettings(), ccm.matrix);
   ccm.saturation = true;
@@ -698,28 +782,71 @@ void applyColorCorrection() {
   esp_isp_ccm_configure(g_pipe.isp, &ccm);
 }
 
-// Loads the gamma curve for one contrast into all three channels. The IDF
-// allows esp_isp_gamma_configure() while gamma is enabled; each call latches
-// the new points through the gamma update bit, so no disable/enable (and no
-// linear frame in between) is needed.
-esp_err_t loadGammaCurve(int contrast, uint8_t digital_step) {
-  g_gamma_curve_contrast = contrast;
-  // Digital gain after the sensor limits and the user brightness, which
-  // acts at once instead of waiting for the auto exposure.
-  const int brightness = currentImageSettings().brightness;
-  g_gamma_curve_gain =
-      digitalGainForStep(digital_step) * brightnessLinearGain(brightness, kGammaExponent);
-  g_gamma_curve_brightness = static_cast<int8_t>(brightness);
+void applyColorCorrection() {
+  if (!g_pipe.isp) return;
+  if (g_defer_isp_updates) {
+    g_ccm_pending = true;
+    return;
+  }
+  writeColorCorrection();
+}
+
+// Writes the curve of g_gamma_curve_contrast and g_gamma_applied_gain into
+// all three channels. The IDF allows esp_isp_gamma_configure() while gamma is enabled;
+// each call latches the new points through the gamma update bit, so no
+// disable/enable (and no linear frame in between) is needed.
+esp_err_t writeGammaCurve() {
   isp_gamma_curve_points_t curve = {};
   esp_err_t err = esp_isp_gamma_fill_curve_points(gammaCurve, &curve);
   if (err == ESP_OK) err = esp_isp_gamma_configure(g_pipe.isp, COLOR_COMPONENT_R, &curve);
   if (err == ESP_OK) err = esp_isp_gamma_configure(g_pipe.isp, COLOR_COMPONENT_G, &curve);
   if (err == ESP_OK) err = esp_isp_gamma_configure(g_pipe.isp, COLOR_COMPONENT_B, &curve);
+  return err;
+}
+
+// Loads the gamma curve for one contrast and digital gain step. gentle: during
+// a stream the gain glides there instead of changing in one frame.
+esp_err_t loadGammaCurve(int contrast, uint8_t digital_step, bool gentle = false) {
+  g_gamma_curve_contrast = contrast;
+  // Digital gain after the sensor limits and the user brightness, which
+  // acts at once instead of waiting for the auto exposure.
+  const int brightness = currentImageSettings().brightness;
+  const float digital =
+      g_stream_digital > 0.0f ? g_stream_digital : digitalGainForStep(digital_step);
+  g_gamma_curve_gain = digital * brightnessLinearGain(brightness, kGammaExponent);
+  g_gamma_curve_brightness = static_cast<int8_t>(brightness);
+  if (!g_defer_isp_updates) g_gamma_applied_gain = g_gamma_curve_gain;
+  const esp_err_t err = g_defer_isp_updates ? ESP_OK : writeGammaCurve();
   if (err == ESP_OK) {
+    g_gamma_pending = g_defer_isp_updates;
+    g_gamma_gentle = g_defer_isp_updates && gentle;
     g_pipe.gamma_contrast = static_cast<int8_t>(contrast);
     g_pipe.gamma_digital_step = digital_step;
   }
   return err;
+}
+
+// Writes the curve and colour changes held back during a stream frame.
+void applyPendingIspUpdates() {
+  if (!g_pipe.isp) return;
+  if (g_gamma_pending) {
+    float next = g_gamma_curve_gain;
+    if (g_gamma_gentle && g_gamma_applied_gain > 0.0f) {
+      const float ratio = g_gamma_curve_gain / g_gamma_applied_gain;
+      if (ratio > g_gamma_ramp_per_frame) next = g_gamma_applied_gain * g_gamma_ramp_per_frame;
+      if (ratio < 1.0f / g_gamma_ramp_per_frame) {
+        next = g_gamma_applied_gain / g_gamma_ramp_per_frame;
+      }
+    }
+    g_gamma_applied_gain = next;
+    g_gamma_pending = next != g_gamma_curve_gain;
+    const esp_err_t err = writeGammaCurve();
+    if (err != ESP_OK) logCaptureError("Gamma update failed", err);
+  }
+  if (g_ccm_pending) {
+    g_ccm_pending = false;
+    writeColorCorrection();
+  }
 }
 
 // Worker: pushes changed user image settings to the running ISP before the
@@ -742,6 +869,10 @@ void applyImageSettingsIfChanged() {
   if (err != ESP_OK) logCaptureError("Gamma update failed", err);
 }
 
+// Failed sensor exposure writes (stream timing "sensor_fail"). The AE keeps
+// the new value, so a failed write shows only as a step that never arrives.
+uint32_t g_sensor_write_failures = 0;
+
 // Writes a new exposure only when it differs. At the exposure limits (dark
 // scene, or brightness above the reachable target) every AE step repeats the
 // same values; each write is six transfers on the SCCB bus shared with the
@@ -749,7 +880,9 @@ void applyImageSettingsIfChanged() {
 bool setExposureIfChanged(const ExposureSetting& next) {
   if (next.lines == g_exposure.lines && next.gain_x16 == g_exposure.gain_x16) return false;
   g_exposure = next;
-  g_sensor.setExposure(g_exposure.lines, g_exposure.gain_x16);
+  if (g_sensor.setExposure(g_exposure.lines, g_exposure.gain_x16) != ESP_OK) {
+    ++g_sensor_write_failures;
+  }
   return true;
 }
 
@@ -770,7 +903,9 @@ void applyGainLimit(ExposureStages& stages) {
   g_max_digital_step = limits.max_digital_step;
   if (g_exposure.gain_x16 > limits.sensor_total_gain_x16) {
     g_exposure.gain_x16 = limits.sensor_total_gain_x16;
-    if (g_sensor_ready) g_sensor.setExposure(g_exposure.lines, g_exposure.gain_x16);
+    if (g_sensor_ready && g_sensor.setExposure(g_exposure.lines, g_exposure.gain_x16) != ESP_OK) {
+      ++g_sensor_write_failures;
+    }
   }
 }
 
@@ -785,14 +920,15 @@ void publishExposure(uint32_t mean_luma) {
 // Digital gain after the sensor limits (nextDigitalGainStep). Returns true
 // when the curve changed; the caller then skips its sensor step, because the
 // statistics show the new curve only on a later frame.
-bool stepDigitalGain(uint32_t mean_luma, bool sensor_at_brighter_limit) {
+bool stepDigitalGain(uint32_t mean_luma, bool sensor_at_brighter_limit, uint32_t tolerance = 12,
+                     int max_jump = kMaxDigitalGainJump, bool gentle = false) {
   if (!g_pipe.ae_after_gamma) return false;
   const uint8_t current = g_pipe.gamma_digital_step;
   const uint32_t target = aeTarget();
-  const uint8_t next = nextDigitalGainStep(current, mean_luma, target, 12, kGammaExponent,
-                                           sensor_at_brighter_limit, g_max_digital_step);
+  const uint8_t next = nextDigitalGainStep(current, mean_luma, target, tolerance, kGammaExponent,
+                                           sensor_at_brighter_limit, g_max_digital_step, max_jump);
   if (next == current) return false;
-  const esp_err_t err = loadGammaCurve(g_pipe.gamma_contrast, next);
+  const esp_err_t err = loadGammaCurve(g_pipe.gamma_contrast, next, gentle);
   if (err != ESP_OK) {
     logCaptureError("Digital gain update failed", err);
     return false;
@@ -852,11 +988,18 @@ bool applyOrientation(bool live) {
   return true;
 }
 
+void stopLiveStatistics();
+
 void releasePipeline() {
+  g_defer_isp_updates = false;
+  g_gamma_pending = false;
+  g_ccm_pending = false;
+  g_stream_digital = 0.0f;
   if (g_pipe.csi && g_pipe.csi_running) {
     esp_cam_ctlr_stop(g_pipe.csi);
     g_pipe.csi_running = false;
   }
+  stopLiveStatistics();
   if (g_pipe.ae) {
     esp_isp_ae_controller_disable(g_pipe.ae);
     esp_isp_del_ae_controller(g_pipe.ae);
@@ -1030,6 +1173,54 @@ bool ensureSensor(bool report_state) {
   return true;
 }
 
+// Statistics of every frame while a stream runs (continuous mode): the ISP
+// calls these after each frame, and the stream takes the latest values
+// without waiting. A oneshot read waits for the start and the end of the next
+// frame, up to 80 ms at 25 fps, and every wait cost the stream a frame (V2
+// 2026-10-03). Snapshots and the stream start keep the oneshot reads.
+struct LiveStatistics {
+  isp_ae_result_t ae = {};
+  uint32_t ae_frames = 0;
+  isp_awb_stat_result_t awb = {};
+  uint32_t awb_frames = 0;
+};
+LiveStatistics g_live;
+portMUX_TYPE g_live_mux = portMUX_INITIALIZER_UNLOCKED;
+bool g_live_ae_callback = false;   // Callbacks registered at controller creation.
+bool g_live_awb_callback = false;
+bool g_live_ae_running = false;    // Continuous statistics on.
+bool g_live_awb_running = false;
+
+bool onLiveAeStatistics(isp_ae_ctlr_t, const esp_isp_ae_env_detector_evt_data_t* edata, void*) {
+  portENTER_CRITICAL_ISR(&g_live_mux);
+  g_live.ae = edata->ae_result;
+  ++g_live.ae_frames;
+  portEXIT_CRITICAL_ISR(&g_live_mux);
+  return false;
+}
+
+bool onLiveAwbStatistics(isp_awb_ctlr_t, const esp_isp_awb_evt_data_t* edata, void*) {
+  portENTER_CRITICAL_ISR(&g_live_mux);
+  g_live.awb = edata->awb_result;
+  ++g_live.awb_frames;
+  portEXIT_CRITICAL_ISR(&g_live_mux);
+  return false;
+}
+
+void startLiveStatistics() {
+  g_live_ae_running = g_pipe.ae && g_live_ae_callback &&
+                      esp_isp_ae_controller_start_continuous_statistics(g_pipe.ae) == ESP_OK;
+  g_live_awb_running = g_pipe.awb && g_live_awb_callback &&
+                       esp_isp_awb_controller_start_continuous_statistics(g_pipe.awb) == ESP_OK;
+}
+
+void stopLiveStatistics() {
+  if (g_live_ae_running) esp_isp_ae_controller_stop_continuous_statistics(g_pipe.ae);
+  if (g_live_awb_running) esp_isp_awb_controller_stop_continuous_statistics(g_pipe.awb);
+  g_live_ae_running = false;
+  g_live_awb_running = false;
+}
+
 bool createAutoExposure(isp_ae_sample_point_t sample_point, uint32_t target) {
   esp_isp_ae_config_t config = {};
   config.sample_point = sample_point;
@@ -1042,6 +1233,12 @@ bool createAutoExposure(isp_ae_sample_point_t sample_point, uint32_t target) {
     g_pipe.ae = nullptr;
     return false;
   }
+  // Registered before enabling (the driver accepts it only then). Without it
+  // the stream keeps the oneshot reads.
+  esp_isp_ae_env_detector_evt_cbs_t callbacks = {};
+  callbacks.on_env_statistics_done = onLiveAeStatistics;
+  g_live_ae_callback =
+      esp_isp_ae_env_detector_register_event_callbacks(g_pipe.ae, &callbacks, nullptr) == ESP_OK;
   if (esp_isp_ae_controller_enable(g_pipe.ae) != ESP_OK) {
     esp_isp_del_ae_controller(g_pipe.ae);
     g_pipe.ae = nullptr;
@@ -1231,6 +1428,12 @@ bool ensurePipeline() {
       g_pipe.awb = nullptr;
       break;
     }
+    {
+      esp_isp_awb_cbs_t callbacks = {};
+      callbacks.on_statistics_done = onLiveAwbStatistics;
+      g_live_awb_callback =
+          esp_isp_awb_register_event_callbacks(g_pipe.awb, &callbacks, nullptr) == ESP_OK;
+    }
     err = esp_isp_awb_controller_enable(g_pipe.awb);
     if (err != ESP_OK) break;
 
@@ -1395,7 +1598,13 @@ ErrorCode captureJpeg(uint32_t max_bytes, size_t* jpeg_bytes, CaptureStats* stat
       continue;
     }
     ++report.ae_samples;
-    if (esp_isp_awb_controller_get_oneshot_statistics(
+    stats->mean_luma = weightedMeanLuma(ae_result.luminance);
+    const ExposureStep step = stepStagedExposure(
+        g_exposure, stats->mean_luma, aeTarget(), 12, stages, aeExponent());
+    // At its limit the exposure gets no nearer: balance anyway (b205 skipped it
+    // in a dark room, so the image kept the green of unbalanced gains).
+    if ((step.converged || nearAeTarget(stats->mean_luma)) &&
+        esp_isp_awb_controller_get_oneshot_statistics(
             g_pipe.awb, kStatisticsTimeoutMs, &awb_result) == ESP_OK) {
       ++report.awb_samples;
       report.white_patches = awb_result.white_patch_num;
@@ -1406,9 +1615,9 @@ ErrorCode captureJpeg(uint32_t max_bytes, size_t* jpeg_bytes, CaptureStats* stat
       g_gains = next;
       applyColorCorrection();
     }
-    stats->mean_luma = weightedMeanLuma(ae_result.luminance);
-    const ExposureStep step = stepStagedExposure(
-        g_exposure, stats->mean_luma, aeTarget(), 12, stages);
+    if (iteration > 0 || !step.converged) {
+      traceAutoExposure('s', iteration, millis() - started_ms, stats->mean_luma);
+    }
     publishExposure(stats->mean_luma);
     if (stepDigitalGain(stats->mean_luma, step.limited)) {
       // The new curve shows in the statistics of a later frame.
@@ -1632,6 +1841,8 @@ constexpr uint32_t kStreamAwbIntervalMs = 1000;
 constexpr uint32_t kStreamTuneForceMs = 2000;
 constexpr int kStreamStatisticsTimeoutMs = 40;
 constexpr int kStreamMinStatisticsWaitMs = 10;
+// A forced read waits one sensor frame plus this margin.
+constexpr int kStreamStatisticsMarginMs = 10;
 constexpr uint32_t kStreamArbiterTimeoutMs = 20;
 constexpr uint32_t kStreamSliceMs = 50;
 constexpr uint32_t kSenderStopWaitMs = 1000;
@@ -1645,6 +1856,29 @@ struct StreamRun {
   local_camera_stream::FramePacer pacer;
   uint32_t last_tune_ms = 0;
   uint32_t last_awb_ms = 0;
+  uint32_t last_measured_ms = 0;  // Last statistics read that succeeded.
+  // Continuous statistics: result counts already used, and the time of the
+  // last exposure or curve change.
+  uint32_t live_ae_seen = 0;
+  uint32_t live_awb_seen = 0;
+  uint32_t live_changed_ms = 0;
+  uint32_t live_ae_counted = 0;  // AE results already counted for the window.
+  // A step waits until it shows in the measured luma (stepProgress): the
+  // luma it started from, the luma it should reach, the result before, the
+  // results in a row that show it, and the results since the step.
+  bool live_waiting = false;
+  uint32_t live_from_luma = 0;
+  float live_expected_luma = 0.0f;
+  uint32_t live_previous_luma = 0;
+  uint8_t live_confirmed = 0;
+  uint16_t live_wait_results = 0;
+  uint32_t live_written_ms = 0;  // Last exposure write of the step (glide end).
+  // A sensor step glides over kSensorGlideFrames frames, one part per frame.
+  bool gliding = false;
+  uint8_t glide_done = 0;
+  ExposureSetting glide_from;
+  ExposureSetting glide_to;
+  uint32_t sensor_fail_seen = 0;  // g_sensor_write_failures at the window start.
   bool awb_next = false;
   uint32_t mean_luma = 0;
   StreamWindow window;
@@ -1761,7 +1995,12 @@ StopReason streamSettle(StreamRun& run, uint32_t* leftover) {
             g_pipe.ae, kStreamSettleStatisticsMs, &ae_result) != ESP_OK) {
       continue;
     }
-    if (esp_isp_awb_controller_get_oneshot_statistics(
+    run.mean_luma = weightedMeanLuma(ae_result.luminance);
+    const ExposureStep step =
+        stepStagedExposure(g_exposure, run.mean_luma, aeTarget(), 12, run.stages, aeExponent());
+    // At its limit the exposure gets no nearer: balance anyway.
+    if ((step.converged || nearAeTarget(run.mean_luma)) &&
+        esp_isp_awb_controller_get_oneshot_statistics(
             g_pipe.awb, kStreamSettleStatisticsMs, &awb_result) == ESP_OK) {
       const WhiteBalanceGains next = grayWorldGains(
           awb_result.sum_r, awb_result.sum_g, awb_result.sum_b,
@@ -1770,9 +2009,9 @@ StopReason streamSettle(StreamRun& run, uint32_t* leftover) {
       g_gains = next;
       applyColorCorrection();
     }
-    run.mean_luma = weightedMeanLuma(ae_result.luminance);
-    const ExposureStep step =
-        stepStagedExposure(g_exposure, run.mean_luma, aeTarget(), 12, run.stages);
+    if (iteration > 0 || !step.converged) {
+      traceAutoExposure('b', iteration, millis() - started_ms, run.mean_luma);
+    }
     publishExposure(run.mean_luma);
     if (stepDigitalGain(run.mean_luma, step.limited)) {
       exposure_done = false;
@@ -1787,13 +2026,291 @@ StopReason streamSettle(StreamRun& run, uint32_t* leftover) {
   }
   run.last_tune_ms = millis();
   run.last_awb_ms = run.last_tune_ms;
+  run.last_measured_ms = run.last_tune_ms;
   return StopReason::None;
+}
+
+// Espressif's AE tuning for the P4 camera sensors (esp_ipa "agc" in
+// esp_cam_sensor, e.g. sc202cs_default.json and gc2053_default.json): a new
+// step only frame_delay (3) frames after the last one, f_n0 (0.32) of the
+// way when brighter and f_m0 (0.42) when darker, no step below min_step
+// (3 %), and a narrow hold band. The b211/b212 stream stepped a quarter EV
+// within a +-20 % band and jumped at once when far off: visible steps and up
+// to a second too bright after uncovering (V2 recordings 2026-10-03).
+// A fixed settle time fits only one delay: b213/b214 waited 4-5 frames while
+// the luma also moved on its own (a hand during the cover test), stepped on
+// luma that did not show the last step yet, overshot and swung between 76
+// and 164. A step now waits until it shows in the luma (stepProgress) and two
+// results in a row hold still. The b215 8-inch log measured the sensor
+// answer 2-3 frames after a write: at least three frames after the last
+// write, at most 0.6 s or six frames when nothing shows (a limit, a failed
+// write). Any sensor and delay settles without swinging.
+constexpr uint32_t kLiveMinSettleFrames = 3;
+constexpr uint8_t kLiveConfirmResults = 2;
+constexpr uint32_t kLiveMaxSettleMs = 600;
+constexpr uint32_t kLiveMaxSettleFrames = 6;
+// A sensor step in one write showed as a visible jump: five damped steps
+// from dark to the target looked like five brightness levels (b215 on the
+// 8-inch). It glides over four frames instead, one write per frame; the
+// stream digital gain glides at frame ends the same way.
+constexpr uint8_t kSensorGlideFrames = 4;
+// Results traced after a step (beta builds): how the luma follows a change.
+constexpr uint16_t kLiveTraceResults = 16;
+constexpr float kStreamRiseSpeed = 0.32f;
+constexpr float kStreamFallSpeed = 0.42f;
+constexpr float kStreamMinStep = 0.03f;
+constexpr uint32_t kStreamHoldPercent = 6;
+// libcamera's fastReduceThreshold (0.4): a frame that needs less than 60 %
+// of its exposure is corrected at once. Uncovered after a dark scene, the
+// damped steps kept the V2 and 8-inch streams far too bright for a second.
+constexpr float kStreamFastReduceRatio = 0.6f;
+
+// The stream's digital gain, stepless: it scales the curve between the
+// quarter-EV steps the snapshots use. The nearest step stays recorded for
+// reports and the next snapshot. A change glides over at most three frames.
+void setStreamDigital(float digital) {
+  const float max_digital = digitalGainForStep(g_max_digital_step);
+  if (digital > max_digital) digital = max_digital;
+  if (digital < 1.0f) digital = 1.0f;
+  g_stream_digital = digital;
+  long step = lroundf(log2f(digital) * static_cast<float>(kDigitalGainStepsPerEv));
+  if (step < 0) step = 0;
+  if (step > g_max_digital_step) step = g_max_digital_step;
+  g_digital_step = static_cast<uint8_t>(step);
+  const esp_err_t err = loadGammaCurve(g_pipe.gamma_contrast, g_digital_step, true);
+  if (err != ESP_OK) logCaptureError("Digital gain update failed", err);
+  // The glide starts from the curve on screen, so a change on top of an
+  // unfinished glide also lands within three frames.
+  const float from = g_gamma_applied_gain > 0.0f ? g_gamma_applied_gain : g_gamma_curve_gain;
+  const float change =
+      g_gamma_curve_gain > from ? g_gamma_curve_gain / from : from / g_gamma_curve_gain;
+  g_gamma_ramp_per_frame = std::max(1.01f, cbrtf(change));
+}
+
+// The stream's exposure product: lines x gain x digital gain.
+float streamExposureProduct() {
+  const float digital = g_stream_digital > 0.0f ? g_stream_digital : 1.0f;
+  return static_cast<float>(g_exposure.lines) * static_cast<float>(g_exposure.gain_x16) * digital;
+}
+
+// The exposure product a running glide ends at.
+float streamTargetProduct(const StreamRun& run) {
+  const ExposureSetting& sensor = run.gliding ? run.glide_to : g_exposure;
+  const float digital = g_stream_digital > 0.0f ? g_stream_digital : 1.0f;
+  return static_cast<float>(sensor.lines) * static_cast<float>(sensor.gain_x16) * digital;
+}
+
+// Writes the next part of a sensor glide: the exposure product moves by an
+// equal factor each frame, always split from the start setting, and the last
+// part writes the target exactly.
+void advanceSensorGlide(StreamRun& run, uint32_t now_ms) {
+  if (!run.gliding) return;
+  ++run.glide_done;
+  if (run.glide_done >= kSensorGlideFrames) {
+    setExposureIfChanged(run.glide_to);
+    run.gliding = false;
+  } else {
+    const float from = static_cast<float>(run.glide_from.lines) * run.glide_from.gain_x16;
+    const float to = static_cast<float>(run.glide_to.lines) * run.glide_to.gain_x16;
+    const float part = powf(to / from, static_cast<float>(run.glide_done) / kSensorGlideFrames);
+    setExposureIfChanged(scaleStagedExposure(run.glide_from, part, run.stages).next);
+  }
+  run.live_written_ms = now_ms;
+}
+
+// Starts a sensor glide toward next and writes its first part.
+void startSensorGlide(StreamRun& run, const ExposureSetting& next) {
+  run.glide_from = g_exposure;
+  run.glide_to = next;
+  run.glide_done = 0;
+  run.gliding = true;
+  advanceSensorGlide(run, millis());
+}
+
+// Waits for an exposure change by ratio to show in the luma.
+void startStepWait(StreamRun& run, uint32_t from_luma, float ratio, uint32_t now_ms) {
+  run.live_changed_ms = now_ms;
+  run.live_written_ms = now_ms;
+  run.live_wait_results = 0;
+  run.live_waiting = ratio < 0.995f || ratio > 1.005f;
+  if (!run.live_waiting) return;
+  float expected = static_cast<float>(from_luma) * powf(ratio, aeExponent());
+  if (expected > 255.0f) expected = 255.0f;
+  run.live_from_luma = from_luma;
+  run.live_expected_luma = expected;
+  run.live_previous_luma = from_luma;
+  run.live_confirmed = 0;
+}
+
+// Beta builds: every result after a step, to see how the luma follows it.
+void traceStepResult(const StreamRun& run, uint32_t waited_ms, uint32_t luma) {
+#if defined(HOMETILES_TEST_BETA) || defined(HOMETILES_ISSUE38_BETA) || \
+    defined(HOMETILES_CAMERA_BETA)
+  if (run.live_wait_results > kLiveTraceResults) return;
+  Serial.printf("[LocalCam] AE f %u: %u ms, luma %u (from %u, want %u), gain %u/16, lines %u, digital %.2f/%.2f\n",
+                static_cast<unsigned>(run.live_wait_results), static_cast<unsigned>(waited_ms),
+                static_cast<unsigned>(luma), static_cast<unsigned>(run.live_from_luma),
+                static_cast<unsigned>(run.live_expected_luma + 0.5f),
+                static_cast<unsigned>(g_exposure.gain_x16), static_cast<unsigned>(g_exposure.lines),
+                static_cast<double>(g_stream_digital), static_cast<double>(g_gamma_applied_gain));
+#else
+  (void)run;
+  (void)waited_ms;
+  (void)luma;
+#endif
+}
+
+// True once the last step shows in the luma and holds still, or after the
+// longest wait. Counts the wait for the window.
+bool liveStepSettled(StreamRun& run, uint32_t luma, uint32_t now_ms) {
+  ++run.live_wait_results;
+  const uint32_t waited_ms = now_ms - run.live_changed_ms;
+  traceStepResult(run, waited_ms, luma);
+  const bool steady = lumaSteady(run.live_previous_luma, luma);
+  run.live_previous_luma = luma;
+  if (run.gliding) return false;
+  const uint32_t written_ms = now_ms - run.live_written_ms;
+  const uint32_t frame_ms = currentFrameMs();
+  if (written_ms < kLiveMinSettleFrames * frame_ms) return false;
+  const StepProgress progress =
+      stepProgress(run.live_from_luma, run.live_expected_luma, luma);
+  run.live_confirmed =
+      progress != StepProgress::Waiting && steady ? run.live_confirmed + 1 : 0;
+  const bool shown = run.live_confirmed >= kLiveConfirmResults;
+  if (!shown && written_ms < std::max(kLiveMaxSettleMs, kLiveMaxSettleFrames * frame_ms)) {
+    return false;
+  }
+  run.live_waiting = false;
+  StreamWindow& window = run.window;
+  ++window.settles;
+  window.settle_ms_total += waited_ms;
+  if (waited_ms > window.settle_ms_max) window.settle_ms_max = waited_ms;
+  if (!shown) ++window.settle_timeouts;
+  else if (progress == StepProgress::SceneChanged) ++window.scene_changes;
+  return true;
+}
+
+// One stream exposure step by ratio. Darker takes the digital gain down
+// first (it only adds noise), then the sensor; brighter raises the sensor
+// first, then the digital gain. Returns true when anything changed.
+bool applyStreamExposureStep(StreamRun& run, float ratio) {
+  bool changed = false;
+  float rest = ratio;
+  if (rest < 1.0f && g_stream_digital > 1.0f) {
+    const float before = g_stream_digital;
+    const float next = before * rest < 1.0f ? 1.0f : before * rest;
+    rest = rest * before / next;
+    setStreamDigital(next);
+    changed = true;
+  }
+  if (rest > 1.005f || rest < 0.995f) {
+    const float before = static_cast<float>(g_exposure.lines) * g_exposure.gain_x16;
+    const ExposureStep step = scaleStagedExposure(g_exposure, rest, run.stages);
+    if (step.next.lines != g_exposure.lines || step.next.gain_x16 != g_exposure.gain_x16) {
+      changed = true;
+      const float after = static_cast<float>(step.next.lines) * step.next.gain_x16;
+      if (after > 0.0f) rest = rest * before / after;
+      startSensorGlide(run, step.next);
+    }
+  }
+  if (rest > 1.005f && g_stream_digital < digitalGainForStep(g_max_digital_step)) {
+    setStreamDigital(g_stream_digital * rest);
+    changed = true;
+  }
+  return changed;
+}
+
+// The running stream with continuous statistics: an exposure step from the
+// latest frame exposed after the last change, white balance at most once per
+// second. Never waits.
+void streamAutoTuneLive(StreamRun& run) {
+  static isp_ae_result_t ae;
+  static isp_awb_stat_result_t awb;
+  const uint32_t now_ms = millis();
+  portENTER_CRITICAL(&g_live_mux);
+  ae = g_live.ae;
+  const uint32_t ae_frames = g_live.ae_frames;
+  awb = g_live.awb;
+  const uint32_t awb_frames = g_live.awb_frames;
+  portEXIT_CRITICAL(&g_live_mux);
+  if (static_cast<uint32_t>(now_ms - run.last_tune_ms) >= kStreamTuneIntervalMs) {
+    run.last_tune_ms = now_ms;
+    // A Max. gain change applies within the running stream.
+    const float before = streamExposureProduct();
+    applyGainLimit(run.stages);
+    if (g_stream_digital > digitalGainForStep(g_max_digital_step)) {
+      setStreamDigital(digitalGainForStep(g_max_digital_step));
+    }
+    const float after = streamExposureProduct();
+    if (after != before && before > 0.0f) startStepWait(run, run.mean_luma, after / before, now_ms);
+  }
+  // White balance only while no exposure step is under way: its colour
+  // matrix moves the luma too.
+  if (g_live_awb_running && !run.live_waiting && awb_frames != run.live_awb_seen &&
+      static_cast<uint32_t>(now_ms - run.last_awb_ms) >= kStreamAwbIntervalMs) {
+    run.live_awb_seen = awb_frames;
+    run.last_awb_ms = now_ms;
+    const WhiteBalanceGains next = grayWorldGains(awb.sum_r, awb.sum_g, awb.sum_b,
+                                                  awb.white_patch_num, kMinAwbSamples, g_gains);
+    if (!gainsSettled(next, g_gains)) {
+      g_gains = next;
+      applyColorCorrection();
+    }
+  }
+  run.window.ae_results += ae_frames - run.live_ae_counted;
+  run.live_ae_counted = ae_frames;
+  if (ae_frames == run.live_ae_seen) return;
+  run.live_ae_seen = ae_frames;
+  // One glide part per frame (one AE result per frame).
+  advanceSensorGlide(run, now_ms);
+  const uint32_t luma = weightedMeanLuma(ae.luminance);
+  if (run.live_waiting && !liveStepSettled(run, luma, now_ms)) return;
+  if (run.gliding) return;
+  ++run.window.tune_ok;
+  run.last_measured_ms = now_ms;
+  run.mean_luma = luma;
+  publishExposure(run.mean_luma);
+  const uint32_t target = aeTarget();
+  const uint32_t hold = target * kStreamHoldPercent / 100;
+  if (run.mean_luma + hold >= target && run.mean_luma <= target + hold) return;
+  const float needed = exposureRatioFor(run.mean_luma, target, aeExponent());
+  float ratio = needed < kStreamFastReduceRatio
+                    ? needed
+                    : powf(needed, needed > 1.0f ? kStreamRiseSpeed : kStreamFallSpeed);
+  if (ratio > 1.0f && ratio < 1.0f + kStreamMinStep) ratio = 1.0f + kStreamMinStep;
+  if (ratio < 1.0f && ratio > 1.0f - kStreamMinStep) ratio = 1.0f - kStreamMinStep;
+  // Results and ms the last step took to show (or since it showed).
+  traceAutoExposure('t', run.live_wait_results, now_ms - run.live_changed_ms, run.mean_luma);
+  const float before = streamTargetProduct(run);
+  if (applyStreamExposureStep(run, ratio)) {
+    startStepWait(run, run.mean_luma, streamTargetProduct(run) / before, millis());
+  }
+}
+
+// Counts one statistics read of the running stream and the time it took.
+void noteStatisticsRead(StreamWindow& window, uint32_t started_ms, bool ok) {
+  const uint32_t took_ms = millis() - started_ms;
+  if (ok) ++window.tune_ok;
+  else ++window.tune_timeout;
+  window.tune_ms_total += took_ms;
+  if (took_ms > window.tune_ms_max) window.tune_ms_max = took_ms;
 }
 
 // At most one statistics read per kStreamTuneIntervalMs, alternating AE and
 // AWB (AWB at most once per second), and only in the time left before the
-// next deadline. Every exposure change writes the SCCB bus shared with touch.
+// next deadline. The statistics arrive with the end of the next sensor frame:
+// when that frame is about as long as the stream period (25 fps at 1331
+// lines: 39 ms frames, 40 ms period) or longer (15 fps: 66 ms), a wait cut to
+// the time left timed out every time. The running stream then never measured,
+// and a gain the Max. gain setting had lowered never came back up (V2
+// 2026-10-03). After kStreamTuneForceMs without a measurement one read waits
+// a whole frame; a failed read is retried as the same kind.
+// Every exposure change writes the SCCB bus shared with touch.
 void streamAutoTune(StreamRun& run, uint32_t budget_ms) {
+  if (g_live_ae_running) {
+    streamAutoTuneLive(run);
+    return;
+  }
   static isp_ae_result_t ae_result;
   static isp_awb_stat_result_t awb_result;
   const uint32_t now_ms = millis();
@@ -1801,22 +2318,27 @@ void streamAutoTune(StreamRun& run, uint32_t budget_ms) {
   if (since_ms < kStreamTuneIntervalMs) return;
   int timeout_ms = budget_ms > 3 ? static_cast<int>(budget_ms - 3) : 0;
   if (timeout_ms > kStreamStatisticsTimeoutMs) timeout_ms = kStreamStatisticsTimeoutMs;
-  if (timeout_ms < kStreamMinStatisticsWaitMs) {
-    if (since_ms < kStreamTuneForceMs) return;
-    timeout_ms = kStreamStatisticsTimeoutMs;
+  const bool forced =
+      static_cast<uint32_t>(now_ms - run.last_measured_ms) >= kStreamTuneForceMs;
+  if (forced) {
+    timeout_ms = static_cast<int>(currentFrameMs()) + kStreamStatisticsMarginMs;
+    ++run.window.tune_forced;
+  } else if (timeout_ms < kStreamMinStatisticsWaitMs) {
+    return;
   }
   run.last_tune_ms = now_ms;
   // A Max. gain change applies within the running stream.
   applyGainLimit(run.stages);
   const bool awb = run.awb_next &&
                    static_cast<uint32_t>(now_ms - run.last_awb_ms) >= kStreamAwbIntervalMs;
-  run.awb_next = !run.awb_next;
   if (awb) {
+    const bool read = esp_isp_awb_controller_get_oneshot_statistics(
+                          g_pipe.awb, timeout_ms, &awb_result) == ESP_OK;
+    noteStatisticsRead(run.window, now_ms, read);
+    if (!read) return;
+    run.awb_next = false;
     run.last_awb_ms = now_ms;
-    if (esp_isp_awb_controller_get_oneshot_statistics(g_pipe.awb, timeout_ms, &awb_result) !=
-        ESP_OK) {
-      return;
-    }
+    run.last_measured_ms = now_ms;
     const WhiteBalanceGains next = grayWorldGains(
         awb_result.sum_r, awb_result.sum_g, awb_result.sum_b,
         awb_result.white_patch_num, kMinAwbSamples, g_gains);
@@ -1826,13 +2348,16 @@ void streamAutoTune(StreamRun& run, uint32_t budget_ms) {
     }
     return;
   }
-  if (esp_isp_ae_controller_get_oneshot_statistics(g_pipe.ae, timeout_ms, &ae_result) !=
-      ESP_OK) {
-    return;
-  }
+  const bool read =
+      esp_isp_ae_controller_get_oneshot_statistics(g_pipe.ae, timeout_ms, &ae_result) == ESP_OK;
+  noteStatisticsRead(run.window, now_ms, read);
+  if (!read) return;
+  run.awb_next = true;
+  run.last_measured_ms = now_ms;
   run.mean_luma = weightedMeanLuma(ae_result.luminance);
   const ExposureStep step =
-      stepStagedExposure(g_exposure, run.mean_luma, aeTarget(), 12, run.stages);
+      stepStagedExposure(g_exposure, run.mean_luma, aeTarget(), 12, run.stages, aeExponent());
+  if (!step.converged) traceAutoExposure('t', 0, 0, run.mean_luma);
   publishExposure(run.mean_luma);
   if (stepDigitalGain(run.mean_luma, step.limited)) return;
   if (!step.converged) setExposureIfChanged(step.next);
@@ -1877,8 +2402,14 @@ void requestStreamStop(StopReason reason);
 
 // The upload cannot keep up (noisy low-light frames are much larger):
 // smaller frames instead of dropped ones.
-void noteUploadBusy(StreamRun& run) {
-  ++run.window.busy;
+// The upload falls behind: a frame replaced before it was sent (replaced),
+// or the sender still busy half a frame after the next one was due. Noisy
+// high-gain V2 frames grew to 100 KB and held the stream at 15 fps behind
+// the sender without ever replacing a frame, so only the first case lowered
+// the quality (2026-10-03). After kBusyFramesBeforeQualityDrop such frames
+// in a row the JPEG quality steps down.
+void noteUploadBusy(StreamRun& run, bool replaced = true) {
+  if (replaced) ++run.window.busy;
   run.calm_frames = 0;
   if (++run.busy_frames >= kBusyFramesBeforeQualityDrop &&
       run.quality > local_camera_stream::kMinQuality) {
@@ -1886,7 +2417,7 @@ void noteUploadBusy(StreamRun& run) {
     const uint8_t previous = run.quality;
     run.quality = local_camera_stream::reducedQuality(run.quality);
     if (logDue(&run.quality_log_ms, kErrorLogIntervalMs)) {
-      Serial.printf("[LocalCamStream] Upload busy, quality %u -> %u\n",
+      Serial.printf("[LocalCamStream] Upload %s, quality %u -> %u\n", replaced ? "busy" : "behind",
                     static_cast<unsigned>(previous), static_cast<unsigned>(run.quality));
     }
   }
@@ -1895,6 +2426,7 @@ void noteUploadBusy(StreamRun& run) {
 void streamCaptureFrame(StreamRun& run) {
   StreamWindow& window = run.window;
   const uint32_t frame_ms = currentFrameMs();
+  bool upload_behind = false;
   // The sender still has an unsent frame: encoding another one now would only
   // replace it, a wasted 2D-DMA hold the display needs for its rotation.
   // Wait up to one frame interval for the sender to take it.
@@ -1904,10 +2436,16 @@ void streamCaptureFrame(StreamRun& run) {
            static_cast<uint32_t>(millis() - wait_started_ms) < frame_ms) {
       vTaskDelay(pdMS_TO_TICKS(2));
     }
+    const uint32_t waited_ms = millis() - wait_started_ms;
+    ++window.sender_waits;
+    window.sender_wait_ms_total += waited_ms;
+    if (waited_ms > window.sender_wait_ms_max) window.sender_wait_ms_max = waited_ms;
     if (local_camera_upload::framePending()) {
       noteUploadBusy(run);
       return;
     }
+    upload_behind = waited_ms * 2 >= frame_ms;
+    if (upload_behind) noteUploadBusy(run, false);
   }
   xQueueReset(g_isr.frames);
   g_isr.frozen = -1;
@@ -1919,6 +2457,10 @@ void streamCaptureFrame(StreamRun& run) {
     xQueueReceive(g_isr.frames, &event, pdMS_TO_TICKS(frame_ms));
   }
   g_isr.armed = false;
+  const uint32_t freeze_ms = millis() - freeze_started_ms;
+  ++window.freezes;
+  window.freeze_ms_total += freeze_ms;
+  if (freeze_ms > window.freeze_ms_max) window.freeze_ms_max = freeze_ms;
   const int8_t frozen = g_isr.frozen;
   if (frozen < 0) {
     ++window.noframe;
@@ -1926,6 +2468,9 @@ void streamCaptureFrame(StreamRun& run) {
     return;
   }
   run.noframe_streak = 0;
+  // A frame just ended: held-back curve and colour changes land in the
+  // vertical blanking and reach the next frame whole.
+  applyPendingIspUpdates();
 
   // Only the JPEG encoder uses the 2D-DMA pool (no PPA pass): one short
   // hold per frame. When the display or the HA camera decoder has the pool,
@@ -1979,6 +2524,8 @@ void streamCaptureFrame(StreamRun& run) {
     noteUploadBusy(run);
     return;
   }
+  // A frame the sender held back is no calm frame; the streak goes on.
+  if (upload_behind) return;
   run.busy_frames = 0;
   if (run.quality < run.settings.quality && ++run.calm_frames >= kCalmFramesBeforeQualityRise) {
     run.calm_frames = 0;
@@ -2010,10 +2557,16 @@ void streamDiagnostics(StreamRun& run, bool force) {
   if (!force && elapsed_ms < local_camera_stream::kDiagWindowMs) return;
   local_camera_upload::takeWindow(&run.window);
   run.window.window_ms = elapsed_ms ? elapsed_ms : 1;
+  run.window.sensor_fail = g_sensor_write_failures - run.sensor_fail_seen;
+  run.sensor_fail_seen = g_sensor_write_failures;
   char line[320];
   if (local_camera_stream::formatDiagLine(line, sizeof(line), run.settings, run.quality,
                                           run.window)) {
     Serial.println(line);
+  }
+  char timing[512];
+  if (local_camera_stream::formatTimingJson(timing, sizeof(timing), run.window)) {
+    Serial.printf("[LocalCamStream] timing %s\n", timing);
   }
   updateStreamStatus(makeStreamStatus(run, true, StopReason::None, true));
   run.window = StreamWindow{};
@@ -2087,6 +2640,21 @@ uint32_t runStream() {
     }
     reason = streamSettle(run, &leftover);
     if (reason != StopReason::None) break;
+    // From here every frame is measured; the frame loop never waits for it.
+    startLiveStatistics();
+    g_defer_isp_updates = true;
+    if (g_live_ae_running) g_stream_digital = digitalGainForStep(g_pipe.gamma_digital_step);
+    portENTER_CRITICAL(&g_live_mux);
+    run.live_ae_seen = g_live.ae_frames;
+    run.live_awb_seen = g_live.awb_frames;
+    portEXIT_CRITICAL(&g_live_mux);
+    run.live_ae_counted = run.live_ae_seen;
+    run.live_changed_ms = millis();
+    run.live_waiting = false;
+    run.sensor_fail_seen = g_sensor_write_failures;
+    Serial.printf("[LocalCamStream] Live statistics: AE %s, AWB %s\n",
+                  g_live_ae_running ? "on" : "off (oneshot reads)",
+                  g_live_awb_running ? "on" : "off");
 
     Serial.printf(
         "[LocalCamStream] Start mode=%u %ux%u@%u q=%u source=%s exp=%u gain=%u/16 "
@@ -2146,6 +2714,7 @@ uint32_t runStream() {
         continue;
       }
       if (run.pacer.consume(now_us)) ++run.window.late;
+      const uint32_t pass_started_ms = millis();
       streamCaptureFrame(run);
       if (run.noframe_streak >= kNoFrameResetStreak) {
         reason = StopReason::Error;
@@ -2154,10 +2723,22 @@ uint32_t runStream() {
       }
       const uint64_t after_us = static_cast<uint64_t>(esp_timer_get_time());
       streamAutoTune(run, static_cast<uint32_t>(run.pacer.waitUs(after_us) / 1000u));
+      const uint32_t pass_ms = millis() - pass_started_ms;
+      if (pass_ms > run.window.loop_ms_max) run.window.loop_ms_max = pass_ms;
       reason = streamWait(0, &leftover);
       if (reason != StopReason::None) break;
     }
   } while (false);
+  // Snapshots use oneshot reads, which the driver refuses during continuous ones.
+  stopLiveStatistics();
+  g_defer_isp_updates = false;
+  g_gamma_gentle = false;  // The rest of a glide lands at once.
+  applyPendingIspUpdates();
+  if (g_stream_digital > 0.0f) {
+    // Snapshots use the quarter-EV steps again, from the nearest one.
+    g_stream_digital = 0.0f;
+    if (g_pipe.isp) loadGammaCurve(g_pipe.gamma_contrast, g_digital_step);
+  }
 
   // Stop order: sender first (it may still read a slot), then the sensor and
   // the receiver, then the buffers.
@@ -2598,6 +3179,11 @@ bool isCommandTopic(const char* topic) {
 
 bool handleMqttMessage(const char* topic, const uint8_t* payload, size_t length) {
   if (!isCommandTopic(topic)) return false;
+  handleCommandPayload(payload, length);
+  return true;
+}
+
+void handleCommandPayload(const uint8_t* payload, size_t length) {
 #if defined(HOMETILES_LOCAL_CAMERA)
   LocalCameraCommand command;
   parseCommand(reinterpret_cast<const char*>(payload), length, &command);
@@ -2617,7 +3203,7 @@ bool handleMqttMessage(const char* topic, const uint8_t* payload, size_t length)
     } else {
       handleStreamStop(command.stop_session);
     }
-    return true;
+    return;
   }
   SnapshotRequest request = command.snapshot;
   const RequestStatus status = command.snapshot_status;
@@ -2626,7 +3212,7 @@ bool handleMqttMessage(const char* topic, const uint8_t* payload, size_t length)
       Serial.printf("[LocalCam] Ignored request: %s (%u bytes)\n",
                     requestStatusName(status), static_cast<unsigned>(length));
     }
-    return true;
+    return;
   }
 
   const uint32_t now_ms = millis();
@@ -2649,7 +3235,7 @@ bool handleMqttMessage(const char* topic, const uint8_t* payload, size_t length)
   }
   if (code != ErrorCode::None) {
     publishErrorReply(request.id, code);
-    return true;
+    return;
   }
   g_rate_limiter.markAccepted(now_ms);
   request.received_ms = now_ms;
@@ -2660,7 +3246,6 @@ bool handleMqttMessage(const char* topic, const uint8_t* payload, size_t length)
   (void)payload;
   (void)length;
 #endif
-  return true;
 }
 
 bool bridgeCapability() {
@@ -2742,6 +3327,27 @@ void appendStatusJson(String& json) {
              static_cast<unsigned>(g_report_luma.load()));
     json += exposure;
   }
+  {
+    // [ms ago, source, luma, target, lines, gain_x16, digital step], oldest first.
+    AeTraceEntry trace[kAeTraceSize];
+    portENTER_CRITICAL(&g_ae_trace_mux);
+    const size_t count = g_ae_trace_count < kAeTraceSize ? g_ae_trace_count : kAeTraceSize;
+    const size_t first = g_ae_trace_count - count;
+    for (size_t i = 0; i < count; ++i) trace[i] = g_ae_trace[(first + i) % kAeTraceSize];
+    portEXIT_CRITICAL(&g_ae_trace_mux);
+    const uint32_t now = millis();
+    json += ",\"ae_trace\":[";
+    for (size_t i = 0; i < count; ++i) {
+      char item[64];
+      snprintf(item, sizeof(item), "%s[%u,\"%c\",%u,%u,%u,%u,%u]", i ? "," : "",
+               static_cast<unsigned>(now - trace[i].ms), trace[i].where,
+               static_cast<unsigned>(trace[i].luma), static_cast<unsigned>(trace[i].target),
+               static_cast<unsigned>(trace[i].lines), static_cast<unsigned>(trace[i].gain_x16),
+               static_cast<unsigned>(trace[i].digital_step));
+      json += item;
+    }
+    json += "]";
+  }
 #endif
   json += ",\"captures\":";
   json += String(g_capture_ok.load());
@@ -2790,6 +3396,11 @@ void appendStatusJson(String& json) {
   char stream_json[640];
   if (local_camera_stream::formatStatusJson(stream_json, sizeof(stream_json), stream)) {
     json += ",\"stream\":";
+    json += stream_json;
+  }
+  if (stream.has_window &&
+      local_camera_stream::formatTimingJson(stream_json, sizeof(stream_json), stream.window)) {
+    json += ",\"stream_timing\":";
     json += stream_json;
   }
 #endif

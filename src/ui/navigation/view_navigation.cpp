@@ -11,6 +11,7 @@
 #include "src/ui/popups/media/media_popup.h"
 #include "src/ui/popups/climate/climate_popup.h"
 #include "src/ui/popups/cover/cover_popup.h"
+#include "src/ui/popups/device/device_popup.h"
 #include "src/ui/popups/pin/pin_popup.h"
 #include "src/ui/screensaver/image_screensaver.h"
 #include "src/core/power/power_manager.h"
@@ -69,7 +70,8 @@ bool popupSupported(const Tile& tile) {
     case TILE_NUMBER: case TILE_SELECT: case TILE_DATETIME:
     case TILE_SENSOR: case TILE_BINARY_SENSOR: case TILE_SWITCH:
     case TILE_WEATHER: case TILE_ENERGY: case TILE_MEDIA:
-    case TILE_CLIMATE: case TILE_COVER: case TILE_CAMERA: return true;
+    case TILE_CLIMATE: case TILE_COVER: case TILE_CAMERA:
+    case TILE_LOCK: case TILE_ALARM: case TILE_FAN: return true;
     default: return false;
   }
 }
@@ -299,11 +301,30 @@ void viewNavigationClosePopups() {
   hide_media_popup();
   hide_climate_popup();
   hide_cover_popup();
+  hide_device_popup();
 }
 
 void viewNavigationSource(lv_obj_t* source) {
   if (!remote_opening) cancelPending();
   popup_source = tiles_view_id_for_object(source);
+}
+
+uint16_t viewNavigationVisiblePopupTile() {
+  if (!popup_source || !popup_card || lv_obj_has_flag(popup_card, LV_OBJ_FLAG_HIDDEN)) return 0;
+  return popup_source;
+}
+
+void viewNavigationReopenPopup(uint16_t view_id) {
+  if (!view_id) return;
+  for (const Tile& tile : tileConfig.getActiveGrid().tiles) {
+    if (tile.view_id != view_id) continue;
+    // Only a tile that still shows the same entity reopens its popup. Camera
+    // keeps its open stream: reopening would restart it on every save.
+    if (popupSupported(tile) && tile.type != TILE_CAMERA && tile.sensor_entity == popup_entity) {
+      tiles_open_view_popup(view_id);
+    }
+    return;
+  }
 }
 
 void viewNavigationPopupShown(lv_obj_t* card, const char* entity) {

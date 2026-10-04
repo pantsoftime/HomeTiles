@@ -12,6 +12,7 @@
 #include "src/network/transport/network_transport.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/config/tile_config.h"
+#include "src/tiles/runtime/tile_icon_source.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/ui/ui_manager.h"
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"
@@ -24,6 +25,8 @@
 #include "src/core/i18n/i18n.h"
 #include "src/types/clock/clock_format.h"
 #include "src/web/setup/web_config.h"
+#include "src/web/server/auth/web_admin_auth.h"
+#include "src/network/secure/command_channel.h"
 #include "src/ui/shared/ui_keyboard.h"
 #include "src/ui/startup/hometiles_logo.h"
 #include "src/ui/popups/popup_layout.h"
@@ -131,17 +134,72 @@ static lv_obj_t *locale_date_format_dd = nullptr;
 static lv_obj_t *locale_keyboard_dd = nullptr;
 
 // System popup: version/device, GitHub QR, update check and OTA install
+// Device name under the branding; Home Assistant, Encryption and Web Admin
+// password rows centered in the free space below it.
+static lv_obj_t *system_device_name = nullptr;
+static lv_obj_t *system_middle = nullptr;  // Takes the free space; centers the rows
 static lv_obj_t *system_info_rows = nullptr;
+// Last shown row state (bit 0 connected, 1 encrypted, 2 password); 0xFF
+// forces the next refresh, so the timer redraws only on a change.
+static uint8_t system_rows_state = 0xFF;
+// Status line above the buttons: update and error messages only.
+static lv_obj_t *system_status_row = nullptr;
 static lv_obj_t *system_status_label = nullptr;
 static lv_obj_t *system_progress_bar = nullptr;
 static lv_obj_t *system_check_btn = nullptr;
+static lv_obj_t *system_check_btn_icon = nullptr;
 static lv_obj_t *system_check_btn_label = nullptr;
 static lv_obj_t *system_github_btn = nullptr;
 static lv_obj_t *system_reboot_btn = nullptr;
-static lv_obj_t *system_pair_btn = nullptr;
-static lv_obj_t *system_action_row = nullptr;  // Restart and pairing row
+static lv_obj_t *system_action_row = nullptr;  // Updates and Restart
 static lv_obj_t *system_qr = nullptr;
 static lv_obj_t *system_spacer = nullptr;
+static lv_obj_t *system_brand = nullptr;
+// Security view: keeps the branding and swaps the rest like the GitHub QR.
+static lv_obj_t *system_security_btn = nullptr;
+static lv_obj_t *security_ha_value = nullptr;
+static lv_obj_t *security_ha_check = nullptr;  // Shown while connected
+static lv_obj_t *security_encryption_value = nullptr;
+static lv_obj_t *security_encryption_icon = nullptr;
+static lv_obj_t *security_password_value = nullptr;
+static lv_obj_t *security_password_icon = nullptr;
+static lv_obj_t *security_prompt_box = nullptr;  // Confirmation questions
+static lv_obj_t *security_prompt_icon = nullptr;
+static lv_obj_t *security_prompt_title = nullptr;
+static lv_obj_t *security_prompt_hint = nullptr;
+static lv_obj_t *security_pair_box = nullptr;    // Pairing progress and number
+static lv_obj_t *security_pair_number = nullptr;
+static lv_obj_t *security_pair_text = nullptr;
+static lv_obj_t *security_pair_hint = nullptr;
+static lv_obj_t *security_action_row = nullptr;
+static lv_obj_t *security_btn1 = nullptr;
+static lv_obj_t *security_btn1_icon = nullptr;
+static lv_obj_t *security_btn1_label = nullptr;
+static lv_obj_t *security_btn2 = nullptr;
+static lv_obj_t *security_btn2_icon = nullptr;
+static lv_obj_t *security_btn2_label = nullptr;
+static uint32_t security_btn1_color = 0;
+static uint32_t security_btn2_color = 0;
+// GitHub and Security toggle their view; the active one is colored.
+static uint32_t system_github_color = 0;
+static uint32_t system_security_color = 0;
+static lv_obj_t *security_hint_label = nullptr;
+// Result of the last action in the overview (password removed, unpaired
+// without a Bridge session); nullptr shows the default hint.
+static const char *security_message = nullptr;
+static uint32_t security_message_color = 0xA8A8A8;
+// Without an answer to a pairing attempt, reconnect MQTT once so an older
+// Bridge finds the panel again, as the former Pairing button did.
+static bool security_rediscover_pending = false;
+// Refreshes the rows and the Security view while the popup is open: the
+// connection changes and pairing progresses in the background.
+static lv_timer_t *security_refresh_timer = nullptr;
+enum class SystemView : uint8_t { Main, Qr, Security };
+enum class SecurityStep : uint8_t { List, ConfirmPassword, ConfirmUnpair, Pairing };
+static SystemView system_view = SystemView::Main;
+static SecurityStep security_step = SecurityStep::List;
+// True while the status line shows an update or error message.
+static bool system_status_message = false;
 static bool system_qr_sized = false;
 static bool system_check_running = false;
 static bool system_install_running = false;
@@ -273,6 +331,35 @@ static void style_settings_button(lv_obj_t *btn, uint32_t base_color) {
   lv_obj_set_style_outline_opa(btn, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_outline_opa(btn, LV_OPA_TRANSP, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_PRESSED));
 }
+
+// Settings takes the global tile color like the home tiles: the menu tiles,
+// the Back button and the popup cards. Buttons, rows and fields inside the
+// popups keep their own colors.
+static uint32_t settings_tile_color() {
+  return tileDefaultBgColor();
+}
+
+// Menu tiles and Back follow a changed global color while Settings exists.
+static lv_obj_t* settings_tinted[5] = {};
+static uint8_t settings_tinted_count = 0;
+static uint32_t settings_tinted_color = 0;
+static lv_timer_t* settings_tint_timer = nullptr;
+
+static void settings_track_tinted(lv_obj_t* obj) {
+  if (obj && settings_tinted_count < sizeof(settings_tinted) / sizeof(settings_tinted[0])) {
+    settings_tinted[settings_tinted_count++] = obj;
+  }
+}
+
+static void on_settings_tint_timer(lv_timer_t*) {
+  const uint32_t color = settings_tile_color();
+  if (color == settings_tinted_color) return;
+  settings_tinted_color = color;
+  for (uint8_t i = 0; i < settings_tinted_count; ++i) {
+    style_settings_button(settings_tinted[i], color);
+  }
+}
+
 static uint16_t sleep_seconds_from_index(int32_t index) {
   if (index < 0) {
     index = 0;
@@ -578,8 +665,8 @@ static void create_settings_back_button(lv_obj_t *parent) {
       LV_GRID_ALIGN_STRETCH, 0, 1,
       LV_GRID_ALIGN_STRETCH, 0, 1);
 
-  uint32_t btn_color = 0x2A2A2A;
-  style_settings_button(btn, btn_color);
+  style_settings_button(btn, settings_tile_color());
+  settings_track_tinted(btn);
   ui_surface_style::apply_global_tile_border(btn);
 
   lv_obj_add_event_cb(btn, on_settings_back_clicked, LV_EVENT_CLICKED, nullptr);
@@ -724,7 +811,7 @@ static lv_obj_t *create_settings_card(lv_obj_t *parent, uint8_t col, uint8_t row
   uint8_t span = (col < GRID_COLS) ? (GRID_COLS - col) : 1;
   lv_obj_set_grid_cell(card, LV_GRID_ALIGN_STRETCH, col, span, LV_GRID_ALIGN_STRETCH, row, 1);
   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2A2A), 0);
+  lv_obj_set_style_bg_color(card, lv_color_hex(settings_tile_color()), 0);
   lv_obj_set_style_border_opa(card, LV_OPA_TRANSP, 0);
   lv_obj_set_style_outline_opa(card, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_opa(card, LV_OPA_TRANSP, 0);
@@ -810,6 +897,14 @@ static void style_plain_container(lv_obj_t* obj) {
   lv_obj_set_style_outline_opa(obj, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_opa(obj, LV_OPA_TRANSP, 0);
   lv_obj_set_style_pad_all(obj, 0, 0);
+}
+
+// The visible popup header is the shell's copy of this title; a new text
+// reaches it only through hometiles_title and the next shell sync.
+static void set_settings_popup_title(const char* text) {
+  if (!settings_popup_title) return;
+  hometiles_title::set(settings_popup_title, text);
+  sync_popup_shell();
 }
 
 static void style_popup_textarea(lv_obj_t* ta) {
@@ -1017,17 +1112,54 @@ static void reset_popup_refs() {
   locale_date_format_dd = nullptr;
   locale_keyboard_dd = nullptr;
 
+  system_device_name = nullptr;
+  system_middle = nullptr;
   system_info_rows = nullptr;
+  system_rows_state = 0xFF;
+  system_status_row = nullptr;
   system_status_label = nullptr;
   system_progress_bar = nullptr;
   system_check_btn = nullptr;
+  system_check_btn_icon = nullptr;
   system_check_btn_label = nullptr;
   system_github_btn = nullptr;
   system_reboot_btn = nullptr;
-  system_pair_btn = nullptr;
   system_action_row = nullptr;
   system_qr = nullptr;
   system_spacer = nullptr;
+  system_brand = nullptr;
+  system_security_btn = nullptr;
+  security_ha_value = nullptr;
+  security_ha_check = nullptr;
+  security_encryption_value = nullptr;
+  security_encryption_icon = nullptr;
+  security_password_value = nullptr;
+  security_password_icon = nullptr;
+  security_prompt_box = nullptr;
+  security_prompt_icon = nullptr;
+  security_prompt_title = nullptr;
+  security_prompt_hint = nullptr;
+  security_pair_box = nullptr;
+  security_pair_number = nullptr;
+  security_pair_text = nullptr;
+  security_pair_hint = nullptr;
+  security_action_row = nullptr;
+  security_btn1 = nullptr;
+  security_btn1_icon = nullptr;
+  security_btn1_label = nullptr;
+  security_btn2 = nullptr;
+  security_btn2_icon = nullptr;
+  security_btn2_label = nullptr;
+  security_btn1_color = 0;
+  security_btn2_color = 0;
+  system_github_color = 0;
+  system_security_color = 0;
+  security_hint_label = nullptr;
+  security_message = nullptr;
+  security_rediscover_pending = false;
+  system_view = SystemView::Main;
+  security_step = SecurityStep::List;
+  system_status_message = false;
   system_qr_sized = false;
   system_check_running = false;
   system_install_running = false;
@@ -1041,6 +1173,10 @@ static void close_settings_popup() {
   if (ap_btn_cooldown_timer) {
     lv_timer_del(ap_btn_cooldown_timer);
     ap_btn_cooldown_timer = nullptr;
+  }
+  if (security_refresh_timer) {
+    lv_timer_del(security_refresh_timer);
+    security_refresh_timer = nullptr;
   }
   if (networkTransport.isWifiDriverActive()) WiFi.scanDelete();
   // If the screensaver brightness control closes during a preview,
@@ -1564,7 +1700,7 @@ static void wifi_show_entry_view(bool manual, const char* ssid, bool open_networ
     } else {
       lv_obj_clear_flag(wifi_ssid_ta, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_set_style_text_color(wifi_ssid_ta, lv_color_hex(0xB8B8B8), 0);
-      lv_obj_set_style_bg_color(wifi_ssid_ta, lv_color_hex(0x2A2A2A), 0);
+      lv_obj_set_style_bg_color(wifi_ssid_ta, lv_color_hex(settings_tile_color()), 0);
     }
   }
 
@@ -1654,7 +1790,7 @@ static void wifi_do_connect() {
     cfg.wifi_subnet[0] = '\0';
     cfg.wifi_dns[0] = '\0';
     if (!configManager.save(cfg)) {
-      if (settings_popup_title) lv_label_set_text(settings_popup_title, tr().wifi_save_failed);
+      set_settings_popup_title(tr().wifi_save_failed);
       return;
     }
   }
@@ -1704,7 +1840,7 @@ static void save_localization_popup() {
   cfg.keyboard_layout = (keyboard_layout > 2) ? 0 : keyboard_layout;
 
   if (!configManager.save(cfg)) {
-    if (settings_popup_title) lv_label_set_text(settings_popup_title, tr().save_failed);
+    set_settings_popup_title(tr().save_failed);
     return;
   }
 
@@ -1985,6 +2121,11 @@ static void create_popup_keyboard(lv_obj_t* content_parent) {
   settings_popup_kb_spacer = spacer;
 
   lv_obj_t* kb = ui_keyboard_create(settings_popup_card);
+  // The keys follow the global corner radius: concentric with the card
+  // corners, which the corner keys sit kKeyboardInset away from.
+  ui_surface_style::apply_radius(
+      kb, popup_layout::kCardRadius > kKeyboardInset ? popup_layout::kCardRadius - kKeyboardInset : 0,
+      LV_PART_ITEMS);
   lv_obj_add_flag(kb, LV_OBJ_FLAG_IGNORE_LAYOUT);
   const int kb_w = reserved_w + (kKeyboardBleed * 2);
   const int kb_h = reserved_h + kKeyboardBleed;
@@ -2044,7 +2185,8 @@ static lv_obj_t* wifi_create_entry_row(lv_obj_t* parent, const char* label_text,
 
   lv_obj_t* label = lv_label_create(row);
   lv_label_set_text_fmt(label, "%s:", label_text);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+  // A label wider than its column wraps at a word instead of losing its end.
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(label, popup_layout::scale(160));
   lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
   lv_obj_set_style_text_color(label, lv_color_hex(0xC8C8C8), 0);
@@ -2402,7 +2544,10 @@ static lv_obj_t* create_locale_dropdown_row(lv_obj_t* form, const char* label_te
   // one shared width keeps all dropdowns aligned.
   lv_obj_t* label = lv_label_create(row);
   lv_label_set_text(label, label_text);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+  // A label wider than its column ("Format de l'heure :") wraps at a word
+  // instead of losing its colon; the French no-break space keeps the colon
+  // with the last word.
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(label, popup_layout::scale(210));
   lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
   lv_obj_set_style_text_color(label, lv_color_white(), 0);
@@ -2469,11 +2614,23 @@ static void build_localization_popup(lv_obj_t* parent) {
   }
 }
 
-// System popup: version/device, GitHub QR, update check and OTA install
+// System popup: version/device, GitHub QR, update check and OTA install, and
+// the Security view (Home Assistant pairing and Web Admin password). Every
+// view keeps the branding and exactly two button rows at the bottom, so a
+// two-line status never pushes a button off a small display.
+
+static void system_set_hidden(lv_obj_t* obj, bool hidden) {
+  if (!obj) return;
+  if (hidden) {
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+}
 
 static void system_set_buttons_enabled(bool enabled) {
   lv_obj_t* btns[] = {system_check_btn, system_github_btn, system_reboot_btn,
-                      system_pair_btn};
+                      system_security_btn};
   for (lv_obj_t* btn : btns) {
     if (!btn) continue;
     lv_obj_set_style_opa(btn, enabled ? LV_OPA_COVER : LV_OPA_50, 0);
@@ -2485,11 +2642,66 @@ static void system_set_buttons_enabled(bool enabled) {
   }
 }
 
-static void system_show_status(const char* text, uint32_t color) {
+// Status line above the buttons: an update or error message (one or two
+// lines). The rows under the branding stay visible meanwhile.
+static void system_status_text(const char* text, uint32_t color) {
   if (!system_status_label) return;
-  lv_label_set_text(system_status_label, text);
+  lv_label_set_text(system_status_label, text ? text : "");
   lv_obj_set_style_text_color(system_status_label, lv_color_hex(color), 0);
-  lv_obj_clear_flag(system_status_label, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void system_clear_status() {
+  system_status_message = false;
+  system_status_text("", 0xA8A8A8);
+}
+
+static void system_show_status(const char* text, uint32_t color) {
+  system_status_message = true;
+  system_status_text(text, color);
+}
+
+static void system_set_label_color(lv_obj_t* obj, uint32_t color) {
+  if (obj) lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+}
+
+// One fact per row, green when it is on: Home Assistant connected (check),
+// Encryption on and Web Admin password on (shield each).
+static void system_set_row(lv_obj_t* value, lv_obj_t* icon, const char* text, bool on) {
+  const uint32_t color = on ? 0x51CF66 : 0xA8A8A8;
+  if (value) lv_label_set_text(value, text);
+  system_set_label_color(value, color);
+  system_set_label_color(icon, color);
+}
+
+static void system_refresh_rows() {
+  const bool connected = networkManager.isMqttConnected();
+  const bool encrypted = command_channel::state() == command_channel::PairingState::Active;
+  const bool password_on = web_admin_auth::enabled();
+  const uint8_t state = static_cast<uint8_t>((connected ? 1 : 0) | (encrypted ? 2 : 0) |
+                                             (password_on ? 4 : 0));
+  if (state == system_rows_state) return;
+  system_rows_state = state;
+  system_set_row(security_ha_value, security_ha_check,
+                 connected ? tr().security_value_connected : tr().security_value_offline,
+                 connected);
+  if (security_ha_check) {
+    lv_obj_set_style_text_opa(security_ha_check, connected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+  }
+  system_set_row(security_encryption_value, security_encryption_icon,
+                 encrypted ? tr().security_state_on : tr().security_state_off, encrypted);
+  system_set_row(security_password_value, security_password_icon,
+                 password_on ? tr().security_state_on : tr().security_state_off, password_on);
+}
+
+// The HomeTiles logo's teal marks the view that GitHub or Security opened.
+static constexpr uint32_t kSystemToggleActive = 0x26A69A;
+static constexpr uint32_t kSystemToggleIdle = 0x424242;
+
+static void system_set_toggle(lv_obj_t* btn, uint32_t* current, bool active) {
+  const uint32_t color = active ? kSystemToggleActive : kSystemToggleIdle;
+  if (!btn || *current == color) return;
+  style_settings_button(btn, color);
+  *current = color;
 }
 
 static void system_show_update_available_status(bool show_restart_note) {
@@ -2505,71 +2717,339 @@ static void system_show_update_available_status(bool show_restart_note) {
   }
 }
 
-// The green primary button has two stages: check for updates first,
-// then offer installation of vX.Y.Z after finding an update.
+// The green button has two stages: check for updates first, then install the
+// update it found. The status line names the version.
 static void system_update_check_btn_text() {
-  if (!system_check_btn_label) return;
-  if (system_update_available && system_latest_tag[0]) {
-    char buf[48];
-    snprintf(buf, sizeof(buf), tr().system_install_btn_fmt, system_latest_tag);
-    lv_label_set_text(system_check_btn_label, buf);
-  } else {
-    lv_label_set_text(system_check_btn_label, tr().system_check_updates_btn);
+  const bool install = system_update_available && system_latest_tag[0];
+  if (system_check_btn_label) {
+    lv_label_set_text(system_check_btn_label,
+                      install ? tr().system_install_btn : tr().system_updates_btn);
+  }
+  if (system_check_btn_icon) {
+    lv_label_set_text(system_check_btn_icon,
+                      getMdiChar(install ? "download" : "magnify").c_str());
   }
 }
 
-// While the GitHub QR code is visible, hide the information rows,
-// status and normal actions. Measure available space on first display,
-// using the same spacer method as the AP QR code.
-static void system_show_qr(bool show) {
-#if LV_USE_QRCODE
-  if (!system_qr) return;
-  if (show) {
-    if (system_info_rows) lv_obj_add_flag(system_info_rows, LV_OBJ_FLAG_HIDDEN);
-    if (system_status_label) lv_obj_add_flag(system_status_label, LV_OBJ_FLAG_HIDDEN);
-    if (system_check_btn) lv_obj_add_flag(system_check_btn, LV_OBJ_FLAG_HIDDEN);
-    if (system_action_row) lv_obj_add_flag(system_action_row, LV_OBJ_FLAG_HIDDEN);
-    if (!system_qr_sized) {
-      if (settings_popup_content) lv_obj_update_layout(settings_popup_content);
-      int target = popup_layout::scale(280);
-      if (system_spacer) {
-        target = lv_obj_get_height(system_spacer) -
-                 popup_layout::scale(26);
-      }
-      const int max_w = lv_obj_get_content_width(lv_obj_get_parent(system_qr));
-      if (target > max_w) target = max_w;
-      if (target < popup_layout::scale(240)) {
-        target = popup_layout::scale(240);
-      }
-      lv_qrcode_set_size(system_qr, target);
-      lv_qrcode_update(system_qr, GithubUpdate::kRepoUrl, strlen(GithubUpdate::kRepoUrl));
-      system_qr_sized = true;
-    }
-    lv_obj_clear_flag(system_qr, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(system_qr, LV_OBJ_FLAG_HIDDEN);
-    if (system_info_rows) lv_obj_clear_flag(system_info_rows, LV_OBJ_FLAG_HIDDEN);
-    if (system_status_label) lv_obj_clear_flag(system_status_label, LV_OBJ_FLAG_HIDDEN);
-    if (system_check_btn) lv_obj_clear_flag(system_check_btn, LV_OBJ_FLAG_HIDDEN);
-    if (system_action_row) lv_obj_clear_flag(system_action_row, LV_OBJ_FLAG_HIDDEN);
+static void security_refresh();
+static void on_security_refresh_timer(lv_timer_t*) {
+  if (system_view == SystemView::Security) {
+    security_refresh();
+  } else if (system_view == SystemView::Main) {
+    system_refresh_rows();
   }
-#else
-  (void)show;
+}
+
+// Shows the objects of the current view. The GitHub QR keeps its fixed size.
+static void system_apply_view() {
+  const bool main = system_view == SystemView::Main;
+  const bool qr = system_view == SystemView::Qr;
+  const bool security = system_view == SystemView::Security;
+  const bool list = security && security_step == SecurityStep::List;
+  const bool prompt = security && (security_step == SecurityStep::ConfirmPassword ||
+                                   security_step == SecurityStep::ConfirmUnpair);
+  const bool pairing = security && security_step == SecurityStep::Pairing;
+  // The QR code keeps its place right under the branding, followed by the
+  // spacer; elsewhere the device name stays and the middle area centers the
+  // rows, or a question or the pairing number in their place.
+  system_set_hidden(system_device_name, qr);
+  system_set_hidden(system_middle, qr);
+  system_set_hidden(system_spacer, !qr);
+  system_set_hidden(system_info_rows, !(main || list));
+  system_set_hidden(security_prompt_box, !prompt);
+  system_set_hidden(security_pair_box, !pairing);
+  // The status area keeps its room in every view but the QR code.
+  system_set_hidden(system_status_row, qr);
+  system_set_hidden(system_status_label, !main);
+  system_set_hidden(security_hint_label, !list);
+  const char* pair_hint = security_pair_hint ? lv_label_get_text(security_pair_hint) : nullptr;
+  system_set_hidden(security_pair_text, !pairing);
+  system_set_hidden(security_pair_hint, !pairing || !pair_hint || !pair_hint[0]);
+  if (!main) system_set_hidden(system_progress_bar, true);
+  system_set_hidden(system_action_row, !main);
+  system_set_hidden(security_action_row, !security);
+  system_set_toggle(system_github_btn, &system_github_color, qr);
+  system_set_toggle(system_security_btn, &system_security_color, security);
+#if LV_USE_QRCODE
+  system_set_hidden(system_qr, !qr);
 #endif
+}
+
+static void system_set_view(SystemView view) {
+  system_view = view;
+  if (view == SystemView::Security) {
+    security_refresh();
+    return;
+  }
+  security_message = nullptr;
+  if (!system_status_message) system_clear_status();
+  system_refresh_rows();
+  system_apply_view();
 }
 
 static void on_system_github_clicked(lv_event_t*) {
   if (system_install_running) return;
 #if LV_USE_QRCODE
   if (!system_qr) return;
-  system_show_qr(lv_obj_has_flag(system_qr, LV_OBJ_FLAG_HIDDEN));
+  system_set_view(system_view == SystemView::Qr ? SystemView::Main : SystemView::Qr);
 #endif
+}
+
+// A nullptr text hides the button; the other one then takes the full width.
+static void security_set_button(lv_obj_t* btn, lv_obj_t* icon, lv_obj_t* label,
+                                uint32_t* current_color, const char* icon_name,
+                                const char* text, uint32_t color) {
+  if (!btn) return;
+  system_set_hidden(btn, text == nullptr);
+  if (!text) return;
+  if (*current_color != color) {
+    style_settings_button(btn, color);
+    *current_color = color;
+  }
+  if (icon) lv_label_set_text(icon, getMdiChar(icon_name).c_str());
+  if (label) lv_label_set_text(label, text);
+}
+
+static void security_set_buttons(const char* icon1, const char* text1, uint32_t color1,
+                                 const char* icon2, const char* text2, uint32_t color2) {
+  security_set_button(security_btn1, security_btn1_icon, security_btn1_label,
+                      &security_btn1_color, icon1, text1, color1);
+  security_set_button(security_btn2, security_btn2_icon, security_btn2_label,
+                      &security_btn2_color, icon2, text2, color2);
+}
+
+static void security_show_prompt(const char* icon_name, const char* title,
+                                 const char* hint) {
+  if (security_prompt_icon) {
+    lv_label_set_text(security_prompt_icon, getMdiChar(icon_name).c_str());
+  }
+  if (security_prompt_title) lv_label_set_text(security_prompt_title, title);
+  if (security_prompt_hint) lv_label_set_text(security_prompt_hint, hint);
+}
+
+static void security_show_pairing(command_channel::PairingPhase phase) {
+  using command_channel::PairingPhase;
+  char number[command_channel::kPairNumberDisplaySize];
+  const bool has_number = command_channel::pairingNumber(number);
+  if (security_pair_number) {
+    lv_label_set_text(security_pair_number, has_number ? number : "");
+    system_set_hidden(security_pair_number, !has_number);
+  }
+  const char* text = "";
+  const char* hint = "";
+  uint32_t color = 0xFFFFFF;
+  bool can_confirm = false;
+  bool finished = false;
+  switch (phase) {
+    case PairingPhase::Asking:
+      text = tr().pairing_asking;
+      break;
+    case PairingPhase::Compare:
+      text = tr().pairing_compare;
+      hint = tr().pairing_compare_hint;
+      can_confirm = true;
+      break;
+    case PairingPhase::Confirmed:
+      text = tr().pairing_waiting;
+      hint = tr().pairing_compare_hint;
+      color = 0xFFB74D;
+      break;
+    case PairingPhase::NoAnswer:
+      text = tr().pairing_no_answer;
+      hint = tr().pairing_no_answer_hint;
+      color = 0xFFB74D;
+      finished = true;
+      break;
+    case PairingPhase::AlreadyPaired:
+      text = tr().pairing_already_paired;
+      color = 0xFFB74D;
+      finished = true;
+      break;
+    case PairingPhase::Busy:
+      text = tr().pairing_busy;
+      color = 0xFFB74D;
+      finished = true;
+      break;
+    case PairingPhase::Rejected:
+      text = tr().pairing_rejected;
+      color = 0xFF6B6B;
+      finished = true;
+      break;
+    case PairingPhase::Failed:
+      text = tr().pairing_failed;
+      color = 0xFF6B6B;
+      finished = true;
+      break;
+    default:
+      break;
+  }
+  if (security_pair_text) {
+    lv_label_set_text(security_pair_text, text);
+    lv_obj_set_style_text_color(security_pair_text, lv_color_hex(color), 0);
+  }
+  if (security_pair_hint) {
+    lv_label_set_text(security_pair_hint, hint);
+  }
+  security_set_buttons("close", finished ? tr().security_close : tr().security_cancel,
+                       0x424242, "check", can_confirm ? tr().security_confirm : nullptr,
+                       0x2E7D32);
+}
+
+static void security_refresh() {
+  using command_channel::PairingPhase;
+  const bool paired = command_channel::state() == command_channel::PairingState::Active;
+  const bool password_on = web_admin_auth::enabled();
+  const PairingPhase phase = command_channel::pairingPhase();
+  // A successful or vanished attempt returns to the overview.
+  if (security_step == SecurityStep::Pairing &&
+      (phase == PairingPhase::Idle || phase == PairingPhase::Done)) {
+    security_step = SecurityStep::List;
+  }
+  // Without an answer, let an older Bridge find the panel again, as the
+  // former Pairing button did (MQTT reconnect).
+  if (phase == PairingPhase::NoAnswer && security_rediscover_pending) {
+    security_rediscover_pending = false;
+    if (g_ha_pair_callback) g_ha_pair_callback();
+  }
+  if ((security_step == SecurityStep::ConfirmPassword && !password_on) ||
+      (security_step == SecurityStep::ConfirmUnpair && !paired)) {
+    security_step = SecurityStep::List;
+  }
+  system_refresh_rows();
+  switch (security_step) {
+    case SecurityStep::List: {
+      // One button takes the full width with the long label.
+      const bool full = !password_on;
+      if (paired) {
+        security_set_buttons("shield-off",
+                             full ? tr().security_unpair_long : tr().security_unpair_short,
+                             0x424242, "lock-open-variant",
+                             password_on ? tr().security_password_btn : nullptr, 0x424242);
+      } else {
+        security_set_buttons("shield-lock",
+                             full ? tr().security_pair_long : tr().security_pair_short,
+                             0x1E88E5, "lock-open-variant",
+                             password_on ? tr().security_password_btn : nullptr, 0x424242);
+      }
+      if (security_hint_label) {
+        lv_label_set_text(security_hint_label,
+                          security_message ? security_message
+                          : paired         ? tr().security_hint_unpair
+                                           : tr().security_hint_pair);
+        lv_obj_set_style_text_color(security_hint_label,
+                                    lv_color_hex(security_message ? security_message_color
+                                                                  : 0xA8A8A8),
+                                    0);
+      }
+      break;
+    }
+    case SecurityStep::ConfirmPassword:
+      security_show_prompt("lock-open-variant", tr().security_password_question,
+                           tr().security_password_question_hint);
+      security_set_buttons("close", tr().security_cancel, 0x424242, "lock-open-variant",
+                           tr().security_remove, 0xC62828);
+      break;
+    case SecurityStep::ConfirmUnpair:
+      security_show_prompt("shield-off", tr().security_unpair_question,
+                           tr().security_unpair_question_hint);
+      security_set_buttons("close", tr().security_cancel, 0x424242, "shield-off",
+                           tr().security_unpair_short, 0xC62828);
+      break;
+    case SecurityStep::Pairing:
+      security_show_pairing(phase);
+      break;
+  }
+  system_apply_view();
+}
+
+static void security_set_message(const char* text, uint32_t color) {
+  security_message = text;
+  security_message_color = color;
+}
+
+// Left button: Pair/Unpair in the overview, Cancel/Close everywhere else.
+static void on_security_btn1_clicked(lv_event_t*) {
+  switch (security_step) {
+    case SecurityStep::List:
+      security_set_message(nullptr, 0xA8A8A8);
+      if (command_channel::state() == command_channel::PairingState::Active) {
+        security_step = SecurityStep::ConfirmUnpair;
+      } else if (command_channel::startPairing()) {
+        security_rediscover_pending = true;
+        security_step = SecurityStep::Pairing;
+      } else {
+        security_set_message(tr().pairing_failed, 0xFF6B6B);
+      }
+      break;
+    case SecurityStep::ConfirmPassword:
+    case SecurityStep::ConfirmUnpair:
+      security_step = SecurityStep::List;
+      break;
+    case SecurityStep::Pairing:
+      security_rediscover_pending = false;
+      command_channel::endPairing();
+      security_step = SecurityStep::List;
+      break;
+  }
+  security_refresh();
+}
+
+// Right button: Password in the overview, the confirmed action in a prompt,
+// Confirm while the number is shown.
+static void on_security_btn2_clicked(lv_event_t*) {
+  switch (security_step) {
+    case SecurityStep::List:
+      security_set_message(nullptr, 0xA8A8A8);
+      security_step = SecurityStep::ConfirmPassword;
+      break;
+    case SecurityStep::ConfirmPassword:
+      if (web_admin_auth::clearCredential()) {
+        security_set_message(tr().web_auth_removed, 0x51CF66);
+      } else {
+        security_set_message(tr().web_auth_change_failed, 0xFF6B6B);
+      }
+      security_step = SecurityStep::List;
+      break;
+    case SecurityStep::ConfirmUnpair: {
+      bool bridge_notified = false;
+      if (command_channel::disable(&bridge_notified)) {
+        // The Bridge removes its side by itself when it was told; otherwise
+        // the user has to remove it in Home Assistant as well.
+        security_set_message(bridge_notified ? nullptr : tr().security_unpaired_offline,
+                             0xFFB74D);
+      } else {
+        security_set_message(tr().save_failed, 0xFF6B6B);
+      }
+      security_step = SecurityStep::List;
+      break;
+    }
+    case SecurityStep::Pairing:
+      command_channel::confirmPairing();
+      break;
+  }
+  security_refresh();
+}
+
+static void on_system_security_clicked(lv_event_t*) {
+  if (system_check_running || system_install_running) return;
+  if (system_view == SystemView::Security) {
+    system_set_view(SystemView::Main);
+    return;
+  }
+  // A pairing attempt keeps running while the popup is closed; show it again.
+  const command_channel::PairingPhase phase = command_channel::pairingPhase();
+  security_step = phase == command_channel::PairingPhase::Idle ||
+                          phase == command_channel::PairingPhase::Done
+                      ? SecurityStep::List
+                      : SecurityStep::Pairing;
+  security_set_message(nullptr, 0xA8A8A8);
+  system_set_view(SystemView::Security);
 }
 
 static void on_system_reboot_clicked(lv_event_t*) {
   if (system_check_running || system_install_running) return;
   if (!g_system_reboot_callback) return;
-  system_show_qr(false);
+  system_set_view(SystemView::Main);
   system_install_running = true;
   system_set_buttons_enabled(false);
   system_show_status(tr().system_restarting, 0xC8C8C8);
@@ -2578,7 +3058,7 @@ static void on_system_reboot_clicked(lv_event_t*) {
 
 static void on_system_check_clicked(lv_event_t*) {
   if (system_check_running || system_install_running) return;
-  system_show_qr(false);  // Reserve the space for status and progress.
+  system_set_view(SystemView::Main);  // Reserve the space for status and progress.
 
   if (system_update_available && system_latest_tag[0]) {
     // Second stage: request installation in the main loop. The sketch pauses
@@ -2600,17 +3080,6 @@ static void on_system_check_clicked(lv_event_t*) {
   system_set_buttons_enabled(false);
   system_show_status(tr().system_checking, 0xC8C8C8);
   g_fw_check_callback();
-}
-
-// Pairing forces an MQTT reconnect. Post-connect status/settings/snapshot
-// publishes let the HA Bridge rediscover the device, with the same effect
-// as saving the MQTT host again through Web Admin.
-static void on_system_pair_clicked(lv_event_t*) {
-  if (system_check_running || system_install_running) return;
-  if (!g_ha_pair_callback) return;
-  system_show_qr(false);
-  g_ha_pair_callback();
-  system_show_status(tr().system_pair_status, 0x64B5F6);
 }
 
 // The compiled hometiles_logo_dsc is an exact rasterization of
@@ -2638,6 +3107,163 @@ static lv_obj_t* create_hometiles_logo_mark(lv_obj_t* parent, int32_t size) {
   return img;
 }
 
+static lv_obj_t* create_system_button_row(lv_obj_t* parent) {
+  lv_obj_t* row = lv_obj_create(parent);
+  style_plain_container(row);
+  lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_width(row, LV_PCT(100));
+  lv_obj_set_height(row, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(row, popup_layout::scale(12), 0);
+  return row;
+}
+
+// A System popup button with an MDI icon and its label side by side, like
+// the GitHub button. The icon uses the one MDI size each display provides.
+static lv_obj_t* create_system_icon_button(lv_obj_t* parent, const char* icon,
+                                           const char* text, uint32_t color,
+                                           lv_event_cb_t cb, lv_obj_t** icon_out,
+                                           lv_obj_t** label_out) {
+  lv_obj_t* btn = create_popup_button(parent, "", color, cb);
+  lv_obj_set_flex_grow(btn, 1);
+  lv_obj_set_height(btn, popup_layout::scale(76));
+  lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(btn, popup_layout::scale(14), 0);
+  lv_obj_t* icon_label = lv_obj_get_child(btn, 0);
+  if (icon_label) {
+    lv_label_set_text(icon_label, getMdiChar(icon).c_str());
+    if (FONT_MDI_ICONS) lv_obj_set_style_text_font(icon_label, FONT_MDI_ICONS, 0);
+    popup_layout::applyIconScale(icon_label);
+  }
+  lv_obj_t* text_label = lv_label_create(btn);
+  lv_label_set_text(text_label, text);
+  lv_label_set_long_mode(text_label, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_font(text_label, popup_layout::font28(), 0);
+  lv_obj_set_style_text_color(text_label, lv_color_white(), 0);
+  if (icon_out) *icon_out = icon_label;
+  if (label_out) *label_out = text_label;
+  return btn;
+}
+
+// Every line of the middle area (rows, questions, pairing texts) is one line
+// high with the same gap, so all views share one rhythm. The line is the
+// visible height of an MDI icon; the icon's taller label box overflows it.
+static int32_t system_line_height() {
+  return popup_layout::scale(42);
+}
+
+static int32_t system_line_gap() {
+  return popup_layout::scale(10);
+}
+
+// A line of the middle area: at least one line high, text lines wrap below.
+static lv_obj_t* create_system_line(lv_obj_t* parent, bool fixed_height) {
+  lv_obj_t* line = lv_obj_create(parent);
+  style_plain_container(line);
+  lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(line, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_set_width(line, LV_PCT(100));
+  if (fixed_height) {
+    lv_obj_set_height(line, system_line_height());
+  } else {
+    lv_obj_set_height(line, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(line, system_line_height(), 0);
+  }
+  lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(line, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  return line;
+}
+
+static lv_obj_t* create_system_text_line(lv_obj_t* parent, const lv_font_t* font,
+                                         uint32_t color) {
+  lv_obj_t* line = create_system_line(parent, false);
+  lv_obj_t* label = lv_label_create(line);
+  lv_obj_set_width(label, LV_PCT(100));
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(label, font, 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+  lv_label_set_text(label, "");
+  return label;
+}
+
+static lv_obj_t* create_security_row(lv_obj_t* parent, const char* title,
+                                     lv_obj_t** value_out, lv_obj_t** icon_out,
+                                     lv_obj_t** check_out = nullptr) {
+  lv_obj_t* row = create_system_line(parent, true);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(row, popup_layout::scale(12), 0);
+  lv_obj_t* label = lv_label_create(row);
+  lv_label_set_text_fmt(label, "%s:", title);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+  lv_obj_set_flex_grow(label, 1);
+  lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
+  lv_obj_set_style_text_color(label, lv_color_white(), 0);
+  // State text, an optional green check and an optional Security shield.
+  lv_obj_t* state = lv_obj_create(row);
+  style_plain_container(state);
+  lv_obj_clear_flag(state, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(state, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_set_size(state, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(state, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(state, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(state, popup_layout::scale(10), 0);
+  lv_obj_t* value = lv_label_create(state);
+  lv_label_set_text(value, "");
+  lv_obj_set_style_text_font(value, popup_layout::font24(), 0);
+  lv_obj_set_style_text_color(value, lv_color_hex(0xA8A8A8), 0);
+  if (check_out) {
+    lv_obj_t* check = lv_label_create(state);
+    lv_label_set_text(check, getMdiChar("check").c_str());
+    if (FONT_MDI_ICONS) lv_obj_set_style_text_font(check, FONT_MDI_ICONS, 0);
+    popup_layout::applyIconScale(check);
+    lv_obj_set_style_text_color(check, lv_color_hex(0x51CF66), 0);
+    // Transparent while offline, so the texts stay right-aligned.
+    lv_obj_set_style_text_opa(check, LV_OPA_TRANSP, 0);
+    *check_out = check;
+  }
+  if (icon_out) {
+    lv_obj_t* icon = lv_label_create(state);
+    lv_label_set_text(icon, getMdiChar("shield-lock").c_str());
+    if (FONT_MDI_ICONS) lv_obj_set_style_text_font(icon, FONT_MDI_ICONS, 0);
+    popup_layout::applyIconScale(icon);
+    lv_obj_set_style_text_color(icon, lv_color_hex(0xA8A8A8), 0);
+    *icon_out = icon;
+  }
+  if (value_out) *value_out = value;
+  return row;
+}
+
+static lv_obj_t* create_centered_label(lv_obj_t* parent, const lv_font_t* font,
+                                       uint32_t color) {
+  lv_obj_t* label = lv_label_create(parent);
+  lv_obj_set_width(label, LV_PCT(100));
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(label, font, 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+  lv_label_set_text(label, "");
+  return label;
+}
+
+static lv_obj_t* create_centered_column(lv_obj_t* parent, int32_t row_gap) {
+  lv_obj_t* column = lv_obj_create(parent);
+  style_plain_container(column);
+  lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_width(column, LV_PCT(100));
+  lv_obj_set_height(column, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(column, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(column, row_gap, 0);
+  return column;
+}
+
 static void build_system_popup(lv_obj_t* parent) {
   lv_obj_t* box = lv_obj_create(parent);
   style_plain_container(box);
@@ -2647,13 +3273,21 @@ static void build_system_popup(lv_obj_t* parent) {
   lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
-  // Match the display form's fixed top offset.
-  lv_obj_set_style_pad_top(box, popup_layout::scale(48), 0);
+  // The branding sits just below the header. Displays lower than 800 layout
+  // pixels (480x480, 1024x600, 720x720, 1280x720) move it right up to the
+  // header, so a two-line update message still fits above the buttons.
+  constexpr bool kCompactSystem = SCREEN_HEIGHT < popup_layout::scale(780);
+  if (kCompactSystem) lv_obj_set_style_pad_top(parent, 0, 0);
+  lv_obj_set_style_pad_top(box, kCompactSystem ? 0 : popup_layout::scale(20), 0);
   lv_obj_set_style_pad_row(box, popup_layout::scale(18), 0);
 
   // Branding at the top: icon on the left, product name beside it and
-  // smaller version underneath, as in an app's About screen.
-  lv_obj_t* brand = lv_obj_create(box);
+  // smaller version underneath, as in an app's About screen. It stays in
+  // every view, with the device name centered just below.
+  lv_obj_t* head = create_centered_column(box, popup_layout::scale(6));
+  lv_obj_set_width(head, LV_SIZE_CONTENT);
+  lv_obj_t* brand = lv_obj_create(head);
+  system_brand = brand;
   style_plain_container(brand);
   lv_obj_clear_flag(brand, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_size(brand, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -2682,19 +3316,64 @@ static void build_system_popup(lv_obj_t* parent) {
   lv_obj_set_style_text_font(version_caption, popup_layout::font24(), 0);
   lv_obj_set_style_text_color(version_caption, lv_color_hex(0xA8A8A8), 0);
 
-  // Show the device name without a label, matching the version caption.
-  // The name does not change while the popup is open.
-  system_info_rows = lv_label_create(box);
-  lv_label_set_text(system_info_rows, Device::displayName());
-  lv_obj_set_style_text_font(system_info_rows, popup_layout::font24(), 0);
-  lv_obj_set_style_text_color(system_info_rows, lv_color_hex(0xA8A8A8), 0);
+  // The device name does not change while the popup is open.
+  system_device_name = lv_label_create(head);
+  lv_label_set_text(system_device_name, Device::displayName());
+  lv_obj_set_style_text_font(system_device_name, popup_layout::font24(), 0);
+  lv_obj_set_style_text_color(system_device_name, lv_color_hex(0xA8A8A8), 0);
+
+  // The middle area takes the free space between the device name and the
+  // status line and centers its lines. Where a two-line message leaves too
+  // little room (720-high layouts), the lines reach into the gaps instead of
+  // pushing a button off the display.
+  system_middle = lv_obj_create(box);
+  style_plain_container(system_middle);
+  lv_obj_clear_flag(system_middle, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(system_middle, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_set_width(system_middle, LV_PCT(100));
+  lv_obj_set_flex_grow(system_middle, 1);
+  lv_obj_set_flex_flow(system_middle, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(system_middle, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  // Lower displays center the lines a little higher, closer to the branding.
+  if (kCompactSystem) lv_obj_set_style_pad_bottom(system_middle, popup_layout::scale(24), 0);
+
+  // One fact per row: Home Assistant connected (check), Encryption and Web
+  // Admin password on (shield). "Home Assistant" is a product name and stays
+  // untranslated.
+  system_info_rows = create_centered_column(system_middle, system_line_gap());
+  lv_obj_add_flag(system_info_rows, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  create_security_row(system_info_rows, "Home Assistant", &security_ha_value, nullptr,
+                      &security_ha_check);
+  create_security_row(system_info_rows, tr().security_encryption_label,
+                      &security_encryption_value, &security_encryption_icon);
+  create_security_row(system_info_rows, tr().web_auth_section, &security_password_value,
+                      &security_password_icon);
+
+  // A confirmation question or the pairing number takes the place of the
+  // rows, line by line with the same height and gap.
+  security_prompt_box = create_centered_column(system_middle, system_line_gap());
+  lv_obj_add_flag(security_prompt_box, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_t* prompt_icon_line = create_system_line(security_prompt_box, true);
+  security_prompt_icon = lv_label_create(prompt_icon_line);
+  if (FONT_MDI_ICONS) lv_obj_set_style_text_font(security_prompt_icon, FONT_MDI_ICONS, 0);
+  popup_layout::applyIconScale(security_prompt_icon);
+  lv_obj_set_style_text_color(security_prompt_icon, lv_color_hex(0xFF6B6B), 0);
+  lv_label_set_text(security_prompt_icon, "");
+  security_prompt_title = create_system_text_line(security_prompt_box, popup_layout::font24(), 0xFFFFFF);
+  security_prompt_hint = create_system_text_line(security_prompt_box, popup_layout::font24(), 0xA8A8A8);
+
+  security_pair_box = create_centered_column(system_middle, system_line_gap());
+  lv_obj_add_flag(security_pair_box, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_t* pair_title = create_system_text_line(security_pair_box, popup_layout::font24(), 0xA8A8A8);
+  lv_label_set_text(pair_title, tr().pairing_title);
+  security_pair_number = create_centered_label(security_pair_box, popup_layout::font48(), 0xFFFFFF);
 
 #if LV_USE_QRCODE
   system_qr = lv_qrcode_create(box);
   // Leave more space below the branding than the standard 18 px row gap.
   // Use margin, not padding, to move the element without enlarging its
-  // white QR frame. Size the QR to remaining space (see system_show_qr),
-  // keeping it within the card on 720 px devices too.
+  // white QR frame.
   lv_obj_set_style_margin_top(system_qr, popup_layout::scale(14), 0);
 #if defined(DEVICE_LAYOUT_480X480)
   // Leave enough vertical room for the GitHub action on the compact square
@@ -2712,27 +3391,40 @@ static void build_system_popup(lv_obj_t* parent) {
   lv_obj_add_flag(system_qr, LV_OBJ_FLAG_HIDDEN);
 #endif
 
-  // Push status/progress and buttons downward; also measure available
-  // space here when showing the QR code.
+  // Push the status and the buttons downward.
   system_spacer = create_flex_spacer(box);
 
-  // Place status/progress directly above the update button, where the
-  // user initiated the action, instead of beside device information.
-  system_status_label = lv_label_create(box);
+  // Status area above the buttons: update and error messages, the Security
+  // hint or the download progress. It always keeps room for two lines, so a
+  // message or another view never moves the lines above.
+  system_status_row = lv_obj_create(box);
+  style_plain_container(system_status_row);
+  lv_obj_clear_flag(system_status_row, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_width(system_status_row, LV_PCT(100));
+  lv_obj_set_height(system_status_row,
+                    2 * lv_font_get_line_height(popup_layout::font24()));
+  lv_obj_set_flex_flow(system_status_row, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(system_status_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(system_status_row, popup_layout::scale(6), 0);
+  system_status_label = lv_label_create(system_status_row);
   lv_obj_set_width(system_status_label, LV_PCT(100));
   lv_label_set_long_mode(system_status_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_align(system_status_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(system_status_label, popup_layout::font24(), 0);
-  lv_obj_set_style_text_color(system_status_label, lv_color_hex(0xC8C8C8), 0);
   if (system_update_available && system_latest_tag[0]) {
     // Retain the known check result and restart hint when reopening.
-    // Leave the row empty until the first successful check.
     system_show_update_available_status(true);
   } else {
-    lv_label_set_text(system_status_label, "");
+    system_clear_status();
   }
 
-  system_progress_bar = lv_bar_create(box);
+  security_hint_label = create_centered_label(system_status_row, popup_layout::font24(), 0xA8A8A8);
+  // While pairing, the instruction and its hint sit here, under the number.
+  security_pair_text = create_centered_label(system_status_row, popup_layout::font24(), 0xFFFFFF);
+  security_pair_hint = create_centered_label(system_status_row, popup_layout::font24(), 0xA8A8A8);
+
+  system_progress_bar = lv_bar_create(system_status_row);
   lv_obj_set_size(system_progress_bar, LV_PCT(100),
                   popup_layout::scale(18));
   lv_obj_set_style_bg_color(system_progress_bar, lv_color_hex(0x1E1E1E), LV_PART_MAIN);
@@ -2746,78 +3438,49 @@ static void build_system_popup(lv_obj_t* parent) {
   lv_bar_set_range(system_progress_bar, 0, 100);
   lv_obj_add_flag(system_progress_bar, LV_OBJ_FLAG_HIDDEN);
 
-  // Green marks an affirmative action, as with Wi-Fi connect and save.
-  system_check_btn = create_popup_button(box, "", 0x2E7D32, on_system_check_clicked);
-  lv_obj_set_width(system_check_btn, LV_PCT(100));
-  lv_obj_set_height(system_check_btn, popup_layout::scale(76));
-  system_check_btn_label = lv_obj_get_child(system_check_btn, 0);
-  if (system_check_btn_label) {
-    lv_obj_set_style_text_font(system_check_btn_label,
-                               popup_layout::font28(), 0);
-  }
+  // First row: Updates (green marks an affirmative action, as with Wi-Fi
+  // connect and save) and Restart (neutral gray; red is reserved for deletion).
+  system_action_row = create_system_button_row(box);
+  system_check_btn = create_system_icon_button(system_action_row, "magnify", "", 0x2E7D32,
+                                               on_system_check_clicked,
+                                               &system_check_btn_icon,
+                                               &system_check_btn_label);
   system_update_check_btn_text();
+  system_reboot_btn = create_system_icon_button(system_action_row, "restart",
+                                                tr().restart_button, 0x424242,
+                                                on_system_reboot_clicked, nullptr, nullptr);
 
-  // Restart and pairing share a row below update. Restart is neutral gray;
-  // red is reserved for deletion. Pairing is blue for synchronization.
-  system_action_row = lv_obj_create(box);
-  style_plain_container(system_action_row);
-  lv_obj_clear_flag(system_action_row, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_width(system_action_row, LV_PCT(100));
-  lv_obj_set_height(system_action_row, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(system_action_row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(system_action_row,
-                              popup_layout::scale(12), 0);
+  // The Security view uses the same row for its own two actions.
+  security_action_row = create_system_button_row(box);
+  security_btn1 = create_system_icon_button(security_action_row, "shield-lock", "",
+                                            0x1E88E5, on_security_btn1_clicked,
+                                            &security_btn1_icon, &security_btn1_label);
+  security_btn1_color = 0x1E88E5;
+  security_btn2 = create_system_icon_button(security_action_row, "lock-open-variant", "",
+                                            0x424242, on_security_btn2_clicked,
+                                            &security_btn2_icon, &security_btn2_label);
+  security_btn2_color = 0x424242;
 
-  // No icon, matching the Web Admin restart button.
-  system_reboot_btn = create_popup_button(system_action_row, tr().restart_button,
-                                          0x424242, on_system_reboot_clicked);
-  lv_obj_set_flex_grow(system_reboot_btn, 1);
-  lv_obj_set_height(system_reboot_btn, popup_layout::scale(76));
-  lv_obj_t* reboot_text = lv_obj_get_child(system_reboot_btn, 0);
-  if (reboot_text) {
-    lv_obj_set_style_text_font(reboot_text, popup_layout::font28(), 0);
+  // Second row: GitHub (QR code) and Security; both toggle their view.
+  lv_obj_t* link_row = create_system_button_row(box);
+  system_github_btn = create_system_icon_button(link_row, "github", "GitHub", 0x424242,
+                                                on_system_github_clicked, nullptr, nullptr);
+  system_security_btn = create_system_icon_button(link_row, "shield-lock", tr().security_btn,
+                                                  0x424242, on_system_security_clicked,
+                                                  nullptr, nullptr);
+  system_github_color = 0x424242;
+  system_security_color = 0x424242;
+
+  system_view = SystemView::Main;
+  security_step = SecurityStep::List;
+  system_rows_state = 0xFF;
+  system_refresh_rows();
+  system_apply_view();
+  // The rows follow the connection while the popup is open; closing the
+  // popup deletes the timer.
+  if (!security_refresh_timer) {
+    security_refresh_timer = lv_timer_create(on_security_refresh_timer, 500, nullptr);
   }
-
-  system_pair_btn = create_popup_button(system_action_row, "", 0x1E88E5,
-                                        on_system_pair_clicked);
-  lv_obj_set_flex_grow(system_pair_btn, 1);
-  lv_obj_set_height(system_pair_btn, popup_layout::scale(76));
-  lv_obj_set_flex_flow(system_pair_btn, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(system_pair_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(system_pair_btn,
-                              popup_layout::scale(14), 0);
-  lv_obj_t* pair_icon = lv_obj_get_child(system_pair_btn, 0);
-  if (pair_icon) {
-    lv_label_set_text(pair_icon, getMdiChar("home-assistant").c_str());
-    if (FONT_MDI_ICONS) lv_obj_set_style_text_font(pair_icon, FONT_MDI_ICONS, 0);
-    popup_layout::applyIconScale(pair_icon);
-  }
-  lv_obj_t* pair_text = lv_label_create(system_pair_btn);
-  lv_label_set_text(pair_text, tr().system_pair_btn);
-  lv_label_set_long_mode(pair_text, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_font(pair_text, popup_layout::font28(), 0);
-  lv_obj_set_style_text_color(pair_text, lv_color_white(), 0);
-
-  // GitHub button with icon and text inside, matching the rotation button
-  system_github_btn = create_popup_button(box, "", 0x424242, on_system_github_clicked);
-  lv_obj_set_width(system_github_btn, LV_PCT(100));
-  lv_obj_set_height(system_github_btn, popup_layout::scale(76));
-  lv_obj_set_flex_flow(system_github_btn, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(system_github_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(system_github_btn,
-                              popup_layout::scale(14), 0);
-  lv_obj_t* gh_icon = lv_obj_get_child(system_github_btn, 0);
-  if (gh_icon) {
-    lv_label_set_text(gh_icon, getMdiChar("github").c_str());
-    if (FONT_MDI_ICONS) lv_obj_set_style_text_font(gh_icon, FONT_MDI_ICONS, 0);
-    popup_layout::applyIconScale(gh_icon);
-  }
-  lv_obj_t* gh_text = lv_label_create(system_github_btn);
-  lv_label_set_text(gh_text, "GitHub");
-  lv_obj_set_style_text_font(gh_text, popup_layout::font28(), 0);
-  lv_obj_set_style_text_color(gh_text, lv_color_white(), 0);
 }
 
 static const char* popup_title_for_kind(SettingsPopupKind kind) {
@@ -2873,8 +3536,13 @@ static void open_settings_popup(SettingsPopupKind kind) {
   if (settings_popup_overlay) return;
   reset_popup_refs();
   settings_popup_kind = kind;
+  // Settings is not a tile popup: the tile that opened the last popup (a
+  // "From icon" or "From cover" Weather or Media tile) must not recolor it
+  // when its color changes, for example on the tile reload after a save.
+  tile_icon_source::open_popup_without_tile();
 
-  const auto parts = create_popup_body(on_settings_popup_close_clicked, nullptr);
+  const auto parts = create_popup_body(on_settings_popup_close_clicked, nullptr,
+                                       settings_tile_color());
   settings_popup_overlay = parts.overlay;
   settings_popup_card = parts.card;
   settings_popup_title = parts.title;
@@ -2949,7 +3617,8 @@ static lv_obj_t* create_settings_menu_tile(lv_obj_t* parent, uint8_t col, uint8_
   lv_obj_t* tile = lv_button_create(parent);
   lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_grid_cell(tile, LV_GRID_ALIGN_STRETCH, col, 3, LV_GRID_ALIGN_STRETCH, row, 1);
-  style_settings_button(tile, 0x2A2A2A);
+  style_settings_button(tile, settings_tile_color());
+  settings_track_tinted(tile);
   ui_surface_style::apply_radius(tile, popup_layout::scale480(22), 0);
   lv_obj_set_style_border_opa(tile, LV_OPA_TRANSP, 0);
   lv_obj_set_style_outline_opa(tile, LV_OPA_TRANSP, 0);
@@ -3123,6 +3792,11 @@ void build_settings_tab(lv_obj_t *tab, hotspot_callback_t hotspot_cb) {
   if (settings_popup_overlay) close_settings_popup();
 
   lv_obj_clean(tab);
+  settings_tinted_count = 0;
+  settings_tinted_color = settings_tile_color();
+  if (!settings_tint_timer) {
+    settings_tint_timer = lv_timer_create(on_settings_tint_timer, 1000, nullptr);
+  }
   lv_obj_clear_flag(tab, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_color(tab, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(tab, LV_OPA_COVER, 0);
@@ -3266,7 +3940,7 @@ void settings_refresh_language() {
   if (settings_tile_wifi_title) lv_label_set_text(settings_tile_wifi_title, s.wifi_label);
   if (settings_tile_locale_title) lv_label_set_text(settings_tile_locale_title, s.admin_settings_language);
   if (settings_tile_firmware_title) lv_label_set_text(settings_tile_firmware_title, "System");
-  if (settings_popup_title) lv_label_set_text(settings_popup_title, popup_title_for_kind(settings_popup_kind));
+  set_settings_popup_title(popup_title_for_kind(settings_popup_kind));
   if (display_section_label) lv_label_set_text(display_section_label, s.display_label);
   if (brightness_title_label) lv_label_set_text(brightness_title_label, s.brightness_label);
   if (screensaver_brightness_title_label) {

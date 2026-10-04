@@ -19,6 +19,8 @@
 #include "src/core/power/power_manager.h"
 #include "src/core/config/config_manager.h"
 #include "src/core/diagnostics/crash_log.h"
+#include "src/core/diagnostics/loop_stall.h"
+#include "src/core/diagnostics/text_fit_probe.h"
 #include "src/core/firmware/firmware_version.h"
 #include "src/core/firmware/github_update.h"
 #include "src/core/display/lvgl_tick_service.h"
@@ -45,6 +47,7 @@
 #include "src/ui/screensaver/screensaver_config.h"
 #include "src/io/hardware_io.h"
 #include "src/video/local_camera/local_camera.h"
+#include "src/network/secure/command_channel.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/tiles/runtime/tile_update_service.h"
@@ -681,6 +684,13 @@ void setup() {
   log_memory_status("after-nvs");
   Serial.flush();
 
+  // Tile renderer state lives in PSRAM (PSRAM is ready only after the global
+  // constructors) and must exist before the UI task and the MQTT worker.
+  if (!tile_renderer_init_cold_storage()) {
+    Serial.println("[Setup] Tile state storage FAILED!");
+    while(1) delay(1000);
+  }
+
   Serial.println("[Setup] Loading configs...");
   Serial.flush();
   bool has_config = configManager.load();
@@ -833,6 +843,9 @@ void setup() {
   Serial.println("[Setup] UI built");
   Serial.flush();
   preload_image_screensaver();
+#if defined(HOMETILES_TEXT_FIT_PROBE)
+  text_fit_probe::start();
+#endif
 
   uiManager.updateStatusbar();
   Serial.println("[Setup] Statusbar updated");
@@ -896,6 +909,8 @@ void setup() {
   // Built-in camera opt-in (exact camera profiles only). The sensor probe
   // runs on its own worker and needs the touch-owned I2C bus from Device init.
   local_camera::begin();
+  // Optional encrypted Bridge commands; loads the stored pairing, if any.
+  command_channel::begin();
   Serial.flush();
 
   if (has_config) {
@@ -945,6 +960,7 @@ void setup() {
   // that the UI is usable; otherwise a short sleep timeout can expire during
   // boot before the user has had a chance to interact.
   displayManager.resetActivityTimer();
+  loop_stall::begin();
 
   Serial.println("\n=== SETUP COMPLETE ===\n");
   log_memory_status("setup-complete");
@@ -968,6 +984,7 @@ void loop() {
   if (first_run) Serial.println("[Loop] lv_tick_inc()...");
   lv_tick_inc(now - g_lvgl_tick_last_ms);
   g_lvgl_tick_last_ms = now;
+  loop_stall::enter(loop_stall::Step::Top);
 
   if (hotspot_mode_change_pending) {
     hotspot_mode_change_pending = false;
@@ -1023,6 +1040,7 @@ void loop() {
   const bool ota_in_progress = webAdminOtaInProgress();
 
   if (ota_in_progress) {
+    loop_stall::enter(loop_stall::Step::OtaWeb);
     if (!ota_display_suspended) {
       displayManager.setInputEnabled(false);
       BoardHAL::displayPowerSaveOn();
@@ -1045,9 +1063,11 @@ void loop() {
   }
 
   if (first_run) Serial.println("[Loop] BoardHAL::update()...");
+  loop_stall::enter(loop_stall::Step::Board);
   BoardHAL::update();
 
   if (webConfigServer.isRunning()) {
+    loop_stall::enter(loop_stall::Step::AccessPoint);
     if (first_run) Serial.println("[Loop] AP mode active...");
     if (webAdminServer.isRunning()) webAdminServer.stop();
 
@@ -1138,6 +1158,7 @@ void loop() {
     displayManager.resetActivityTimer();
   }
 
+  loop_stall::enter(loop_stall::Step::Power);
   service_image_screensaver_auto(displayManager.getLastActivityTime());
   if (first_run) Serial.println("[Loop] powerManager.update()...");
   powerManager.update(displayManager.getLastActivityTime());
@@ -1159,15 +1180,20 @@ void loop() {
       first_run = false;
     }
     if (configManager.isConfigured()) {
+      loop_stall::enter(loop_stall::Step::SleepNetwork);
       networkManager.update();
+      loop_stall::enter(loop_stall::Step::SleepWeb);
       if (webAdminServer.isRunning()) webAdminServer.handle();
       // The MQTT worker keeps receiving during sleep. Drain inbound messages to
       // prevent queue drops, and run post-connect work so subscriptions/discovery
       // resume after a sleeping reconnect too.
+      loop_stall::enter(loop_stall::Step::SleepMqtt);
       mqttServicePostConnect();
     viewNavigationService();
       mqtt_process_inbound_queue();
       local_camera::service();
+      command_channel::service();
+      loop_stall::enter(loop_stall::Step::SleepTiles);
       // Keep live tile state current during sleep. The paused refresh timer
       // prevents drawing to the sleeping display, so wake needs no catch-up.
       // Graph history remains on the active request/response path below.
@@ -1198,7 +1224,9 @@ void loop() {
       service_background_state_refresh(true);
       process_energy_response_queue();
       energy_service_periodic();
+      loop_stall::sampleNetwork();
     }
+    loop_stall::enter(loop_stall::Step::SleepTouch);
     // Touch wake only changes display hardware. Background state processing runs
     // in both modes, so wake needs no extra request or queue drain. The 20 ms sleep
     // loop delay keeps newly received state close to presentation without adding
@@ -1222,6 +1250,7 @@ void loop() {
   // of "found one cost, animation still hitches" -- this covers the whole gap
   // in one pass). Only prints if the total exceeds 80ms.
   uint32_t t_loop0 = millis();
+  loop_stall::enter(loop_stall::Step::PreLvgl);
 #if HOMETILES_GUITION_S3_DIAGNOSTICS_ACTIVE
   const uint32_t s3_loop_started_us = micros();
 #endif
@@ -1266,21 +1295,16 @@ void loop() {
   process_camera_popup();
   uint32_t t_popup_queues = millis();
 
-  // In idle mode, retain the normal tile budgets and service pending media
-  // separately so artwork does not wait for the two-second background batch.
+  // Every loop applies each type's bounded batch before LVGL services the
+  // next frame. Idle mode used to batch them every two seconds; its CPU,
+  // frame rate and Wi-Fi savings are gone (power_manager.h,
+  // setWifiPowerSaving), and the batch only delayed states: a moving Cover's
+  // 5 % steps showed as 20 % jumps (user 2026-10-02). Energy keeps its own
+  // retry and one-minute timers.
   if (!camera_popup_busy && !PopupFirstFrame::any_pending()) {
-    static uint32_t last_queue_ms = 0;
-    bool idle = !powerManager.isHighPerformance();
-    if (!idle || (millis() - last_queue_ms >= 2000)) {
-      // Apply each type's bounded batch before LVGL services the next frame.
-      // Remaining idle work waits for the next two-second interval.
-      process_tile_update_queues<TileUpdateBudget::Active>();
-      process_tile_graph_queue();
-      if (idle) energy_service_periodic();
-      last_queue_ms = millis();
-    } else {
-      process_idle_media_updates();
-    }
+    process_tile_update_queues<TileUpdateBudget::Active>();
+    process_tile_graph_queue();
+    energy_service_periodic();
   }
   uint32_t t_update_queues = millis();
   // Retain navigation/layout/style reload flags while the camera covers them;
@@ -1309,6 +1333,7 @@ void loop() {
   const uint32_t s3_pre_lvgl_us = micros() - s3_loop_started_us;
   const uint32_t s3_lvgl_started_us = micros();
 #endif
+  loop_stall::enter(loop_stall::Step::Lvgl);
   yield();  // Yield so the watchdog can be serviced.
   sync_popup_shell();
   lv_timer_handler();
@@ -1316,6 +1341,7 @@ void loop() {
   GuitionS3Diagnostics::noteUiLoop(
       s3_pre_lvgl_us, micros() - s3_lvgl_started_us);
 #endif
+  loop_stall::enter(loop_stall::Step::FolderSwitch);
   tiles_process_pending_folder_switch();
   GuitionS3Diagnostics::service();
   yield();  // Yield so the watchdog can be serviced.
@@ -1325,6 +1351,7 @@ void loop() {
   }
 
   // Keep this pause at 1 ms for camera throughput.
+  loop_stall::enter(loop_stall::Step::WebAdmin);
   delay(1);
 
   if (first_run) Serial.println("[Loop] webAdminServer.handle()...");
@@ -1335,9 +1362,13 @@ void loop() {
     // The worker owns the MQTT socket, reconnects and buffer maintenance.
     // Only the application-facing queue ends remain on the loop: post-connect
     // subscriptions/discovery and incoming handlers that touch flash or LVGL.
+    loop_stall::enter(loop_stall::Step::PostConnect);
     mqttServicePostConnect();
+    loop_stall::enter(loop_stall::Step::Services);
     viewNavigationService();
     local_camera::service();
+    command_channel::service();
+    loop_stall::enter(loop_stall::Step::MqttInbound);
     // Keep S3 input service bounded when Home Assistant echoes a live slider
     // command or sends a retained-state burst. Eight messages per UI cycle
     // still drains far more than normal traffic without starving the next
@@ -1347,9 +1378,11 @@ void loop() {
 #else
     mqtt_process_inbound_queue(camera_popup_is_busy() ? 4 : 0);
 #endif
+    loop_stall::enter(loop_stall::Step::DynamicSlots);
     if (!camera_popup_is_busy()) {
       mqttServiceDynamicSlotsReload();
     }
+    loop_stall::enter(loop_stall::Step::NetworkUpdate);
     static uint8_t net_tick = 0;
     if (++net_tick % 5 == 0) {
       if (first_run) Serial.println("[Loop] networkManager.update()...");
@@ -1365,6 +1398,8 @@ void loop() {
     }
   }
 
+  loop_stall::enter(loop_stall::Step::Status);
+  loop_stall::sampleNetwork();
   if (now - last_mem_log_ms >= 60000UL) {
     last_mem_log_ms = now;
     log_memory_status("runtime-60s");

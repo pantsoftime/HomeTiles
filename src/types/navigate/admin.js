@@ -30,22 +30,11 @@ function normalizeIconName(value) {
       if (btn) {
         btn.dataset.folderName = label;
         btn.dataset.folderIcon = iconName;
-        const labelEl = btn.querySelector('span');
+        const labelEl = btn.querySelector('.tab-label');
         if (labelEl) labelEl.textContent = label;
-        let iconEl = btn.querySelector('i.mdi');
-        if (iconName) {
-          if (!iconEl) {
-            iconEl = document.createElement('i');
-            iconEl.className = 'mdi';
-            iconEl.style.fontSize = '24px';
-            if (labelEl) btn.insertBefore(iconEl, labelEl);
-            else btn.appendChild(iconEl);
-          }
-          iconEl.className = 'mdi mdi-' + iconName;
-          iconEl.style.fontSize = '24px';
-        } else if (iconEl) {
-          iconEl.remove();
-        }
+        // The circle always holds an icon; without one the folder icon.
+        const iconEl = btn.querySelector('.tab-disc i.mdi');
+        if (iconEl) iconEl.className = 'mdi mdi-' + (iconName || (folderNum === 0 ? 'home' : 'folder'));
       }
     }
     document.querySelectorAll('select[id$="_navigate_target"]').forEach(select => {
@@ -182,6 +171,8 @@ function normalizeIconName(value) {
         tile.folder_pin = storedPin;
       }
       if (tileEl) tileEl.dataset.folderPinEnabled = enabled ? '1' : '0';
+      // The tile shows the lock of a protected Folder (previewTileLocked).
+      if (typeof updateTilePreview === 'function') updateTilePreview(tab);
       syncFolderPinControls(tab);
       if (status) status.textContent = navigateText('folderPinSaved');
       showNotification(navigateText('folderPinSaved'));

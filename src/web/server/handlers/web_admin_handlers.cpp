@@ -1,4 +1,5 @@
 #include "src/web/server/web_admin.h"
+#include "src/web/server/auth/web_admin_auth.h"
 #include "src/core/i18n/i18n.h"
 #include "src/core/config/pin_access.h"
 #include "src/network/bridge/device_entities.h"
@@ -17,10 +18,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include "src/web/server/handlers/web_admin_handler_utils.h"
+#include "src/core/power/power_manager.h"
 
 using namespace web_admin_handlers;
 
+namespace {
+
+constexpr uint16_t kHomeFolderId = 0;
+
+}  // namespace
+
 void WebAdminServer::handleSaveMQTT() {
+  const uint32_t request_started_ms = millis();
   const bool ajax_save =
       server.hasArg("_ajax") && server.arg("_ajax") == "1";
   const bool access_only =
@@ -358,6 +367,19 @@ void WebAdminServer::handleSaveMQTT() {
   bool settings_config_rolled_back = false;
   SettingsTileVisibilityResult settings_visibility_reconcile =
       SettingsTileVisibilityResult::Success;
+  // Like a tile reorder, the visible Home grid shows the parked or restored
+  // Settings tile before any flash write; NVS and the grid file follow (user
+  // 2026-10-02: the panel showed it only after both writes and a rebuild of
+  // every grid).
+  const uint32_t show_started_ms = millis();
+  const bool settings_tile_previewed =
+      settings_visibility_commit_needed && !powerManager.isInSleep() &&
+      tileConfig.previewSettingsTileVisible(!cfg.settings_tile_hidden,
+                                            settings_tile_target_col,
+                                            settings_tile_target_row);
+  const bool settings_tile_shown_now =
+      settings_tile_previewed && tiles_show_active_layout_now();
+  const uint32_t save_started_ms = millis();
   auto commit_settings = [&]() {
     settings_config_saved = configManager.save(cfg);
     if (!settings_config_saved || !settings_visibility_commit_needed) return;
@@ -388,6 +410,16 @@ void WebAdminServer::handleSaveMQTT() {
 #else
   commit_settings();
 #endif
+  if (settings_visibility_commit_needed) {
+    // Like the reorder log: where a Settings parking move spends its time.
+    const uint32_t saved_ms = millis();
+    Serial.printf("[WebAdmin] Settings tile %s shown=%u parse=%lu ms show=%lu ms save=%lu ms\n",
+                  cfg.settings_tile_hidden ? "parked" : "restored",
+                  settings_tile_shown_now ? 1U : 0U,
+                  static_cast<unsigned long>(show_started_ms - request_started_ms),
+                  static_cast<unsigned long>(save_started_ms - show_started_ms),
+                  static_cast<unsigned long>(saved_ms - save_started_ms));
+  }
 
   if (settings_config_saved) {
     if (settings_visibility_commit_failed) {
@@ -406,8 +438,17 @@ void WebAdminServer::handleSaveMQTT() {
       uiManager.scheduleNtpSync(0);
       // Reload grids in the loop, never inside the WebServer callback.
       tiles_request_reload_all();
-    } else if (settings_visibility_commit_needed) {
+    } else if (cfg.settings_pin_enabled != previous_cfg.settings_pin_enabled) {
+      // A Settings PIN shows a lock on the Settings tile (navigate renderer).
       tiles_request_reload_all();
+    } else if (settings_visibility_commit_needed) {
+      // Only the Home grid changed, like a reorder: drop its hidden caches and
+      // rebuild it only when it could not be shown before the writes.
+      tiles_invalidate_folder_only(kHomeFolderId);
+      if (!settings_tile_shown_now &&
+          tileConfig.getActiveFolderId() == kHomeFolderId) {
+        tiles_request_reload_if_loaded(GridType::TAB0);
+      }
     }
     if (settings_gesture_changed) {
       // Web Admin access-only saves run in the main loop. Apply the new edge
@@ -417,9 +458,16 @@ void WebAdminServer::handleSaveMQTT() {
     if (ajax_save) {
       String response = "{\"ok\":true,\"reload\":";
       response += access_changed && !access_only ? "true" : "false";
+      if (settings_visibility_commit_needed) {
+        // Where the Settings tile went: the Web Admin needs no grid reload
+        // when it matches its own preview.
+        response += ",\"settings_tile_index\":";
+        response += String(tileConfig.settingsTileIndex());
+      }
       response += ",\"settings_pin\":\"";
       String stored_pin;
-      if (configManager.getSettingsPin(stored_pin)) {
+      if (!web_admin_auth::storedSecretsHidden() &&
+          configManager.getSettingsPin(stored_pin)) {
         appendJsonEscaped(response, stored_pin);
       }
       stored_pin = "";
@@ -434,6 +482,11 @@ void WebAdminServer::handleSaveMQTT() {
     // browser response or restarting the device.
     if (!access_only) networkManager.requestMqttReconfigure();
   } else {
+    if (settings_tile_previewed) {
+      // Nothing was written: the Home grid goes back to the stored one.
+      tileConfig.setSettingsTileVisible(!previous_cfg.settings_tile_hidden);
+      tiles_request_reload(GridType::TAB0);
+    }
     const auto& tr = i18n::strings(cfg.language);
     if (ajax_save) {
       sendSaveError(500, tr.save_failed);
@@ -616,8 +669,11 @@ void WebAdminServer::handleSaveIconDiscs() {
     return;
   }
   // Shared disc styles update every grid, including cached and screensaver
-  // tiles, on the next safe UI pass. This handler does not touch LVGL.
+  // tiles, on the next safe UI pass; the icon refresh shows dark icons
+  // readable on the tile or their circle again. This handler does not touch
+  // LVGL.
   ui_surface_style::request_icon_disc_refresh();
+  tiles_request_icon_refresh();
   server.send(200, "application/json",
               enabled ? "{\"success\":true,\"enabled\":true}"
                       : "{\"success\":true,\"enabled\":false}");

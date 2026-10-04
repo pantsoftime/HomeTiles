@@ -98,6 +98,7 @@ static_assert(SENSOR_VALUE_FONT_MAX < 6,
               "monospace number (sensor_value_font_from_legacy_fork). Re-save every mono "
               "tile on every panel, then drop that mapping.");
 
+// A new field also belongs in tileContentEquals() below.
 struct Tile {
   TileType type;
   // Stable navigation identity, stored in the two unused V7 reserved bytes.
@@ -175,6 +176,45 @@ struct Tile {
         image_slideshow_sec(10) {}
 };
 
+// Everything a tile shows, all fields but its cell (col, row): equal tiles
+// can move to another cell without being rebuilt (tiles_show_active_layout_now).
+static inline bool tileContentEquals(const Tile& a, const Tile& b) {
+  return a.type == b.type && a.view_id == b.view_id && a.title == b.title &&
+         a.icon_name == b.icon_name && a.bg_color == b.bg_color &&
+         a.background_opacity == b.background_opacity &&
+         a.span_w == b.span_w && a.span_h == b.span_h &&
+         a.sensor_entity == b.sensor_entity && a.sensor_unit == b.sensor_unit &&
+         a.sensor_decimals == b.sensor_decimals &&
+         a.sensor_value_font == b.sensor_value_font &&
+         a.sensor_display_mode == b.sensor_display_mode &&
+         a.sensor_gauge_min == b.sensor_gauge_min &&
+         a.sensor_gauge_max == b.sensor_gauge_max &&
+         a.sensor_gauge_arc == b.sensor_gauge_arc &&
+         a.sensor_gauge_size == b.sensor_gauge_size &&
+         a.sensor_gauge_y_offset == b.sensor_gauge_y_offset &&
+         a.sensor_value_y_offset == b.sensor_value_y_offset &&
+         a.sensor_graph_height == b.sensor_graph_height &&
+         // FORK: the sensor tile's tap-to-folder target.
+         a.sensor_navigate_target == b.sensor_navigate_target &&
+         a.popup_open_mode == b.popup_open_mode && a.scene_alias == b.scene_alias &&
+         a.key_macro == b.key_macro && a.key_code == b.key_code &&
+         a.key_modifier == b.key_modifier && a.image_path == b.image_path &&
+         a.image_slideshow_sec == b.image_slideshow_sec &&
+         a.icon_disc_mode == b.icon_disc_mode && a.icon_glow == b.icon_glow &&
+         a.icon_colors == b.icon_colors;
+}
+
+// A deleted (empty) tile keeps only its slot geometry. Its entity, texts and
+// options must not return when a new tile is placed in the same slot.
+static inline void clearEmptyTileFields(Tile& tile) {
+  Tile empty;
+  empty.col = tile.col;
+  empty.row = tile.row;
+  empty.span_w = tile.span_w;
+  empty.span_h = tile.span_h;
+  tile = empty;
+}
+
 enum TileIconDiscMode : uint8_t {
   TILE_ICON_DISC_GLOBAL = 0,
   TILE_ICON_DISC_ON = 1,
@@ -190,13 +230,14 @@ static inline uint8_t normalizeTileIconDiscMode(int mode) {
 // Canonical icon color record for a type: numeric types keep only the color
 // bar, text types only the state lines, Sensor keeps both; icon-and-title
 // tiles keep the fixed color and a source entity (with the bar and state
-// lines for a "rules" source); types without icon colors keep none.
+// lines for a "rules" source); Media keeps "From cover"; types without icon
+// colors keep none.
 static inline String normalizeTileIconColors(int type, const char* record) {
   if (!tileTypeHasIconColors(type) || !record || !*record) return String();
   char out[tile_icon_colors::kMaxRecordBytes + 1];
   const size_t length = tile_icon_colors::normalize(
       record, out, sizeof(out), tileTypeIconColorsByValue(type), tileTypeIconColorsByState(type),
-      true, tileTypeRulesUseOwnEntity(type));
+      true, tileTypeRulesUseOwnEntity(type), type == TILE_MEDIA);
   return length ? String(out) : String();
 }
 
@@ -219,6 +260,12 @@ static inline String tileIconSourceEntity(int type, const String& record) {
 static inline bool tileBorderEnabled(const Tile& tile) {
   return (tile.type != TILE_CLOCK && tile.type != TILE_TEXT && tile.type != TILE_BACK) ||
          tile.sensor_display_mode != 1;
+}
+
+// Weather uses the same byte for its icons: 0 draws filled, colored weather
+// icons, 1 the white MDI outlines.
+static inline bool weatherColoredIcons(const Tile& tile) {
+  return tile.type != TILE_WEATHER || tile.sensor_display_mode != 1;
 }
 
 // Climate tile content is packed into sensor_gauge_min. Climate tiles do not
@@ -244,6 +291,14 @@ static constexpr uint8_t CLIMATE_TILE_MAX_GRID_ROWS =
 static constexpr uint8_t CLIMATE_TILE_MAX_GRID_CELLS =
     static_cast<uint8_t>(
         CLIMATE_TILE_MAX_GRID_COLUMNS * CLIMATE_TILE_MAX_GRID_ROWS);
+
+// Climate tile "Layout" (Web Admin): 0 = title only (the title top right,
+// the current temperature as a mini field), 1 = with value (title and
+// "Cooling · 20.5 °C" left beside the disc, like the Switch header). Stored
+// in sensor_display_mode, which the Climate tile does not use otherwise.
+static inline bool climateTileShowsValue(const Tile& tile) {
+  return tile.type == TILE_CLIMATE && tile.sensor_display_mode == 1;
+}
 
 static inline uint8_t climateTileGridColumns(const Tile& tile) {
   const uint8_t span_w = tile.span_w < 1 ? 1 : tile.span_w;
@@ -538,6 +593,11 @@ struct TileGridConfig {
   Tile tiles[TILES_PER_GRID];
 };
 
+// Allocates a default TileGridConfig for a grid that lives as long as the
+// firmware: PSRAM first, internal RAM as fallback. Aborts when neither has
+// room, because the caller cannot run without its grid.
+TileGridConfig* allocateTileGridStorage(const char* name);
+
 static constexpr uint32_t TILE_BG_COLOR_RGB_MASK = 0x00FFFFFFu;
 static constexpr uint32_t TILE_BG_COLOR_EXPLICIT = 0x01000000u;
 
@@ -638,14 +698,18 @@ public:
   bool getFolderEntitiesCached(uint16_t folder_id, FolderEntitySlotView* out, size_t count);
   void invalidateFolderEntityCache();
   bool saveFolderGrid(uint16_t folder_id, TileGridConfig& grid);
+  // A Web Admin reorder shows the active folder's new grid before its flash
+  // write; saveFolderGrid() then stores and keeps the same grid. False for
+  // any other folder.
+  bool previewActiveFolderGrid(uint16_t folder_id, const TileGridConfig& grid);
   uint32_t viewRevision() const { return view_revision_; }
   bool saveScreensaverGrid(const TileGridConfig& grid);
 
   bool setActiveFolder(uint16_t folder_id);
   bool setActiveFolderCached(uint16_t folder_id, const TileGridConfig& grid);
   uint16_t getActiveFolderId() const { return active_folder_id; }
-  const TileGridConfig& getActiveGrid() const { return active_grid; }
-  TileGridConfig& getActiveGrid() { return active_grid; }
+  const TileGridConfig& getActiveGrid() const { return activeGrid(); }
+  TileGridConfig& getActiveGrid() { return activeGrid(); }
 
   const FolderEntry* getFolder(uint16_t folder_id) const;
   uint16_t getFolderParent(uint16_t folder_id) const;
@@ -664,13 +728,24 @@ public:
       bool visible, float target_col = -1, float target_row = -1);
   SettingsTileVisibilityResult setSettingsTileVisible(
       bool visible, float target_col = -1, float target_row = -1);
+  // Parks or restores the Settings tile in the visible Home grid without
+  // writing anything, like previewActiveFolderGrid() for a reorder; the save
+  // that follows stores the same grid. False when nothing changed.
+  bool previewSettingsTileVisible(bool visible, float target_col,
+                                  float target_row);
+  // Slot of the Settings tile in the Home grid, -1 while it is hidden.
+  int settingsTileIndex();
 
 private:
   volatile uint32_t view_revision_ = 1;
   static constexpr uint16_t kRootFolderId = 0;
   static constexpr uint16_t kInvalidFolderId = 0xFFFF;
 
-  TileGridConfig active_grid;
+  // PSRAM, allocated on first use (load() in setup()) because PSRAM is not
+  // ready while the global constructors run. Never freed.
+  mutable TileGridConfig* active_grid_ = nullptr;
+  TileGridConfig& activeGrid() const;
+  void adoptActiveGrid(uint16_t folder_id, const TileGridConfig& grid);
   uint16_t active_folder_id = kRootFolderId;
   std::vector<FolderEntry> folders;
 

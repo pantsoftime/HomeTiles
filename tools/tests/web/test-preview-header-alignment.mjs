@@ -8,13 +8,16 @@ const helpers = [
   'isEditablePreview', 'normalizeSensorValueFont', 'getSensorValueFontClass',
   'resolveIconName', 'normalizeMdiIconName', 'isExplicitlyDisabledValue',
   'tileColorInputIsDefault', 'tileBgToHex', 'tileBgValueIsSet', 'tileBackgroundCss',
-  'applyIconDiscTint', 'iconDiscTinted', 'cssColorChannels',
+  'applyIconDiscTint', 'iconDiscTinted', 'cssColorMatch', 'cssColorChannels', 'cssColorAlpha', 'toneToLinear', 'toneToSrgb', 'toneOklch',
+  'toneLinear', 'toneRgb', 'toneBlend', 'toneFill', 'toneReadableIcon', 'toneHex',
   'tileBgFollowsDefault', 'tileColorHexIsDefaultGrey',
   'isDefaultTileGrey', 'tileColorMode', 'syncTileColorMode', 'previewIconColor', 'iconColorRuleState',
   'tileTypeHasDiscToggle', 'tileTypeHasColoredIcon',
   'rgbToHex', 'applyTileAriaLabel',
   'resolveUnitValue', 'isScreensaverTileTab', 'getTileResizeHandlesHtml',
-  'applyCompactSensorPreview', 'compactValueSize', 'syncCompactValueFontOptions', 'isCompactSensorType', 'renderTileFromData', 'updateTilePreview'
+  'applyCompactSensorPreview', 'compactValueSize', 'syncCompactValueFontOptions', 'isCompactSensorType', 'isEditableValueType', 'editableCompactValueFont',
+  'syncEditableValueFontOptions', 'renderTileFromData', 'updateTilePreview',
+  'parseWeatherPreviewPayload', 'applyWeatherPreview', 'parseMediaPreviewPayload', 'applyMediaPreview', 'applyMediaCoverTint'
 ].map(extractDeliveredFunction).join('\n');
 const html = `<!doctype html><html><head><style>
 ${readRepoFile('src/web/assets/admin.css')}

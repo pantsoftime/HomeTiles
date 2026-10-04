@@ -1,8 +1,8 @@
 // Per-tile glow (default on): a colored icon tints its disc with its own hue
-// at the global Glow strength (default 25 %) instead of white at 38, a color
-// between icon and tile. The tint is computed centrally from the icon's
-// current color, so every runtime icon color change reaches the disc, and the
-// Web Admin preview uses the same rule and the same opacities.
+// (tone_color.h: a fixed lightness step above the tile at the global Circle
+// strength, default 25 %) instead of a neutral step. The tint is computed
+// centrally from the icon's color, so every runtime icon color change reaches
+// the disc, and the Web Admin preview uses the same rule and formulas.
 import assert from 'node:assert/strict';
 import {extractDeliveredFunction, readRepoFile} from '../../lib/admin-source.mjs';
 
@@ -27,20 +27,24 @@ for (const marker of [
   'inline constexpr char kTags[6] = {};',
   'return r != g || g != b;',
   'const bool tinted = glow_of(disc) && icon_color_tints(rgb);',
-  'const lv_color_t color = tinted ? lv_color_hex(rgb) : lv_color_white();',
-  'ui_surface_style::apply_icon_disc(disc, tinted, step, mode == Mode::Off, mode == Mode::Global);',
+  'return tone_color::fill(circle_card(host, card, rgb, tinted, pressed, see_through_card), rgb, tinted,',
+  'set_fill_colors(disc, fill.disc_color, pressed.disc_color);',
+  'fade_with_card(disc);',
+  'ui_surface_style::apply_icon_disc(disc, mode == Mode::Off, mode == Mode::Global, see_through_card);',
+  'show_readable(icon, rgb);',
   'inline void set_icon_color(lv_obj_t* icon, lv_color_t color) {',
   'if (lv_obj_t* disc = disc_of(icon)) apply_fill(disc);',
   'set_tag(child, disc_mode, glow);',
 ]) assert.ok(disc.includes(marker), `tile_icon_disc: ${marker}`);
 assert.ok(read('src/tiles/runtime/tile_renderer.cpp').includes(
   'tile_icon_disc::apply_tile_options(tile_obj, tile.icon_disc_mode, tile.icon_glow);'));
-// Runtime icon color changes (light/switch, climate, binary sensor, cover)
+// Runtime icon color changes (light/switch, climate, weather, binary sensor, cover)
 // go through set_icon_color; nothing recolors a tile icon directly. The
 // binary sensor state color reaches it through the per-tile icon color rules
 // (tile_icon_color_rules::apply), which call set_icon_color.
 assert.ok(code(read('src/tiles/runtime/tile_icon_color_rules.h')).includes('tile_icon_disc::set_icon_color(icon, color);'));
 for (const [file, count] of [['src/tiles/runtime/tile_renderer.cpp', 2],
+                             ['src/types/switch/renderer.cpp', 1],
                              ['src/types/binary_sensor/renderer.cpp', 1],
                              ['src/types/cover/renderer.cpp', 1]]) {
   const source = code(read(file));
@@ -50,10 +54,9 @@ for (const [file, count] of [['src/tiles/runtime/tile_renderer.cpp', 2],
   assert.doesNotMatch(source, /lv_obj_set_style_text_color\(\s*(?:widgets?\.)?icon_label/, `${file} must not bypass the disc tint`);
 }
 
-// Preview: same rule, same opacities from the firmware constants.
+// Preview: same rule and formulas (toneFill) from the Circle strength.
 const styles = read('src/web/server/render/web_admin_styles.cpp');
-assert.ok(styles.includes('html += String(icon_glow::neutral_opa(glow) / 255.0f, 3);'));
-assert.ok(styles.includes('html += String(icon_glow::disc_opa(glow) * 100.0f / 255.0f, 1);'));
+assert.ok(styles.includes('html += "--icon-glow-pct:";') && !styles.includes('--icon-disc-opa'));
 const iconDiscTinted = new Function(`${extractDeliveredFunction('iconDiscTinted')}; return iconDiscTinted;`)();
 const cppRule = rgb => { const r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255; return r !== g || g !== b; };
 for (const rgb of [0xFFFFFF, 0xB0B0B0, 0x000000, 0xFFD54F, 0x3B82F6, 0xFF7043, 0xFFFFFE]) {
@@ -62,18 +65,25 @@ for (const rgb of [0xFFFFFF, 0xB0B0B0, 0x000000, 0xFFD54F, 0x3B82F6, 0xFF7043, 0
 }
 // Computed colors: rgb(), transparent and the color(srgb ...) form of
 // translucent screensaver tiles (the b47 preview misread it and lost glows).
-const cssColorChannels = new Function(`${extractDeliveredFunction('cssColorChannels')}; return cssColorChannels;`)();
+const cssColorMatch = extractDeliveredFunction('cssColorMatch');
+const cssColorChannels = new Function(`${cssColorMatch}; ${extractDeliveredFunction('cssColorChannels')}; return cssColorChannels;`)();
 assert.deepEqual(cssColorChannels('rgb(34, 34, 34)'), [34, 34, 34]);
 assert.deepEqual(cssColorChannels('color(srgb 0.133333 0.133333 0.133333 / 0.7)'), [34, 34, 34]);
 assert.equal(cssColorChannels('rgba(0, 0, 0, 0)'), null);
 assert.equal(cssColorChannels('transparent'), null);
+// Their alpha decides between the opaque circle and the see-through veil.
+const cssColorAlpha = new Function(`${cssColorMatch}; ${extractDeliveredFunction('cssColorAlpha')}; return cssColorAlpha;`)();
+assert.equal(cssColorAlpha('rgb(34, 34, 34)'), 1);
+assert.equal(cssColorAlpha('color(srgb 0.133333 0.133333 0.133333 / 0.7)'), 0.7);
+assert.equal(cssColorAlpha('rgba(0, 0, 0, 0)'), 0);
 assert.ok(read('src/web/admin/tiles/grid-preview.js').includes("icon.classList.toggle('tile-icon-tinted', tinted);"));
 const css = read('src/web/assets/admin.css');
-assert.match(css, /\.tile\.sensor-compact > \.tile-icon\.tile-icon-tinted \{\s*background:color-mix\(in srgb, currentColor var\(--icon-disc-glow, 25%\), transparent\);/);
+assert.match(css, /\.tile\.sensor-compact > \.tile-icon\.tile-icon-tinted \{\s*background:var\(--icon-disc-bg, color-mix\(in srgb, currentColor 25%, transparent\)\);/);
 assert.ok(css.indexOf('.tile-icon.tile-icon-tinted') < css.indexOf('.icon-discs-off .tile.sensor-compact'),
   'Off rules win over the tint');
-assert.match(read('src/web/admin/tiles/grid-preview.js'), /el\.innerHTML = html;\s*if \(typeof applyTileRulesTint === 'function'\) \{[\s\S]*?\}\s*applyIconDiscTint\(el\);/);
-assert.match(read('src/web/admin/tiles/live-preview.js'), /tileElem\.innerHTML = html;\s*if \(typeof applyTileRulesTint === 'function'[\s\S]*?\}\s*applyIconDiscTint\(tileElem\);/);
+// The weather and media previews set their icon and its color first.
+assert.match(read('src/web/admin/tiles/grid-preview.js'), /el\.innerHTML = html;\s*(?:if \(previewKind === '(?:weather|media)'\) \{\s*apply(?:Weather|Media)Preview\([^;]*;\s*\}\s*)*if \(typeof applyTileRulesTint === 'function'\) \{[\s\S]*?\}\s*applyIconDiscTint\(el\);/);
+assert.match(read('src/web/admin/tiles/live-preview.js'), /tileElem\.innerHTML = html;\s*(?:if \(previewKind === '(?:weather|media)'\) \{[\s\S]*?apply(?:Weather|Media)Preview\([\s\S]*?\);\s*\}\s*)*if \(typeof applyTileRulesTint === 'function'[\s\S]*?\}\s*applyIconDiscTint\(tileElem\);/);
 assert.match(read('src/types/switch/admin.js'), /applySwitchPreviewColors\(tileElem, state\);\s*\/\/[^\n]*\s*applyIconDiscTint\(tileElem\);/);
 
 // Editor, drafts, import/export and translations.

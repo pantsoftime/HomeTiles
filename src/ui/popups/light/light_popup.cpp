@@ -9,9 +9,12 @@
 #include "src/ui/popups/media/media_popup.h"
 #include "src/ui/popups/climate/climate_popup.h"
 #include "src/ui/popups/cover/cover_popup.h"
+#include "src/ui/popups/device/device_popup.h"
 #include "src/ui/popups/pin/pin_popup.h"
 #include "src/ui/popups/popup_layout.h"
+#include "src/ui/popups/popup_nav_style.h"
 #include "src/ui/popups/popup_surface.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/core/config/config_manager.h"
 #include "src/core/display/display_manager.h"
 #include "src/core/i18n/i18n.h"
@@ -20,7 +23,9 @@
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/command_pacer.h"
 #include "esp_heap_caps.h"
+#include <lvgl_private.h>
 #include <math.h>
 
 namespace {
@@ -63,13 +68,14 @@ constexpr int kBrightnessOffDragThreshold = kVerticalSliderRadius;
 constexpr uint32_t kDefaultColor = 0xFFD54F;
 constexpr uint32_t kSwitchOnColor = 0x3B82F6;
 constexpr uint32_t kRemoteBlockMs = 3000;
-constexpr uint32_t kLivePublishIntervalMs = 500;
-constexpr uint32_t kControlButtonIndicatorBg = 0xFFFFFF;
-constexpr lv_opa_t kControlButtonIndicatorOpa = LV_OPA_20;
-constexpr lv_opa_t kControlButtonActiveIndicatorOpa = kControlButtonIndicatorOpa;
-// White share of the card for the off switch thumb: 0x8D8D8D on the default
-// card, the neutral match for the former fixed blue-grey thumb.
-constexpr lv_opa_t kSwitchThumbOffStep = 119;
+// A color or Kelvin drag recolors the accents (header icon and circle, power
+// button, selected mode button) at most this often: only the cursor moves on
+// every frame, each recolored control is one more area to draw. The release
+// shows the exact color at once.
+constexpr uint32_t kAccentDragMs = 100;
+// Home Assistant starts a slider drag after 10 px (ha-control-slider Pan
+// threshold); below it a press is a tap and sends nothing live.
+constexpr int kDragThreshold = popup_layout::scale(10);
 constexpr uint32_t kTempWarmColor = 0xFFD27D;
 constexpr uint32_t kTempCoolColor = 0xF7F1E8;
 constexpr float kPi = 3.14159265358979323846f;
@@ -78,6 +84,15 @@ enum class LightPopupMode : uint8_t {
   Brightness,
   Color,
   Temperature,
+};
+
+// What one paced command publishes. State is the whole popup state (power
+// button, switch slider) and carries brightness, color and temperature.
+enum class LightPublishKind : uint8_t {
+  Brightness,
+  Color,
+  Temperature,
+  State,
 };
 
 struct LightPopupContext {
@@ -138,12 +153,19 @@ struct LightPopupContext {
   uint8_t tile_grid = 0;
   uint8_t tile_index = 0;
   bool user_dragging = false;
+  uint32_t accent_ms = 0;
+  // A slider gesture counts as a drag only after kDragThreshold.
+  bool drag_moved = false;
+  lv_point_t press_point = {0, 0};
   uint32_t last_user_action_ms = 0;
   uint32_t block_remote_until_ms = 0;
-  uint32_t last_live_publish_ms = 0;
+  command_pacer::Pacer pacer;
   lv_timer_t* live_publish_timer = nullptr;
   LightPopupMode pending_live_publish_mode = LightPopupMode::Brightness;
   bool live_publish_pending = false;
+  lv_timer_t* final_publish_timer = nullptr;
+  LightPublishKind final_publish_kind = LightPublishKind::State;
+  bool final_publish_pending = false;
   bool suppress_events = false;
   bool color_field_ready = false;
   bool use_color_temperature = false;
@@ -171,6 +193,8 @@ static void maybe_live_publish_color(LightPopupContext* ctx);
 static void commit_color_temperature(LightPopupContext* ctx);
 static void maybe_live_publish_color_temperature(LightPopupContext* ctx);
 static void cancel_pending_live_publish(LightPopupContext* ctx);
+static void cancel_pending_final_publish(LightPopupContext* ctx);
+static void flush_pending_final_publish(LightPopupContext* ctx);
 static void on_overlay_click(lv_event_t* e);
 
 static void on_close_click(lv_event_t* e) {
@@ -180,6 +204,7 @@ static void on_close_click(lv_event_t* e) {
   if (!ctx || !ctx->overlay || !ctx->card) return;
   ctx->user_dragging = false;
   cancel_pending_live_publish(ctx);
+  flush_pending_final_publish(ctx);
   hide_popup_shell(ctx->card);
   cancel_popup_open(ctx->card);
   lv_obj_add_flag(ctx->card, LV_OBJ_FLAG_HIDDEN);
@@ -524,7 +549,7 @@ static bool is_visible_obj(lv_obj_t* obj) {
 }
 
 static uint32_t get_preview_icon_rgb(const LightPopupContext* ctx) {
-  if (!ctx || !ctx->available || !ctx->is_on) return 0xB0B0B0;
+  if (!ctx || !ctx->available || !ctx->is_on) return tone_color::kOffIcon;
   if (ctx->supports_temperature && ctx->use_color_temperature) {
     return lv_color_to_u32(color_from_temperature_kelvin(ctx->color_temp_kelvin)) & 0xFFFFFF;
   }
@@ -532,6 +557,49 @@ static uint32_t get_preview_icon_rgb(const LightPopupContext* ctx) {
     return color_from_hsv(ctx->hue, ctx->sat, 100);
   }
   return kDefaultColor;
+}
+
+// The color the header icon shows, the one its circle is computed for.
+static uint32_t header_icon_rgb(const LightPopupContext* ctx, uint32_t icon_rgb) {
+  return ctx->keep_icon_white && ctx->available ? 0xFFFFFF : icon_rgb;
+}
+
+// The popup's controls look like the tile's (user 2026-10-01): the
+// brightness and switch track, the selected mode button and every press show
+// the header circle's color (popup_shell_control_fill), the neutral step for
+// an off light or a white icon. The card stays neutral: tinting it restyled
+// the whole popup on every step of a dragged color.
+static void control_fill(const LightPopupContext* ctx, uint32_t icon_rgb, lv_color_t& color, lv_opa_t& opa) {
+  popup_nav_style::fill(popup_surface::card(ctx->card_bg), lv_color_hex(header_icon_rgb(ctx, icon_rgb)), color, opa);
+}
+
+// The mode buttons follow the circle color whenever the icon color changes:
+// on/off (blue-grey to grey and back), a state update, a dragged color or
+// Kelvin value. A drag step (`live`) recolors only the visible fill of the
+// selected button: the others rest transparent and a pressed color is not
+// visible, and every restyled button is one more area the panel redraws per
+// step (b157 restyled all three in both states and the color wheel
+// stuttered). The rest follows once the finger lifts. Only a change touches
+// their style.
+static void follow_mode_button_fill(LightPopupContext* ctx, uint32_t icon_rgb, bool live = false) {
+  lv_color_t color;
+  lv_opa_t opa;
+  control_fill(ctx, icon_rgb, color, opa);
+  lv_obj_t* selected = ctx->mode == LightPopupMode::Color         ? ctx->color_button
+                       : ctx->mode == LightPopupMode::Temperature ? ctx->temperature_button
+                                                                  : ctx->brightness_button;
+  for (lv_obj_t* button : {ctx->brightness_button, ctx->color_button, ctx->temperature_button}) {
+    if (!button || (live && button != selected)) continue;
+    for (const lv_style_selector_t selector : {static_cast<lv_style_selector_t>(LV_PART_MAIN),
+                                               static_cast<lv_style_selector_t>(LV_PART_MAIN | LV_STATE_PRESSED)}) {
+      if (live && selector != LV_PART_MAIN) continue;
+      lv_style_value_t value;
+      if (lv_obj_get_local_style_prop(button, LV_STYLE_BG_COLOR, &value, selector) != LV_STYLE_RES_FOUND ||
+          !lv_color_eq(value.color, color)) {
+        lv_obj_set_style_bg_color(button, color, selector);
+      }
+    }
+  }
 }
 
 static void update_header_and_power_visuals(LightPopupContext* ctx, uint32_t icon_rgb) {
@@ -545,15 +613,22 @@ static void update_header_and_power_visuals(LightPopupContext* ctx, uint32_t ico
         0);
   }
   if (ctx->power_button) {
-    const lv_color_t power_color = lv_color_hex(icon_rgb);
-    lv_obj_set_style_bg_color(ctx->power_button,
-                              visual_on ? power_color : lv_color_hex(0xFFFFFF),
-                              0);
-    lv_obj_set_style_bg_color(ctx->power_button,
-                              visual_on ? power_color : lv_color_hex(0xFFFFFF),
-                              LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(ctx->power_button, visual_on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_opa(ctx->power_button, visual_on ? LV_OPA_COVER : LV_OPA_20, LV_STATE_PRESSED);
+    if (visual_on) {
+      // On: the light color; the theme's press darkening stays.
+      const lv_color_t power_color = lv_color_hex(icon_rgb);
+      popup_nav_style::set_bg(ctx->power_button, power_color, LV_OPA_COVER, LV_PART_MAIN);
+      popup_nav_style::set_bg(ctx->power_button, power_color, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+      lv_obj_remove_local_style_prop(ctx->power_button, LV_STYLE_COLOR_FILTER_OPA, LV_PART_MAIN | LV_STATE_PRESSED);
+      lv_obj_remove_local_style_prop(ctx->power_button, LV_STYLE_RECOLOR_OPA, LV_PART_MAIN | LV_STATE_PRESSED);
+    } else {
+      // Off: only a press shows, in the control fill.
+      lv_color_t fill;
+      lv_opa_t fill_opa;
+      control_fill(ctx, icon_rgb, fill, fill_opa);
+      popup_nav_style::style_press_fill(ctx->power_button, fill, fill_opa);
+      popup_nav_style::set_bg(ctx->power_button, fill, LV_OPA_TRANSP, LV_PART_MAIN);
+    }
+    follow_mode_button_fill(ctx, icon_rgb);
     lv_obj_set_style_border_width(ctx->power_button, 0, 0);
     lv_obj_set_style_border_width(ctx->power_button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_border_opa(ctx->power_button, LV_OPA_TRANSP, 0);
@@ -571,6 +646,11 @@ static void update_header_and_power_visuals(LightPopupContext* ctx, uint32_t ico
 static void update_live_accent_visuals(LightPopupContext* ctx,
                                        uint32_t icon_rgb) {
   if (!ctx || !ctx->available) return;
+  if (ctx->user_dragging) {
+    const uint32_t now = millis();
+    if (ctx->accent_ms && now - ctx->accent_ms < kAccentDragMs) return;
+    ctx->accent_ms = now;
+  }
   if (ctx->icon_label && !ctx->keep_icon_white) {
     lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(icon_rgb), 0);
   }
@@ -580,19 +660,29 @@ static void update_live_accent_visuals(LightPopupContext* ctx,
     lv_obj_set_style_bg_color(
         ctx->power_button, power_color, LV_STATE_PRESSED);
   }
+  follow_mode_button_fill(ctx, icon_rgb, true);
 }
 
+static lv_color_t brightness_dash_color(const LightPopupContext* ctx);
+
+// The switch like the Switch tile's bar: the track in the control fill; on,
+// the thumb in the light color with the power symbol in the tile's card
+// color; off, the thumb one step above the track with the symbol in the grey
+// of an off icon (tone_color::switch_thumb_off, kOffIcon).
 static void update_switch_slider_visuals(LightPopupContext* ctx, uint32_t icon_rgb, bool invalidate) {
   if (!ctx || !ctx->val_slider || !ctx->val_cap) return;
 
   ctx->brightness_draw_active = false;
   ctx->brightness_draw_center_y = -1;
-  const lv_color_t accent_color = lv_color_hex(icon_rgb);
+  lv_color_t track;
+  lv_opa_t track_opa;
+  control_fill(ctx, icon_rgb, track, track_opa);
   const lv_color_t thumb_color =
-      ctx->is_on ? accent_color : popup_surface::lighter(ctx->card_bg, kSwitchThumbOffStep);
+      ctx->is_on ? lv_color_hex(icon_rgb)
+                 : lv_color_hex(tone_color::switch_thumb_off(lv_color_to_u32(track) & 0xFFFFFF));
 
-  lv_obj_set_style_bg_color(ctx->val_slider, accent_color, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(ctx->val_slider, LV_OPA_30, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(ctx->val_slider, track, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(ctx->val_slider, track_opa, LV_PART_MAIN);
   lv_obj_set_style_border_width(ctx->val_slider, 0, LV_PART_MAIN);
 
   if (ctx->val_fill) {
@@ -613,7 +703,8 @@ static void update_switch_slider_visuals(LightPopupContext* ctx, uint32_t icon_r
 
   if (ctx->val_switch_icon) {
     lv_obj_clear_flag(ctx->val_switch_icon, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_text_color(ctx->val_switch_icon, popup_surface::card(ctx->card_bg), 0);
+    lv_obj_set_style_text_color(ctx->val_switch_icon,
+                                ctx->is_on ? brightness_dash_color(ctx) : lv_color_hex(tone_color::kOffIcon), 0);
     lv_label_set_text(ctx->val_switch_icon, getMdiChar(get_switch_slider_icon_name(ctx)).c_str());
     lv_obj_center(ctx->val_switch_icon);
   }
@@ -628,9 +719,13 @@ static void update_brightness_slider_visuals(LightPopupContext* ctx, uint32_t ic
     update_switch_slider_visuals(ctx, icon_rgb, invalidate);
     return;
   }
-  lv_color_t base_color = lv_color_hex(icon_rgb);
-  lv_obj_set_style_bg_color(ctx->val_slider, base_color, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(ctx->val_slider, LV_OPA_30, LV_PART_MAIN);
+  // The track like the Switch tile's bar (control_fill), the fill in the
+  // light color.
+  lv_color_t track;
+  lv_opa_t track_opa;
+  control_fill(ctx, icon_rgb, track, track_opa);
+  lv_obj_set_style_bg_color(ctx->val_slider, track, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(ctx->val_slider, track_opa, LV_PART_MAIN);
   lv_obj_set_style_border_width(ctx->val_slider, 0, LV_PART_MAIN);
   ctx->brightness_draw_color = icon_rgb;
   if (ctx->val_fill) {
@@ -725,6 +820,17 @@ static void update_brightness_fill(LightPopupContext* ctx) {
       ctx, old_active, old_center_y, new_active, new_center_y);
 }
 
+// The brightness handle line has the color of the bound tile's own handle
+// line (its card, tinted with the tile color "From icon"), read at draw
+// time; without a tile the card's.
+static lv_color_t brightness_dash_color(const LightPopupContext* ctx) {
+  uint32_t rgb = 0;
+  if (ctx->has_tile_ref && switch_tile_card_color(static_cast<GridType>(ctx->tile_grid), ctx->tile_index, rgb)) {
+    return lv_color_hex(rgb);
+  }
+  return popup_surface::card(ctx->card_bg);
+}
+
 static void on_brightness_slider_draw(lv_event_t* e) {
   if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
   LightPopupContext* ctx =
@@ -788,7 +894,7 @@ static void on_brightness_slider_draw(lv_event_t* e) {
   lv_draw_rect_dsc_init(&dash_dsc);
   dash_dsc.base.layer = layer;
   // The notch is read at draw time, so a new card color needs no rebuild.
-  dash_dsc.bg_color = popup_surface::card(ctx->card_bg);
+  dash_dsc.bg_color = brightness_dash_color(ctx);
   dash_dsc.bg_opa = LV_OPA_COVER;
   dash_dsc.border_opa = LV_OPA_TRANSP;
   dash_dsc.radius = LV_RADIUS_CIRCLE;
@@ -883,21 +989,20 @@ static void set_control_disabled(lv_obj_t* object, bool disabled) {
   }
 }
 
+// A mode button: the selected one and a press show the control fill
+// (control_fill) without the theme's darkening.
 static void style_control_button(lv_obj_t* button,
                                  lv_obj_t* icon,
                                  bool active,
                                  bool enabled,
                                  uint32_t card,
-                                 lv_color_t accent = lv_color_white()) {
+                                 lv_color_t fill,
+                                 lv_opa_t fill_opa) {
   if (!button) return;
   auto apply_selector = [&](lv_style_selector_t selector, bool pressed) {
-    const lv_opa_t bg_opa = !enabled
-                                ? LV_OPA_TRANSP
-                                : (active
-                                       ? kControlButtonActiveIndicatorOpa
-                                       : (pressed ? kControlButtonIndicatorOpa : LV_OPA_TRANSP));
-    lv_obj_set_style_bg_color(button, lv_color_hex(kControlButtonIndicatorBg), selector);
-    lv_obj_set_style_bg_opa(button, bg_opa, selector);
+    const lv_opa_t bg_opa = enabled && (active || pressed) ? fill_opa : static_cast<lv_opa_t>(LV_OPA_TRANSP);
+    popup_nav_style::set_bg(button, fill, bg_opa, selector);
+    popup_nav_style::no_press_filter(button, selector);
     lv_obj_set_style_border_width(button, 0, selector);
     lv_obj_set_style_border_opa(button, LV_OPA_TRANSP, selector);
     lv_obj_set_style_outline_width(button, 0, selector);
@@ -986,24 +1091,27 @@ static void apply_mode_visibility(LightPopupContext* ctx) {
     }
   }
 
+  lv_color_t fill;
+  lv_opa_t fill_opa;
+  control_fill(ctx, get_preview_icon_rgb(ctx), fill, fill_opa);
   style_control_button(ctx->brightness_button,
                        ctx->brightness_button_icon,
                        ctx->mode == LightPopupMode::Brightness,
                        ctx->available && ctx->is_light &&
                            ctx->supports_brightness,
-                       ctx->card_bg);
+                       ctx->card_bg, fill, fill_opa);
   style_control_button(ctx->color_button,
                        ctx->color_button_icon,
                        ctx->mode == LightPopupMode::Color,
                        ctx->available && ctx->is_light &&
                            ctx->supports_color,
-                       ctx->card_bg);
+                       ctx->card_bg, fill, fill_opa);
   style_control_button(ctx->temperature_button,
                        ctx->temperature_button_icon,
                        ctx->mode == LightPopupMode::Temperature,
                        ctx->available && ctx->is_light &&
                            ctx->supports_temperature,
-                       ctx->card_bg);
+                       ctx->card_bg, fill, fill_opa);
   set_control_disabled(ctx->power_button, !ctx->available);
   set_control_disabled(
       ctx->brightness_button,
@@ -1081,18 +1189,9 @@ static void sync_bound_tile_from_popup(LightPopupContext* ctx) {
   update_switch_tile_state(static_cast<GridType>(ctx->tile_grid), ctx->tile_index, payload.c_str());
 }
 
-static void commit_popup_state(LightPopupContext* ctx) {
-  if (!ctx) return;
-  if (!ctx->available) return;
-  cancel_pending_live_publish(ctx);
-  sync_bound_tile_from_popup(ctx);
-  publish_light_popup(ctx);
-  ctx->last_live_publish_ms = millis();
-}
-
 static bool can_live_publish(const LightPopupContext* ctx) {
-  if (!ctx || !ctx->available || !ctx->user_dragging || !ctx->is_light ||
-      !ctx->entity_id.length()) {
+  if (!ctx || !ctx->available || !ctx->user_dragging || !ctx->drag_moved ||
+      !ctx->is_light || !ctx->entity_id.length()) {
     return false;
   }
   return !ctx->card || !lv_obj_has_flag(ctx->card, LV_OBJ_FLAG_HIDDEN);
@@ -1102,18 +1201,55 @@ static void publish_brightness(LightPopupContext* ctx);
 static void publish_color(LightPopupContext* ctx);
 static void publish_color_temperature(LightPopupContext* ctx);
 
-static void publish_live_value(LightPopupContext* ctx, LightPopupMode mode) {
+static LightPublishKind publish_kind_for(LightPopupMode mode) {
   switch (mode) {
     case LightPopupMode::Brightness:
+      return LightPublishKind::Brightness;
+    case LightPopupMode::Color:
+      return LightPublishKind::Color;
+    case LightPopupMode::Temperature:
+      return LightPublishKind::Temperature;
+  }
+  return LightPublishKind::State;
+}
+
+static void publish_kind(LightPopupContext* ctx, LightPublishKind kind) {
+  switch (kind) {
+    case LightPublishKind::Brightness:
       publish_brightness(ctx);
       break;
-    case LightPopupMode::Color:
+    case LightPublishKind::Color:
       publish_color(ctx);
       break;
-    case LightPopupMode::Temperature:
+    case LightPublishKind::Temperature:
       publish_color_temperature(ctx);
       break;
+    case LightPublishKind::State:
+      publish_light_popup(ctx);
+      break;
   }
+}
+
+// One number per sent slider value, so a release can skip repeating the
+// value its gesture already sent. State is never treated as a repeat.
+static uint32_t publish_signature(const LightPopupContext* ctx,
+                                  LightPublishKind kind) {
+  switch (kind) {
+    case LightPublishKind::Brightness:
+      return 0x10000000u | (ctx->is_on ? ctx->val : 0u);
+    case LightPublishKind::Color:
+      return 0x20000000u | (static_cast<uint32_t>(ctx->hue) << 8) | ctx->sat;
+    case LightPublishKind::Temperature:
+      return 0x30000000u | ctx->color_temp_kelvin;
+    case LightPublishKind::State:
+      break;
+  }
+  return 0;
+}
+
+static void send_paced(LightPopupContext* ctx, LightPublishKind kind) {
+  publish_kind(ctx, kind);
+  ctx->pacer.sent(millis(), publish_signature(ctx, kind));
 }
 
 static void cancel_pending_live_publish(LightPopupContext* ctx) {
@@ -1123,6 +1259,78 @@ static void cancel_pending_live_publish(LightPopupContext* ctx) {
     ctx->live_publish_timer = nullptr;
   }
   ctx->live_publish_pending = false;
+}
+
+static void cancel_pending_final_publish(LightPopupContext* ctx) {
+  if (!ctx) return;
+  if (ctx->final_publish_timer) {
+    lv_timer_delete(ctx->final_publish_timer);
+    ctx->final_publish_timer = nullptr;
+  }
+  ctx->final_publish_pending = false;
+}
+
+// A final value waiting for its command gap goes out at once when the popup
+// closes or switches entity; it is never dropped.
+static void flush_pending_final_publish(LightPopupContext* ctx) {
+  if (!ctx) return;
+  const bool pending = ctx->final_publish_pending;
+  const LightPublishKind kind = ctx->final_publish_kind;
+  cancel_pending_final_publish(ctx);
+  if (pending) send_paced(ctx, kind);
+}
+
+static void final_publish_timer_cb(lv_timer_t* timer) {
+  LightPopupContext* ctx =
+      static_cast<LightPopupContext*>(lv_timer_get_user_data(timer));
+  if (!ctx) return;
+  if (ctx->final_publish_timer == timer) {
+    ctx->final_publish_timer = nullptr;
+  }
+  if (!ctx->final_publish_pending) return;
+  ctx->final_publish_pending = false;
+  send_paced(ctx, ctx->final_publish_kind);
+}
+
+// Release, tap and button path (GitHub issue #11): the final value always
+// goes out, at least one pacer interval after the previous command, and is
+// skipped when the gesture already sent exactly this value.
+static void commit_paced(LightPopupContext* ctx, LightPublishKind kind) {
+  if (!ctx) return;
+  cancel_pending_live_publish(ctx);
+  sync_bound_tile_from_popup(ctx);
+  const bool repeat = kind != LightPublishKind::State &&
+                      ctx->pacer.final_redundant(publish_signature(ctx, kind));
+  ctx->pacer.end_gesture();
+  if (repeat) return;
+
+  // A different kind already waiting: one State command carries both.
+  if (ctx->final_publish_pending && ctx->final_publish_kind != kind) {
+    kind = LightPublishKind::State;
+  }
+  const uint32_t wait = ctx->pacer.wait(millis());
+  if (wait == 0) {
+    cancel_pending_final_publish(ctx);
+    send_paced(ctx, kind);
+    return;
+  }
+  ctx->final_publish_kind = kind;
+  ctx->final_publish_pending = true;
+  if (ctx->final_publish_timer) return;
+  ctx->final_publish_timer = lv_timer_create(final_publish_timer_cb, wait, ctx);
+  if (ctx->final_publish_timer) {
+    lv_timer_set_repeat_count(ctx->final_publish_timer, 1);
+    return;
+  }
+  // LVGL timer allocation failed: send now rather than lose the value.
+  ctx->final_publish_pending = false;
+  send_paced(ctx, kind);
+}
+
+static void commit_popup_state(LightPopupContext* ctx) {
+  if (!ctx) return;
+  if (!ctx->available) return;
+  commit_paced(ctx, LightPublishKind::State);
 }
 
 static void live_publish_timer_cb(lv_timer_t* timer) {
@@ -1138,42 +1346,36 @@ static void live_publish_timer_cb(lv_timer_t* timer) {
   ctx->live_publish_pending = false;
   if (!can_live_publish(ctx)) return;
 
-  publish_live_value(ctx, mode);
-  ctx->last_live_publish_ms = millis();
+  send_paced(ctx, publish_kind_for(mode));
 }
 
 static void schedule_live_publish(LightPopupContext* ctx,
                                   LightPopupMode mode) {
   if (!can_live_publish(ctx)) return;
-  const uint32_t now = millis();
-  const uint32_t elapsed = now - ctx->last_live_publish_ms;
-  if (ctx->last_live_publish_ms == 0 || elapsed >= kLivePublishIntervalMs) {
+  const uint32_t wait = ctx->pacer.wait(millis());
+  if (wait == 0) {
     cancel_pending_live_publish(ctx);
-    publish_live_value(ctx, mode);
-    ctx->last_live_publish_ms = now;
+    send_paced(ctx, publish_kind_for(mode));
     return;
   }
 
-  // Preserve the newest value instead of dropping it inside the throttle
+  // Preserve the newest value instead of dropping it inside the pacing
   // window. The one-shot timer publishes the current context value at the
   // next allowed instant, even when the finger has stopped at an endpoint.
   ctx->pending_live_publish_mode = mode;
   ctx->live_publish_pending = true;
   if (ctx->live_publish_timer) return;
 
-  const uint32_t remaining = kLivePublishIntervalMs - elapsed;
   ctx->live_publish_timer =
-      lv_timer_create(live_publish_timer_cb, remaining, ctx);
+      lv_timer_create(live_publish_timer_cb, wait, ctx);
   if (ctx->live_publish_timer) {
     lv_timer_set_repeat_count(ctx->live_publish_timer, 1);
     return;
   }
 
-  // Extremely unlikely LVGL timer-allocation failure: keep the live control
-  // responsive and rely on the regular final publish on release as backup.
+  // Extremely unlikely LVGL timer-allocation failure: skip this live value;
+  // the paced final publish on release still sends the current value.
   ctx->live_publish_pending = false;
-  publish_live_value(ctx, mode);
-  ctx->last_live_publish_ms = now;
 }
 
 static void publish_brightness(LightPopupContext* ctx) {
@@ -1192,11 +1394,7 @@ static void publish_brightness(LightPopupContext* ctx) {
 }
 
 static void commit_brightness(LightPopupContext* ctx) {
-  if (!ctx) return;
-  cancel_pending_live_publish(ctx);
-  sync_bound_tile_from_popup(ctx);
-  publish_brightness(ctx);
-  ctx->last_live_publish_ms = millis();
+  commit_paced(ctx, LightPublishKind::Brightness);
 }
 
 static void maybe_live_publish_brightness(LightPopupContext* ctx) {
@@ -1218,11 +1416,7 @@ static void publish_color(LightPopupContext* ctx) {
 }
 
 static void commit_color(LightPopupContext* ctx) {
-  if (!ctx) return;
-  cancel_pending_live_publish(ctx);
-  sync_bound_tile_from_popup(ctx);
-  publish_color(ctx);
-  ctx->last_live_publish_ms = millis();
+  commit_paced(ctx, LightPublishKind::Color);
 }
 
 static void maybe_live_publish_color(LightPopupContext* ctx) {
@@ -1245,11 +1439,7 @@ static void publish_color_temperature(LightPopupContext* ctx) {
 }
 
 static void commit_color_temperature(LightPopupContext* ctx) {
-  if (!ctx) return;
-  cancel_pending_live_publish(ctx);
-  sync_bound_tile_from_popup(ctx);
-  publish_color_temperature(ctx);
-  ctx->last_live_publish_ms = millis();
+  commit_paced(ctx, LightPublishKind::Temperature);
 }
 
 static void maybe_live_publish_color_temperature(LightPopupContext* ctx) {
@@ -1530,10 +1720,10 @@ static lv_obj_t* create_control_icon_button(lv_obj_t* parent, const char* icon_n
   lv_obj_t* btn = lv_button_create(parent);
   lv_obj_set_size(btn, kControlButtonSize, kControlButtonSize);
   lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(kControlButtonIndicatorBg), 0);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(kControlButtonIndicatorBg), LV_STATE_PRESSED);
+  // The fill follows the circle color (style_control_button,
+  // update_header_and_power_visuals).
   lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_bg_opa(btn, kControlButtonIndicatorOpa, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_STATE_PRESSED);
   lv_obj_set_style_border_width(btn, 0, 0);
   lv_obj_set_style_border_width(btn, 0, LV_STATE_PRESSED);
   lv_obj_set_style_border_opa(btn, LV_OPA_TRANSP, 0);
@@ -1614,7 +1804,8 @@ static void apply_init_to_context(LightPopupContext* ctx, const LightPopupInit& 
   if (!ctx->entity_id.equalsIgnoreCase(init.entity_id)) {
     ctx->body_ready = false;
     cancel_pending_live_publish(ctx);
-    ctx->last_live_publish_ms = 0;
+    flush_pending_final_publish(ctx);
+    ctx->pacer.end_gesture();
   }
   ctx->suppress_events = true;
   if (apply_content) update_popup_language(ctx);
@@ -1624,6 +1815,7 @@ static void apply_init_to_context(LightPopupContext* ctx, const LightPopupInit& 
   if (!ctx->available) {
     ctx->user_dragging = false;
     cancel_pending_live_publish(ctx);
+    cancel_pending_final_publish(ctx);
     ctx->last_user_action_ms = 0;
     ctx->block_remote_until_ms = 0;
   }
@@ -1695,6 +1887,8 @@ static void apply_init_to_context(LightPopupContext* ctx, const LightPopupInit& 
   if (!apply_content) {
     lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(
         ctx->keep_icon_white && ctx->available ? 0xFFFFFF : get_preview_icon_rgb(ctx)), 0);
+    // The reused buttons show this light's circle color in the first frame.
+    follow_mode_button_fill(ctx, get_preview_icon_rgb(ctx));
     ctx->suppress_events = false;
     return;
   }
@@ -1768,6 +1962,7 @@ static void on_switch_slider_event(lv_event_t* e) {
   if (code == LV_EVENT_PRESSED) {
     ctx->user_dragging = true;
     ctx->switch_drag_dirty = false;
+    ctx->pacer.begin_gesture();
   } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
     ctx->user_dragging = false;
   } else if (code != LV_EVENT_PRESSING) {
@@ -1784,6 +1979,8 @@ static void on_switch_slider_event(lv_event_t* e) {
   if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) && ctx->switch_drag_dirty) {
     commit_popup_state(ctx);
     ctx->switch_drag_dirty = false;
+  } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    ctx->pacer.end_gesture();
   }
 }
 
@@ -1839,6 +2036,95 @@ static void apply_brightness_point(LightPopupContext* ctx, const lv_point_t& poi
   else maybe_live_publish_brightness(ctx);
 }
 
+// Diagnostics for the color wheel and the Kelvin slider: one line per drag
+// when the finger lifts, with the handler time per step and LVGL's frames
+// (render time and dirty areas), so a stutter shows where the time goes.
+struct DragTiming {
+  lv_display_t* display = nullptr;
+  uint32_t start_ms = 0, steps = 0, handler_us = 0, handler_max_us = 0;
+  uint32_t frame_start_us = 0, frame_areas = 0, frames = 0, render_us = 0, render_max_us = 0;
+  // The longest gap between two frames: time the loop spent elsewhere.
+  uint32_t areas = 0, areas_max = 0, last_ready_us = 0, gap_max_us = 0;
+};
+static DragTiming g_drag_timing;
+
+static void drag_render_event(lv_event_t* e) {
+  DragTiming& timing = g_drag_timing;
+  if (!timing.display) return;
+  const lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_REFR_START) {
+    timing.frame_start_us = micros();
+    timing.frame_areas = timing.display->inv_p;
+    if (timing.frame_areas && timing.last_ready_us) {
+      const uint32_t gap = timing.frame_start_us - timing.last_ready_us;
+      if (gap > timing.gap_max_us) timing.gap_max_us = gap;
+    }
+  } else if (code == LV_EVENT_REFR_READY && timing.frame_areas) {
+    const uint32_t elapsed = micros() - timing.frame_start_us;
+    ++timing.frames;
+    timing.render_us += elapsed;
+    if (elapsed > timing.render_max_us) timing.render_max_us = elapsed;
+    timing.areas += timing.frame_areas;
+    if (timing.frame_areas > timing.areas_max) timing.areas_max = timing.frame_areas;
+    timing.frame_areas = 0;
+    timing.last_ready_us = micros();
+  }
+}
+
+static void start_drag_timing(lv_obj_t* obj) {
+  DragTiming& timing = g_drag_timing;
+  if (timing.display) lv_display_remove_event_cb_with_user_data(timing.display, drag_render_event, &timing);
+  timing = {};
+  timing.display = obj ? lv_obj_get_display(obj) : nullptr;
+  if (!timing.display) return;
+  timing.start_ms = millis();
+  lv_display_add_event_cb(timing.display, drag_render_event, LV_EVENT_ALL, &timing);
+}
+
+static void note_drag_step(uint32_t started_us) {
+  DragTiming& timing = g_drag_timing;
+  if (!timing.display) return;
+  const uint32_t elapsed = micros() - started_us;
+  ++timing.steps;
+  timing.handler_us += elapsed;
+  if (elapsed > timing.handler_max_us) timing.handler_max_us = elapsed;
+}
+
+static void finish_drag_timing(const char* what) {
+  DragTiming& timing = g_drag_timing;
+  if (!timing.display) return;
+  lv_display_remove_event_cb_with_user_data(timing.display, drag_render_event, &timing);
+  const uint32_t steps = timing.steps ? timing.steps : 1;
+  const uint32_t frames = timing.frames ? timing.frames : 1;
+  const uint32_t areas10 = timing.areas * 10 / frames;
+  Serial.printf("[LightPopup] %s drag: %lums, steps=%lu (avg %luus, max %luus), frames=%lu (avg %luus, max %luus), "
+                "areas avg %lu.%lu max %lu, gap max %luus\n",
+                what, static_cast<unsigned long>(millis() - timing.start_ms), static_cast<unsigned long>(timing.steps),
+                static_cast<unsigned long>(timing.handler_us / steps), static_cast<unsigned long>(timing.handler_max_us),
+                static_cast<unsigned long>(timing.frames), static_cast<unsigned long>(timing.render_us / frames),
+                static_cast<unsigned long>(timing.render_max_us), static_cast<unsigned long>(areas10 / 10),
+                static_cast<unsigned long>(areas10 % 10), static_cast<unsigned long>(timing.areas_max),
+                static_cast<unsigned long>(timing.gap_max_us));
+  timing = {};
+}
+
+// A slider press: remember where it started; live commands wait for a
+// drag (kDragThreshold), so a tap sends one command on release.
+static void begin_slider_gesture(LightPopupContext* ctx) {
+  ctx->user_dragging = true;
+  ctx->drag_moved = false;
+  ctx->pacer.begin_gesture();
+  lv_indev_t* indev = lv_indev_get_act();
+  if (indev) lv_indev_get_point(indev, &ctx->press_point);
+}
+
+static void note_slider_movement(LightPopupContext* ctx, const lv_point_t& point) {
+  if (ctx->drag_moved || !ctx->user_dragging) return;
+  const int dx = point.x - ctx->press_point.x;
+  const int dy = point.y - ctx->press_point.y;
+  if (dx * dx + dy * dy >= kDragThreshold * kDragThreshold) ctx->drag_moved = true;
+}
+
 static void on_brightness_track_event(lv_event_t* e) {
   LightPopupContext* ctx = static_cast<LightPopupContext*>(lv_event_get_user_data(e));
   if (!ctx || ctx->suppress_events || !ctx->available ||
@@ -1848,7 +2134,7 @@ static void on_brightness_track_event(lv_event_t* e) {
 
   const lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_PRESSED) {
-    ctx->user_dragging = true;
+    begin_slider_gesture(ctx);
   } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
     ctx->user_dragging = false;
   } else if (code != LV_EVENT_PRESSING) {
@@ -1865,6 +2151,7 @@ static void on_brightness_track_event(lv_event_t* e) {
 
   lv_point_t point;
   lv_indev_get_point(indev, &point);
+  note_slider_movement(ctx, point);
   apply_brightness_point(ctx, point, code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST);
 }
 
@@ -1919,26 +2206,43 @@ static void on_temp_track_event(lv_event_t* e) {
     return;
   }
   const lv_event_code_t code = lv_event_get_code(e);
+  const bool release = code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST;
 
   if (code == LV_EVENT_PRESSED) {
-    ctx->user_dragging = true;
-  } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    begin_slider_gesture(ctx);
+    ctx->accent_ms = 0;
+    start_drag_timing(ctx->card);
+    popup_shell_hold_close_fill(true);
+  } else if (release) {
     ctx->user_dragging = false;
+    popup_shell_hold_close_fill(false);
   } else if (code != LV_EVENT_PRESSING) {
     return;
   }
 
   lv_indev_t* indev = lv_indev_get_act();
   if (!indev) {
-    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    if (release) {
       commit_color_temperature(ctx);
+      update_live_accent_visuals(ctx, get_preview_icon_rgb(ctx));
+      follow_mode_button_fill(ctx, get_preview_icon_rgb(ctx));
+      finish_drag_timing("Kelvin");
     }
     return;
   }
 
   lv_point_t point;
   lv_indev_get_point(indev, &point);
-  apply_temperature_point(ctx, point, code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST);
+  note_slider_movement(ctx, point);
+  const uint32_t step_us = micros();
+  apply_temperature_point(ctx, point, release);
+  if (!release) {
+    note_drag_step(step_us);
+  } else {
+    update_live_accent_visuals(ctx, get_preview_icon_rgb(ctx));
+    follow_mode_button_fill(ctx, get_preview_icon_rgb(ctx));
+    finish_drag_timing("Kelvin");
+  }
 }
 
 static void apply_color_field_point(LightPopupContext* ctx,
@@ -2023,21 +2327,42 @@ static void on_color_field_event(lv_event_t* e) {
     return;
   }
   lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_PRESSED) ctx->user_dragging = true;
-  else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) ctx->user_dragging = false;
-  else if (code != LV_EVENT_PRESSING) return;
+  const bool release = code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST;
+  if (code == LV_EVENT_PRESSED) {
+    begin_slider_gesture(ctx);
+    ctx->accent_ms = 0;
+    start_drag_timing(ctx->card);
+    popup_shell_hold_close_fill(true);
+  } else if (release) {
+    ctx->user_dragging = false;
+    popup_shell_hold_close_fill(false);
+  } else if (code != LV_EVENT_PRESSING) {
+    return;
+  }
 
   lv_indev_t* indev = lv_indev_get_act();
   if (!indev) {
-    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    if (release) {
       commit_color(ctx);
+      update_live_accent_visuals(ctx, get_preview_icon_rgb(ctx));
+      follow_mode_button_fill(ctx, get_preview_icon_rgb(ctx));
+      finish_drag_timing("Color");
     }
     return;
   }
   lv_point_t point;
   lv_indev_get_point(indev, &point);
   lv_obj_t* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
-  apply_color_field_point(ctx, target, point, code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST);
+  note_slider_movement(ctx, point);
+  const uint32_t step_us = micros();
+  apply_color_field_point(ctx, target, point, release);
+  if (!release) {
+    note_drag_step(step_us);
+  } else {
+    update_live_accent_visuals(ctx, get_preview_icon_rgb(ctx));
+    follow_mode_button_fill(ctx, get_preview_icon_rgb(ctx));
+    finish_drag_timing("Color");
+  }
 }
 
 static void on_overlay_delete(lv_event_t* e) {
@@ -2045,6 +2370,7 @@ static void on_overlay_delete(lv_event_t* e) {
   LightPopupContext* ctx = static_cast<LightPopupContext*>(lv_event_get_user_data(e));
   if (!ctx) return;
   cancel_pending_live_publish(ctx);
+  flush_pending_final_publish(ctx);
   if (ctx->color_field_buf) {
     heap_caps_free(ctx->color_field_buf);
     ctx->color_field_buf = nullptr;
@@ -2085,6 +2411,7 @@ void show_light_popup(const LightPopupInit& init) {
   hide_weather_popup();
   hide_energy_popup();
   hide_media_popup();
+  hide_device_popup();
 
   if (g_light_popup_ctx && g_light_popup_ctx->overlay && g_light_popup_ctx->card) {
     prepare_light_popup_open(init);
@@ -2287,6 +2614,7 @@ void hide_light_popup() {
   if (!g_light_popup_ctx || !g_light_popup_ctx->card || !g_light_popup_ctx->overlay) return;
   g_light_popup_ctx->user_dragging = false;
   cancel_pending_live_publish(g_light_popup_ctx);
+  flush_pending_final_publish(g_light_popup_ctx);
   hide_popup_shell(g_light_popup_ctx->card);
   cancel_popup_open(g_light_popup_ctx->card);
   lv_obj_add_flag(g_light_popup_ctx->card, LV_OBJ_FLAG_HIDDEN);

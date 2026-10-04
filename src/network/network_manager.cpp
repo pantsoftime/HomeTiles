@@ -1,4 +1,5 @@
 #include "src/network/network_manager.h"
+#include "src/network/secure/command_channel.h"
 #include "src/network/transport/network_transport.h"
 #include "src/core/config/config_manager.h"
 #include "src/network/mqtt/mqtt_handlers.h"
@@ -295,6 +296,26 @@ static bool enqueueOutboundCmd(MqttCmdKind kind,
                                bool retain,
                                bool priority = false,
                                uint32_t large_buffer_hold_ms = 0) {
+  // With an active Bridge pairing, panel commands travel sealed on the secure
+  // topic instead (src/network/secure/command_channel.h). Everything else,
+  // and every command without pairing, is published unchanged.
+  command_channel::SealedPublish sealed;
+  if (kind == MqttCmdKind::PUBLISH) {
+    switch (command_channel::prepareOutbound(topic, payload, payload_len, &sealed)) {
+      case command_channel::OutboundResult::Plain:
+        break;
+      case command_channel::OutboundResult::Sealed:
+        topic = sealed.topic();
+        payload = sealed.payload();
+        payload_len = sealed.length();
+        retain = false;
+        break;
+      case command_channel::OutboundResult::Held:
+        return true;
+      case command_channel::OutboundResult::Dropped:
+        return false;
+    }
+  }
   const bool large_publish =
       kind == MqttCmdKind::PUBLISH && large_buffer_hold_ms > 0;
   QueueHandle_t queue = kind == MqttCmdKind::PUBLISH
@@ -769,6 +790,13 @@ void HomeTilesNetworkManager::connectWifi() {
     }
     Serial.printf("WiFi: Connecting to %s\n", cfg.wifi_ssid);
     applyWifiAddressing(cfg);
+    // Join the strongest access point with this SSID. The Arduino default
+    // (fast scan) joins the first one found, and the station never roams:
+    // the Guition S3 stayed at -71 dBm on the far one of two UniFi APs while
+    // the near one gave the P4 panels beside it -47 dBm. The full scan adds
+    // about one to two seconds per connection attempt.
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.begin(cfg.wifi_ssid, cfg.wifi_pass);
 
     // A slow call can signal a stuck transport even without a formal error.
@@ -1855,15 +1883,23 @@ void HomeTilesNetworkManager::publishBridgeConfig() {
   String topic = "tab5_lvgl/config/";
   topic += did;
   topic += "/bridge";
-  const size_t packet_estimate = payload.length() + topic.length() + 16;
+  // With a Bridge pairing code the announcement carries a signature, so a
+  // paired Bridge ignores forged announcements for this panel.
+  char* signed_payload =
+      command_channel::signAnnouncement(topic.c_str(), payload.c_str(), payload.length());
+  const bool is_signed = signed_payload != nullptr;
+  const char* publish_payload = is_signed ? signed_payload : payload.c_str();
+  const size_t packet_estimate = strlen(publish_payload) + topic.length() + 16;
   if (packet_estimate > kMqttBufferLarge) {
     Serial.printf("[Network] Bridge config too large for MQTT buffer: %u > %u bytes\n",
                   static_cast<unsigned>(packet_estimate),
                   static_cast<unsigned>(kMqttBufferLarge));
   }
   mqttEnqueuePublishWithLargeBuffer(
-      topic.c_str(), payload.c_str(), true, 15000);
-  Serial.println("[Network] Home Assistant Bridge configuration published");
+      topic.c_str(), publish_payload, true, 15000);
+  if (signed_payload) heap_caps_free(signed_payload);
+  Serial.printf("[Network] Home Assistant Bridge configuration published%s\n",
+                is_signed ? " (signed)" : "");
 }
 
 const char* HomeTilesNetworkManager::getBridgeApplyTopic() const {
@@ -2109,6 +2145,17 @@ void HomeTilesNetworkManager::update() {
       logNetworkHeap(networkTransport.activeName());
     }
 
+    if (!was_connected && networkTransport.isWifiConnected()) {
+      // Full power from the start of every Wi-Fi connection. The power
+      // manager calls the setter only on an active/idle change, so the
+      // driver default (modem sleep) stayed until the first idle change,
+      // about 20 s after boot.
+      setWifiPowerSaving(false);
+      Serial.printf("[Network] Wi-Fi access point %s, channel %d, RSSI %d dBm\n",
+                    WiFi.BSSIDstr().c_str(), static_cast<int>(WiFi.channel()),
+                    static_cast<int>(WiFi.RSSI()));
+    }
+
     // Start Web Admin on connection.
     if (!was_connected && !webAdminServer.isRunning()) {
       webAdminServer.start();
@@ -2148,11 +2195,14 @@ void HomeTilesNetworkManager::setWifiPowerSaving(bool enable) {
     return;
   }
 
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
-  // ESP32-P4 uses an SDIO/esp-hosted WiFi transport. Modem sleep can trigger
-  // transport TX asserts under WebUI, MQTT, or media-cover traffic.
+  // Every panel keeps the radio awake at full power. On the ESP32-P4 (SDIO/
+  // esp-hosted transport) modem sleep triggered transport TX asserts under
+  // WebUI, MQTT or media-cover traffic. On the Guition S3 the idle saving
+  // (modem sleep, 11 dBm, signal about -72 dBm) came with Web Admin pages
+  // holding the loop for 2.5 s and link drops of 20 s and more (MQTT lost,
+  // loop stalled up to 44 s). The saving dates from the battery Tab5 and
+  // brought hardly any gain; display dimming and sleep stay unchanged.
   enable = false;
-#endif
 
   if (wifi_ps_state_known && wifi_ps_enabled == enable) {
     return;

@@ -25,7 +25,7 @@ Every tile has these settings:
 
 - **Title:** optional label; press **Enter** for a second line. Both lines are centered together, and each line ends in `...` if it exceeds the available width. The display, popup header, and live preview follow the tile's size.
 - **Icon (MDI):** a [Material Design Icon](https://pictogrammers.com/library/mdi/) name. **Show icon list** opens the catalog.
-- **Icon color:** the icon's color; Reset restores the type's default. **Circle in icon color** tints the circle behind the icon.
+- **Icon color:** the icon's color; Reset restores the type's default. **Circle in icon color** tints the circle behind the icon. With **Tile color** set to **From icon**, the buttons take the circle's color too: the pressed close button, **7D**, **24H** and **Today**, the fields of Number, Select and Date/Time, the PIN keys, in the Media popup the pressed previous, next and volume buttons and the sliders, and on the Media and Climate tiles their buttons. With **Global** or **Custom** circle and buttons keep the color they have with **From icon**, so tile, circle and icon colors always match. Without the option, and with white, grey or black icons, circle and buttons stay neutral. Circle and buttons sit the same visible step above the tile for every color; an icon too dark to read on its circle is shown a little lighter in the same hue.
 - **Tile color:** **Global** uses the [global tile color](#global-settings), **Custom** your own color, and **From icon** tints the tile with the icon color. **Strength** sets how strongly.
 - **Column, Row, Width, Height:** grid position and size in half steps.
 
@@ -78,7 +78,7 @@ The **Global settings** below the preview apply to every tile on the display.
 | **Tile borders** | Draws a thin border around the tiles. Clock, Text, and Back tiles can switch it off individually. |
 | **Tile radius** | Corner radius of tiles, popups, and previews. The maximum makes half-height tiles fully round. |
 | **Icon circles** | Shows a circle behind every icon. A tile can switch its own circle off. |
-| **Circle strength** | Opacity of the icon circles, from 0 to 100 %. |
+| **Circle strength** | How far the icon circles and the buttons stand out from the tile, from 0 to 100 %. |
 | **Tile color** | Background of every tile whose tile color is **Global**. |
 
 New displays start with the maximum radius and the tile color `#1A1A1A`.
@@ -198,7 +198,7 @@ To show the tile again, drag it from the field below the preview back into a fre
 </figure>
 </div>
 
-The public factory PIN **466384537** unlocks Settings and protected folders. This is a local child lock; the Web Admin has no login protection. PINs are excluded from dashboard exports.
+The public factory PIN **466384537** unlocks Settings and protected folders. This is a local child lock, not a login; protect the Web Admin itself with a [Web Admin password](#web-admin-password). PINs are excluded from dashboard exports.
 
 ## Screensaver Editor
 
@@ -213,6 +213,7 @@ The **Settings** tab contains:
 - **Network:** WiFi credentials, connection type on Ethernet-capable devices, and an optional static IP shared by WiFi and Ethernet.
 - **MQTT:** broker address, credentials, and topics; normally supplied by [pairing](home-assistant-setup.md).
 - **Localization:** language, time zone, and date/time formats.
+- **Web Admin password:** optional login for the Web Admin, see below.
 - **Built-in camera:** on displays with a camera, see below.
 
 <figure class="ht-screenshot">
@@ -221,6 +222,17 @@ The **Settings** tab contains:
 </figure>
 
 Use **Save** for the settings form. **Restart** is a separate action.
+
+### Web Admin Password { data-toc-label="Password" }
+
+The Web Admin is open to everyone on your network by default. Enter a new password twice and select **Set password** to protect every page and API request, including MQTT settings, restart, firmware upload, the file manager, and screenshots. The browser then shows a sign-in page first.
+
+- The password is never sent in plain text: the browser proves it with a one-time challenge, and the display stores only a salted hash.
+- Wrong passwords lock the sign-in for an increasing time, up to five minutes.
+- Saved WiFi and MQTT passwords and PINs are no longer shown, neither here nor in the WiFi setup hotspot. Enter a new value to change them; an empty field keeps the saved one.
+- You stay signed in for 30 days, also after a restart or update of the display. **Sign out** ends the browser session; **Remove password** opens the Web Admin to the network again.
+- Forgot the password? On the display, open **Settings → System → Security** and select **Remove password**.
+- When [pairing](home-assistant-setup.md) with the HomeTiles Bridge, enter the password in the Bridge setup dialog.
 
 ### Built-in Camera
 

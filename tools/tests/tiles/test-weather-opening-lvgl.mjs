@@ -19,6 +19,7 @@ fs.writeFileSync(path.join(out, 'Arduino.h'), '#pragma once\n#include <cstdint>\
 fs.writeFileSync(path.join(out, 'FS.h'), '#pragma once\nnamespace fs { class FS {}; }\n');
 const cpp = String.raw`
 #include <lvgl.h>
+#include <lvgl_private.h>
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -56,8 +57,12 @@ ${strip(read('src/ui/popups/popup_layout.h'))}
 ${strip(read('src/ui/popups/popup_open.h'))}
 ${strip(read('src/ui/popups/popup_shell.h'))}
 ${strip(read('src/ui/popups/popup_open.cpp'))}
+${strip(read('src/ui/shared/ui_pulse.h'))}
+${strip(read('src/tiles/icons/mdi_bar_icons.h'))}
+${strip(read('src/ui/shared/icon_lock_mark.h'))}
 ${strip(read('src/ui/popups/popup_shell.cpp'))}
 ${strip(read('src/types/weather/widgets.h'))}
+${strip(read('src/types/weather/tile_layout.h'))}
 ${strip(read('src/ui/popups/weather/weather_popup.h'))}
 enum class GridType{TAB0,SCREENSAVER};constexpr int TILES_PER_GRID=1,GRID_CELL_W=Device::kGridCellW,GRID_CELL_H=Device::kGridCellH,GRID_GAP=Device::kGridGap;
 #include "src/tiles/config/tile_icon_colors.h"
@@ -70,6 +75,10 @@ struct Logger{void println(const char*){}}Serial;
 struct Bridge{String findSensorName(const String&){return "Home";}String findEntityIcon(const String&){return "weather-sunny";}String findSensorUnit(const String&){return "";}String findSensorInitialValue(const String&){return "98";}String findSensorStateKind(const String&){return "number";}String findEditableValue(const String&){return "";}}haBridgeConfig;
 uint32_t tileDefaultBgColor(){return 0x2A2A2A;}uint32_t tileBgColorOrDefault(const Tile&,uint32_t c){return c;}
 bool isMdiIconDisabled(const String&){return false;}String normalizeMdiIconName(const String&s){return s;}
+bool getLocalTime(struct tm*,uint32_t){return false;}bool weatherColoredIcons(const Tile&t){return t.sensor_display_mode!=1;}
+${strip(read('src/types/weather/weather_icon_table.h'))}
+${strip(read('src/types/weather/weather_icons.h'))}
+${strip(read('src/types/weather/weather_icons.cpp'))}
 void set_label_style(lv_obj_t*o,lv_color_t c,const lv_font_t*f){lv_obj_set_style_text_color(o,c,0);lv_obj_set_style_text_font(o,f,0);}
 void set_tile_grid_cell(lv_obj_t*o,int col,int row,int w,int h){lv_obj_set_size(o,w*GRID_CELL_W+(w-1)*GRID_GAP,h*GRID_CELL_H+(h-1)*GRID_GAP);lv_obj_set_pos(o,Device::kGridPad+col*(GRID_CELL_W+GRID_GAP),Device::kGridPad+row*(GRID_CELL_H+GRID_GAP));}
 WeatherTileWidgets widgets[TILES_PER_GRID];WeatherTileWidgets* tile_renderer_get_weather_widgets(GridType){return widgets;}
@@ -85,7 +94,7 @@ PopupShellParts popup;int opens=0,completed_opens=0,sensor_opens=0;
 struct WeatherPopupContext{lv_obj_t*card=nullptr,*overlay=nullptr,*location_label=nullptr,*icon_label=nullptr,*close_button=nullptr;bool has_rendered_data=false;String rendered_entity_id,entity_id,title;uint32_t bg_color=0;};
 WeatherPopupContext* g_weather_popup_ctx=nullptr;PopupBody g_weather_body;
 WeatherPopupInit g_pending_weather_init;bool g_weather_open_pending=false;
-void hide_pin_popup(){}void hide_camera_popup(){}void hide_climate_popup(){}void hide_cover_popup(){}void hide_light_popup(){}void hide_sensor_popup(){}void hide_energy_popup(){}void hide_media_popup(){}
+void hide_pin_popup(){}void hide_camera_popup(){}void hide_climate_popup(){}void hide_cover_popup(){}void hide_light_popup(){}void hide_sensor_popup(){}void hide_energy_popup(){}void hide_media_popup(){}void hide_device_popup(){}
 void viewNavigationPopupShown(lv_obj_t*,const char*){++opens;}
 void finish_weather_popup_open(){++completed_opens;g_weather_open_pending=false;g_weather_body.restore();g_weather_popup_ctx->has_rendered_data=true;g_weather_popup_ctx->rendered_entity_id=g_weather_popup_ctx->entity_id;}
 void build_popup_ui(WeatherPopupContext*ctx,const WeatherPopupInit&){popup=create_popup_body([](lv_event_t*){hide_popup_shell(popup.card);},nullptr,0x223344);ctx->card=popup.card;ctx->overlay=popup.overlay;ctx->location_label=popup.title;ctx->icon_label=popup.icon;ctx->close_button=popup.close;}
@@ -138,6 +147,10 @@ void check_energy_layout() {
 }
 #include "src/types/climate/layout.h"
 constexpr int GRID_COLS=Device::kGridCols,GRID_ROWS=Device::kGridRows;
+constexpr int GRID_PAD=Device::kGridPad;
+${read('src/tiles/config/tile_config.h').match(/static constexpr int GRID_EXTRA_X =[^]*?GRID_PAD_BOTTOM = [^;]+;/)[0]}
+${fn(read('src/fonts/ui_fonts.h'),'ui_font_for_size')}
+${strip(read('src/ui/screensaver/screensaver_tile_shadow.h'))}
 ${strip(read('src/web/server/render/web_admin_styles.cpp').split('void appendAdminStyles(')[0])}
 bool pressed=false;lv_point_t pointer{};bool measuring=false;int covered_draws=0;uint64_t flushed_pixels=0;
 int tile_draws=0, tile_style_changes=0;
@@ -300,13 +313,21 @@ void check_value_alignment(lv_display_t* display) {
  assert(disc.x1-sensor_area.x1==tile_icon_disc::inset()&&"Left gap equals the half-height inset");
  assert(disc.y1-sensor_area.y1==tile_icon_disc::inset()&&"Top gap equals the half-height inset");
  assert(std::abs((disc.x1+disc.x2)-(icon.x1+icon.x2))<=1&&std::abs((disc.y1+disc.y2)-(icon.y1+icon.y2))<=1);
- assert(css.find("--icon-disc-corner:"+std::to_string(preview_scaled_exact_px(lv_area_get_width(&disc)))+"px;")!=std::string::npos&&
-        "The preview header disc has the device size");
+ {
+  // Unrounded, like every corner disc length (the disc sits at the inset).
+  char want[64];snprintf(want,sizeof want,"--icon-disc-corner:%.2fpx;",
+    static_cast<double>(lv_area_get_width(&disc))*preview_cell_h_px()/GRID_CELL_H);
+  assert(css.find(want)!=std::string::npos&&"The preview header disc has the device size");
+ }
  for(const auto& item:std::vector<std::pair<const char*,int>>{
      {"title-top",title.y1-sensor_area.y1},{"title-right",sensor_area.x2-title.x2},
      {"icon-top",icon.y1-sensor_area.y1},{"icon-left",icon.x1-sensor_area.x1}}) {
+  // The icon position is unrounded like the disc; the title stays in whole
+  // preview pixels.
+  const bool icon_item=std::string(item.first).rfind("icon",0)==0;
+  char fraction[32];snprintf(fraction,sizeof fraction,"%.2f",static_cast<double>(item.second)*preview_cell_h_px()/GRID_CELL_H);
   const auto property=std::string("--tile-header-")+item.first+":"+
-      std::to_string(preview_scaled_exact_px(item.second))+"px;";
+      (icon_item?std::string(fraction):std::to_string(preview_scaled_exact_px(item.second)))+"px;";
   assert(css.find(property)!=std::string::npos&&"Preview scale must come from the actual Sensor header");
  }
  for (int width=1;width<=Device::kGridCols;++width) {

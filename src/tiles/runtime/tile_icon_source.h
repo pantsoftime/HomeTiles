@@ -42,6 +42,23 @@ lv_obj_t* card_icon(lv_obj_t* card);
 // discs that follow the background. Skips unchanged values.
 void refresh_card(lv_obj_t* card, const Tile& tile);
 
+// The Media renderer reports the color of the cover a card shows (`known`
+// false without a cover or without a clear color, media/cover_color.h). A
+// card with "From cover" (icon color and/or tile color) follows it right
+// away; other cards only keep the value. Skips unchanged values.
+void set_cover_color(lv_obj_t* card, bool known, uint32_t rgb);
+// The cover color a card last reported, when it has a hue (a cover that tints).
+bool card_cover_color(lv_obj_t* card, uint32_t& rgb);
+
+// The control fill of a card's controls: pressed buttons
+// (tile_icon_disc::mark_control; Media previous and next, Climate - and +)
+// and resting surfaces (mark_surface; the Climate target pill) take the
+// circle's color (tone_color::fill: the icon hue with "Circle in icon
+// color", else neutral), opaque (a veil on see-through screensaver tiles).
+// Every icon color, tint and circle change reaches it through the discs; a
+// card press recolors the resting surfaces for the pressed card.
+void refresh_controls(lv_obj_t* card);
+
 // The background a popup inherits from its tile: the rules' tint when the
 // card (`obj` or up to three of its parents) is tinted, else `fallback`.
 // Every opener calls it, so it also remembers the opening tile: while that
@@ -54,5 +71,10 @@ uint32_t popup_background(lv_obj_t* obj, uint32_t fallback);
 // every step) call this with their tile card, so no earlier opener makes them
 // follow a tile. Their header disc still takes the tile's circle options.
 void forget_popup_source(lv_obj_t* obj);
+
+// A popup no tile opened (Settings): forgets the last opener, so a color
+// change of that tile (a new cover, a tile reload) cannot recolor this popup,
+// and the header disc keeps its default.
+void open_popup_without_tile();
 
 }  // namespace tile_icon_source

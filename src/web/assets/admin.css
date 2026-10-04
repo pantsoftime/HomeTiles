@@ -57,10 +57,10 @@
       accent-color:#26a69a;
       color-scheme:dark;
     }
-    * { scrollbar-width:thin; scrollbar-color:#333333 transparent; }
+    * { scrollbar-width:thin; scrollbar-color:#555555 transparent; }
     ::selection { background:rgba(38,166,154,0.35); color:#ffffff; }
     ::-webkit-scrollbar { width:10px; height:10px; }
-    ::-webkit-scrollbar-thumb { background:#333333; border-radius:999px; border:2px solid transparent; background-clip:padding-box; }
+    ::-webkit-scrollbar-thumb { background:#555555; border-radius:999px; border:2px solid transparent; background-clip:padding-box; }
     ::-webkit-scrollbar-track { background:transparent; }
 
     body {
@@ -97,7 +97,8 @@
     .brand svg { flex-shrink:0; }
     .brand h1 { margin:0; font-size:24px; font-weight:700; color:#ffffff; letter-spacing:-0.01em; }
     .brand .device { color:var(--text-3); font-size:13px; margin-top:3px; }
-    .brand-links { margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .brand-side { margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; gap:8px; min-width:0; }
+    .brand-links { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
     .brand-link {
       display:inline-flex;
       align-items:center;
@@ -114,6 +115,15 @@
     }
     .brand-link:hover { color:var(--text); border-color:#4a4a4a; }
     .brand-link .mdi { font-size:17px; line-height:1; }
+    .brand-security.is-on, .brand-security.is-on:hover { color:#51cf66; border-color:rgba(81,207,102,0.45); }
+    .brand-security.is-off, .brand-security.is-off:hover { color:#ff6b6b; border-color:rgba(255,107,107,0.45); }
+    /* Small support line under the links: a GitHub star or a coffee. */
+    .brand-support { display:flex; align-items:center; justify-content:flex-end; gap:5px; flex-wrap:wrap; color:var(--text-3); font-size:12px; }
+    .brand-support a { display:inline-flex; align-items:center; gap:3px; color:var(--text-2); font-weight:600; text-decoration:none; }
+    .brand-support a:hover { color:var(--text); }
+    .brand-support .mdi { font-size:14px; line-height:1; }
+    .brand-star .mdi { color:#f5c518; }
+    .brand-coffee .mdi { color:#ffdd00; }
     h1 { margin:0 0 8px; font-size:28px; color:var(--text); }
     .subtitle { color:var(--text-3); margin-bottom:24px; }
 
@@ -125,31 +135,52 @@
     .wifi-inline-dot.off { background:var(--err); }
 
     /* Tab Navigation */
-    .tab-nav { display:flex; gap:6px; margin-bottom:24px; flex-wrap:wrap; }
+    /* Home alone on the left, a divider, the folders (as wide as Home,
+       wrapping into more rows), a divider, then Screensaver, I/O and
+       Settings. Each tab is a small tile with its icon in a circle. */
+    .tab-nav { --tab-page-width:112px; display:flex; align-items:flex-start; gap:12px; margin-bottom:24px; }
+    .tab-sep { flex:0 0 1px; align-self:stretch; background:#3a3a3a; }
+    .tab-folders { flex:1 1 0; min-width:var(--tab-page-width); display:flex; flex-wrap:wrap; gap:6px; }
+    .tab-system { flex:0 0 auto; display:flex; gap:6px; }
+    /* Without folders only Home and the right group remain. */
+    .tab-folders:empty, .tab-folders:empty + .tab-sep { display:none; }
+    .tab-nav:has(> .tab-folders:empty) { justify-content:space-between; }
+    .tab-nav:has(> .tab-folders:empty) > .tab-sep { display:none; }
     .tab-btn {
-      padding:10px 18px;
-      border:1px solid transparent;
-      border-radius:999px;
-      background:transparent;
-      color:var(--text-3);
-      font-size:15px;
-      font-weight:600;
-      font-family:inherit;
-      cursor:pointer;
-      transition:background 0.15s, color 0.15s, border-color 0.15s;
-      display:flex;
-      flex-direction:row;
-      align-items:center;
-      justify-content:center;
-      gap:8px;
+      display:inline-flex; align-items:center; gap:7px; height:34px; padding:0 12px;
+      border:1px solid #333333; border-radius:10px; background:#1a1a1a;
+      color:#e0e0e0; font-family:inherit; font-size:13px; font-weight:600; white-space:nowrap;
+      cursor:pointer; transition:background 0.15s, border-color 0.15s, color 0.15s;
     }
-    .tab-btn:hover { color:var(--text); background:#232323; }
-    .tab-btn.active { color:#ffffff; background:var(--accent); }
-    .tab-btn.active:hover { background:var(--accent-hover); }
+    .tab-nav > .tab-btn, .tab-folders .tab-btn { flex:0 0 var(--tab-page-width); width:var(--tab-page-width); min-width:0; }
+    .tab-disc { flex:0 0 auto; display:flex; align-items:center; justify-content:center; transition:color 0.15s; }
+    .tab-disc .mdi { font-size:17px; line-height:1; }
+    .tab-label { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .tab-btn:hover { background:#202020; border-color:#444444; color:#ffffff; }
+    .tab-btn:focus-visible { outline:none; box-shadow:0 0 0 3px var(--accent-ring); }
+    .tab-btn.active { border-color:var(--accent); background:#1d2524; color:#ffffff; }
+    .tab-btn.active .tab-disc { color:var(--accent); }
+    /* Narrow windows: Home and the right group on top, the folders below. */
+    @media (max-width:760px) {
+      .tab-nav { flex-wrap:wrap; justify-content:space-between; }
+      .tab-sep { display:none; }
+      .tab-folders { order:3; flex:1 1 100%; }
+    }
     .edit-icon { font-size:12px; margin-left:6px; opacity:0.6; cursor:pointer; transition:opacity 0.2s; }
     .edit-icon:hover { opacity:1; }
     .tab-content { display:none; }
     .tab-content.active { display:block; }
+    /* Tile tabs scroll inside the card when the grid and Global settings are
+       taller than the window (for example 100 % zoom on a laptop) instead of
+       being cut off. The Tile settings panel keeps its size and stays in
+       view (sticky). */
+    .tab-content.tile-tab.active {
+      flex:1 1 auto;
+      min-height:0;
+      overflow-x:hidden;
+      overflow-y:auto;
+      overscroll-behavior:contain;
+    }
     /* Settings stays below the tab bar and scrolls internally there instead
        of growing the browser viewport with long configuration forms. */
     #tab-network.active,
@@ -330,13 +361,15 @@
     .hardware-io-save-state.saving { color:var(--accent-link); }
     .hardware-io-save-state.saved { color:var(--ok); }
     .hardware-io-save-state.error { color:var(--err); }
+    /* Like the I/O list: the scrollbar stays inside the tab. A negative
+       margin pushed it past #tab-network, whose overflow:hidden cut it off. */
     #admin_settings_form {
       flex:1 1 auto;
       min-height:0;
       overflow-y:auto;
       overscroll-behavior:contain;
-      margin:0 -12px 0 0;
-      padding-right:12px;
+      margin:0;
+      padding-right:4px;
       padding-bottom:16px;
     }
 
@@ -368,7 +401,9 @@
       box-shadow:0 0 0 1000px var(--well) inset;
       transition:background-color 9999s ease-out 0s;
     }
-    input:not([type="checkbox"]):not([type="radio"]):focus,
+    /* Not sliders: the field ring drew a box around a clicked slider (user
+       2026-10-02: the screensaver tile opacity); they keep a keyboard ring. */
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
     select:focus, textarea:focus {
       outline:none;
       border-color:var(--accent);
@@ -424,7 +459,8 @@
       box-shadow:none;
     }
     input[type="range"] { padding:0; border:none; background:transparent; height:32px; box-shadow:none; cursor:pointer; }
-    input[type="range"]:focus { box-shadow:none; }
+    input[type="range"]:focus { box-shadow:none; outline:none; }
+    input[type="range"]:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
     input[type="color"] { padding:5px 8px; height:44px; cursor:pointer; }
     input[type="file"] { padding:9px 12px; }
 
@@ -744,6 +780,20 @@
 
     /* Tile Editor */
     .tile-editor { display:flex; align-items:flex-start; gap:24px; }
+    /* Four-column devices (Guition S3, Waveshare 4B) on the 1200 px page: the
+       preview keeps its size, the Settings slot and its hint stand beside it,
+       and the footer with Global settings spans the column below. */
+    .compact-grid .tile-editor-main {
+      flex:1 1 0; min-width:0; display:grid; grid-template-columns:max-content minmax(0, 1fr);
+      column-gap:24px; row-gap:14px; align-items:start; align-content:start;
+    }
+    .compact-grid .tile-editor-main > * { grid-column:1 / -1; }
+    .compact-grid .tile-editor-main > .tile-grid-scroll { grid-column:1; }
+    .compact-grid .tile-editor-main > .settings-hidden-parking {
+      grid-column:2; grid-row:1; width:auto; min-width:0;
+      flex-direction:column; align-items:flex-start;
+    }
+    @media (max-width: 780px) { .compact-grid .tile-editor-main { display:flex; } }
     /* The preview always keeps its device-specific size; the settings panel
        only uses the remaining desktop space. */
     .tile-editor-main { flex:0 0 auto; min-width:0; display:flex; flex-direction:column; gap:14px; }
@@ -787,6 +837,19 @@
     .global-radius-field input[type="range"]:focus { outline:none; box-shadow:none; }
     .global-radius-field input[type="range"]:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
     .folder-footer-options .inline-checkbox { margin:0; }
+    /* Screensaver tile options: the checkboxes in one column, the sliders
+       with their labels and values aligned in the next (user 2026-10-02). */
+    .folder-footer-options.screensaver-tile-options {
+      display:grid;
+      grid-template-columns:max-content max-content 120px max-content;
+      justify-content:start;
+      align-items:center;
+      gap:10px 12px;
+    }
+    .screensaver-tile-options > .inline-checkbox { margin-right:28px; }
+    .screensaver-tile-options > .tile-radius-control { display:contents; }
+    .screensaver-tile-options > .tile-radius-control > input[type="range"] { width:100%; }
+    .screensaver-tile-options > .tile-radius-control > output { min-width:4.5ch; text-align:left; }
     .folder-footer .hint { margin:0; }
     .btn-delete-folder { padding:8px 16px; font-size:13px; flex:0 0 auto; }
     .tile-actions { display:flex; gap:8px; margin-top:8px; }
@@ -803,22 +866,31 @@
       grid-template-columns:repeat(var(--grid-cols), var(--preview-cell-w));
       grid-template-rows:repeat(var(--grid-rows), var(--preview-cell-h));
       gap:var(--preview-gap);
-      padding:var(--preview-pad);
+      /* The scaled screen inside a black bezel (--preview-frame). */
+      padding:calc(var(--preview-frame, 0px) + var(--preview-pad-top, var(--preview-pad)))
+        calc(var(--preview-frame, 0px) + var(--preview-pad-right, var(--preview-pad)))
+        calc(var(--preview-frame, 0px) + var(--preview-pad-bottom, var(--preview-pad)))
+        calc(var(--preview-frame, 0px) + var(--preview-pad-left, var(--preview-pad)));
 
       background:#000000;
       border:1px solid var(--line);
-      border-radius:calc(var(--tile-radius, 11px) + var(--preview-pad) + 1px);
+      border-radius:calc(var(--tile-radius, 11px) + var(--preview-pad) + var(--preview-frame, 0px) + 1px);
       width:fit-content;
       height:fit-content;
     }
+    /* width:0 + min-width:100% like .folder-footer: the row follows the grid
+       width, and the hint beside the slot wraps instead of widening the
+       column (and pushing the Tile settings panel out of the card). */
     .settings-hidden-parking {
       display:flex;
       align-items:center;
       gap:14px;
-      width:fit-content;
-      max-width:100%;
+      width:0;
+      min-width:100%;
     }
+    /* The slot keeps its cell size; only the hint beside it may shrink. */
     .tile-grid.settings-hidden-slot {
+      flex:none;
       grid-template-columns:var(--preview-cell-w);
       grid-template-rows:var(--preview-cell-h);
       width:fit-content;
@@ -852,11 +924,43 @@
       font-size:14px;
       line-height:1.35;
     }
+    /* Beside the Settings parking slot: its drop hint (while the slot is
+       empty) above the tile editing hint. */
+    .settings-parking-texts { display:flex; flex-direction:column; gap:6px; min-width:0; max-width:440px; }
+    .settings-parking-texts .hint { margin:0; font-size:14px; line-height:1.35; }
+    /* A folder: the editing hint with Delete Folder below it. */
+    .folder-side .settings-parking-texts { align-items:flex-start; gap:12px; }
+    /* A parked tile lifted out leaves the empty slot at once, with its tray
+       icon and hint (user 2026-10-02); the teal drop target below takes over
+       while the pointer is over the slot. */
+    .settings-hidden-slot.lifting .settings-hidden-tile {
+      opacity:1;
+      border:2px dashed var(--line) !important;
+      background:rgba(255,255,255,0.025) !important;
+      box-shadow:none;
+    }
+    .settings-hidden-slot.lifting:not(.drop-target) .settings-hidden-tile::after {
+      content:"\F0120";
+      font-family:"Material Design Icons";
+      font-size:var(--icon-size, 24px);
+      line-height:1;
+      color:var(--muted);
+      opacity:0.85;
+      position:absolute;
+      inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    /* The slot's drop target is the grid's teal placeholder
+       (.tile-drop-placeholder). */
     .settings-hidden-slot.drop-target .settings-hidden-tile {
-      border:3px dashed #26a69a;
-      background:rgba(38,166,154,0.12) !important;
+      border:3px dashed #26a69a !important;
+      background:rgba(38,166,154,0.18) !important;
       box-shadow:0 0 0 2px rgba(38,166,154,0.2) inset;
     }
+    .settings-hidden-slot.drop-target .settings-hidden-tile > *,
+    .settings-hidden-slot.lifting .settings-hidden-tile > * { visibility:hidden; }
     .settings-hidden-slot.invalid .settings-hidden-tile {
       border-color:#ef4444;
     }
@@ -976,10 +1080,26 @@
     .screensaver-tile-grid > .tile-resize-placeholder {
       z-index:2;
     }
-    /* Preview of the optional tile shadow on the device. drop-shadow instead
-       of box-shadow so selection and hover shadows stay untouched. */
-    .screensaver-tile-grid.tiles-shadowed > .tile:not(.empty) {
-      filter:drop-shadow(0 2px 8px rgba(0,0,0,0.65));
+    /* The resized card lies below its target card, as on the other pages
+       (.tile.resizing alone lifted it to 24, above the target at 2). */
+    .screensaver-tile-grid > .tile.resizing { z-index:1; }
+    /* The optional tile shadow: like the device a card shadow only
+       (screensaver_tile_shadow.h), never one behind the text and icons, cast
+       without the rounded clip-path, which would cut it off. Selection and
+       hover keep their own shadows in front of it. */
+    .screensaver-tile-grid.tiles-shadowed > .tile:not(.empty):not(.screensaver-bg-clear) {
+      --screensaver-card-shadow:0 0 var(--screensaver-tile-shadow-blur, 8px)
+        var(--screensaver-tile-shadow-spread, 1.5px)
+        rgba(0,0,0,var(--screensaver-tile-shadow-opa, 0.6));
+      clip-path:none;
+      box-shadow:var(--screensaver-card-shadow);
+    }
+    .screensaver-tile-grid.tiles-shadowed > .tile:not(.empty):not(.screensaver-bg-clear):hover:not(.active) {
+      clip-path:none;
+      box-shadow:var(--screensaver-card-shadow);
+    }
+    .screensaver-tile-grid.tiles-shadowed > .tile:not(.empty):not(.screensaver-bg-clear):is(.active, [data-selected="1"]) {
+      box-shadow:0 0 12px rgba(38,166,154,0.55), var(--screensaver-card-shadow);
     }
     /* The hairline sits on the outer card edge. A child overlay would be
        visibly indented by the transparent 3px editor border. */
@@ -990,6 +1110,10 @@
 
     /* Display-like tiles (50% scaling) */
     /* Display: Title=TOP_LEFT, Value=CENTER(-30,18), Unit=RIGHT_MID */
+    /* The card fills the whole tile like the device card, which every content
+       position assumes; the 3 px editor border (hover, selection) lies on its
+       edge. A card inside the border was 3 px smaller per side, so corner
+       discs touched or crossed its rounded edge. */
     .tile {
       background:#2A2A2A;
       border-radius:var(--tile-radius, 11px);
@@ -999,9 +1123,29 @@
       position:relative;
       box-sizing:border-box;
       overflow:hidden;
-      background-clip:padding-box;
+      background-clip:border-box;
       clip-path:inset(0 round var(--tile-radius, 11px));
     }
+    /* Content is cut at the card edge like on the device, not at the inner
+       edge of the editor border: a corner disc 2 px inside the card (the
+       device's inset) was cut at the border's smaller inner corner. */
+    @supports (overflow-clip-margin:3px) {
+      .tile { overflow:clip; overflow-clip-margin:3px; }
+      .tile.sensor-compact { overflow-clip-margin:0px; }
+    }
+    /* The selection and hover rings lie above the content, so the icon disc
+       at the card edge never covers them. */
+    .tile:not(.empty):is(.active, [data-selected="1"], :hover)::after {
+      content:"";
+      position:absolute;
+      inset:-3px;
+      z-index:25;
+      pointer-events:none;
+      border-radius:var(--tile-radius, 11px);
+      box-sizing:border-box;
+    }
+    .tile:not(.empty):is(.active, [data-selected="1"])::after { border:3px solid #26a69a; }
+    .tile:not(.empty):hover:not(.active):not([data-selected="1"])::after { border:3px dashed rgba(38,166,154,0.6); }
     /* The tile clips itself to its rounded corners, so an outline would be cut
        off. An inset ring is the visible focus indicator instead. */
     .tile:focus-visible {
@@ -1009,10 +1153,10 @@
       box-shadow:inset 0 0 0 3px var(--accent);
     }
     .tile:hover:not(.active) {
-      border:3px dashed rgba(38,166,154,0.6);
-      box-shadow:0 0 0 2px rgba(38,166,154,0.12) inset;
+      border:3px solid transparent;
+      box-shadow:none;
       border-radius:var(--tile-radius, 11px);
-      background-clip:padding-box;
+      background-clip:border-box;
       clip-path:inset(0 round var(--tile-radius, 11px));
     }
     /* The selection is stored per folder in data-selected. The active class
@@ -1020,10 +1164,10 @@
        marker must not depend on that. */
     .tile.active,
     .tile[data-selected="1"] {
-      border:3px solid #26a69a;
+      border:3px solid transparent;
       box-shadow:0 0 12px rgba(38,166,154,0.55);
       border-radius:var(--tile-radius, 11px);
-      background-clip:padding-box;
+      background-clip:border-box;
       clip-path:inset(0 round var(--tile-radius, 11px));
     }
     .tile.dragging {
@@ -1031,13 +1175,28 @@
       border:3px solid transparent;
       box-shadow:none;
       border-radius:var(--tile-radius, 11px);
-      background-clip:padding-box;
+      background-clip:border-box;
       clip-path:inset(0 round var(--tile-radius, 11px));
     }
+    /* Resizing shows only the target card (.tile-resize-placeholder): the old
+       card leaves no faded copy or shadow behind (user 2026-10-02). */
     .tile.resizing {
       z-index:24;
-      opacity:.20;
-      box-shadow:0 0 0 2px rgba(38,166,154,0.25) inset, 0 0 18px rgba(38,166,154,0.18);
+      opacity:0;
+      box-shadow:none;
+    }
+    /* No hover rings or free-slot marks under the pointer while resizing,
+       nor the screensaver image or clock marks the pointer passes over. */
+    body.tile-resize-active .screensaver-tile-grid .screensaver-grid-image-frame:hover,
+    body.tile-resize-active .screensaver-tile-grid .screensaver-grid-clock:hover {
+      outline:none;
+    }
+    body.tile-resize-active .screensaver-grid-clock:hover .screensaver-clock-resize-handle {
+      opacity:0;
+    }
+    body.tile-resize-active .tile:not(.empty):hover:not(.active):not([data-selected="1"])::after,
+    body.tile-resize-active .tile.empty:is(:hover, .free-slot-hover):not(.active):not([data-selected="1"]) {
+      border-color:transparent;
     }
     .tile.resize-invalid {
       box-shadow:0 0 0 2px rgba(239,68,68,0.22) inset, 0 0 18px rgba(239,68,68,0.2);
@@ -1052,7 +1211,7 @@
        background:rgba(38,166,154,0.12);
        box-shadow:0 0 0 2px rgba(38,166,154,0.2) inset;
        border-radius:var(--tile-radius, 11px);
-       background-clip:padding-box;
+       background-clip:border-box;
        clip-path:inset(0 round var(--tile-radius, 11px));
     }
     .tile.empty.drop-target {
@@ -1090,16 +1249,16 @@
       z-index:26;
       clip-path:inset(0 round var(--tile-radius, 11px));
     }
+    /* The target card carries the selection ring: a solid line, no tint and
+       no inner line (user 2026-10-02: the dashed ring read as hover). */
     .tile-resize-placeholder::after {
       content:"";
       position:absolute;
       z-index:3;
       inset:0;
       box-sizing:border-box;
-      border:3px dashed #26a69a;
+      border:3px solid #26a69a;
       border-radius:var(--tile-radius, 11px);
-      background:rgba(38,166,154,0.08);
-      box-shadow:0 0 0 2px rgba(38,166,154,0.16) inset;
       pointer-events:none;
     }
     .tile-resize-preview-card {
@@ -1115,7 +1274,6 @@
     .tile-resize-placeholder.invalid::after {
       border-color:#ef4444;
       background:rgba(239,68,68,0.16);
-      box-shadow:0 0 0 2px rgba(239,68,68,0.18) inset;
     }
     .tile-resize-handle {
       position:absolute;
@@ -1164,13 +1322,16 @@
       border-radius:6px;
       cursor:nwse-resize;
     }
-    .tile.active:hover,
-    .tile[data-selected="1"]:hover { opacity:1; filter:none; }
+    /* Not while resizing: shrinking keeps the pointer over the old card,
+       which then came back in full (user 2026-10-02). */
+    .tile.active:hover:not(.resizing),
+    .tile[data-selected="1"]:hover:not(.resizing) { opacity:1; filter:none; }
     .tile.empty { background:transparent !important; border:3px solid transparent; }
     .tile.empty.active,
     .tile.empty[data-selected="1"] { border:3px solid #26a69a; box-shadow:0 0 12px rgba(38,166,154,0.55); }
-    .tile.empty:hover:not(.active),
-    .tile.empty.free-slot-hover:not(.active) { border-color:rgba(38,166,154,0.4); }
+    /* A free slot hovers like a tile: the same dashed ring. */
+    .tile.empty:hover:not(.active):not([data-selected="1"]),
+    .tile.empty.free-slot-hover:not(.active):not([data-selected="1"]) { border:3px dashed rgba(38,166,154,0.6); }
     /* The free slot may lie over a selected empty new tile; it takes the click. */
     .tile.empty.free-slot-hover:not([data-selected="1"]) { z-index:1; }
     .tile-title {
@@ -1192,22 +1353,13 @@
       /* Anchor for the round icon disc; header icons stay absolute. */
       position:relative;
     }
-    /* Centered ghost hint for tiles without a live preview (weather/media) */
-    .tile-ghost-icon {
-      position:absolute;
-      inset:0;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      pointer-events:none;
-      color:rgba(255,255,255,0.35);
-    }
-    .tile-ghost-icon .mdi { font-size:var(--icon-size, 24px); line-height:1; }
 
     /* Settings panel: sticky on the right, scrolls internally on long content
        (capped at the viewport height) instead of stretching the whole page. */
+    /* The same width on every device; only narrow windows stack it below
+       the grid (media query further down). */
     .tile-settings {
-      flex:0 1 var(--settings-panel-width, 390px);
+      flex:0 0 var(--settings-panel-width, 390px);
       width:var(--settings-panel-width, 390px);
       min-width:300px;
       max-width:var(--settings-panel-width, 390px);
@@ -1219,8 +1371,10 @@
       border:1px solid #232323;
       border-radius:18px;
       padding:20px;
+      /* Sticks to the top of the scrolling tile tab; its max-height is set
+         to the visible space by updateTileSettingsMaxHeight(). */
       position:sticky;
-      top:20px;
+      top:0;
       max-height:calc(100vh - 40px);
       overflow:hidden;
     }
@@ -1342,16 +1496,11 @@
     .gauge-fields > input, .graph-fields > input { margin:0; }
     .tile-color-label-row,
     .tile-color-row { display:grid; grid-template-columns:minmax(72px,1fr) 38px; gap:8px; align-items:center; }
-    .tile-color-label-row.has-opacity,
-    .tile-color-row.has-opacity { grid-template-columns:minmax(72px,1fr) minmax(110px,1.5fr) 38px; }
     /* The tile Color field has no reset button: the Global choice replaces it. */
     .tile-color-label-row.no-reset,
     .tile-color-row.no-reset { grid-template-columns:minmax(72px,1fr); }
-    .tile-color-label-row.no-reset.has-opacity,
-    .tile-color-row.no-reset.has-opacity { grid-template-columns:minmax(72px,1fr) minmax(110px,1.5fr); }
-    /* Tile color choice: the color field shows only for Custom; screensaver
-       tiles keep their opacity slider in place. */
-    .tile-color-row.color-hidden:not(.has-opacity) { display:none; }
+    /* Tile color choice: the color field shows only for Custom. */
+    .tile-color-row.color-hidden { display:none; }
     .tile-color-row.color-hidden input[type="color"] { visibility:hidden; }
     .tile-color-label-row { margin-top:13px; margin-bottom:4px; }
     .tile-color-label-row span { color:var(--text-2); font-size:12px; font-weight:600; line-height:14px; }
@@ -1429,6 +1578,26 @@
     .screensaver-two-fields input, .screensaver-two-fields select { margin-top:5px; margin-bottom:0; }
     .screensaver-save-state { min-height:20px; margin-top:12px; color:var(--text-2); font-size:12px; }
 
+    /* Wide windows: the grid preview and the Settings parking stay in place;
+       only the footer with Global settings scrolls when the window is too
+       low, with its scrollbar right beside it. The Tile settings panel keeps
+       its own height (updateTileSettingsMaxHeight). Below the footer's
+       minimum height the whole tab scrolls again instead of cutting it off. */
+    @media (min-width: 1181px) {
+      .tab-content.tile-tab.active { display:flex; flex-direction:column; }
+      .tab-content.tile-tab.active > .tile-editor { flex:1 1 auto; min-height:0; }
+      .tab-content.tile-tab.active .tile-editor-main { align-self:stretch; min-height:0; }
+      .tab-content.tile-tab.active .tile-grid-scroll,
+      .tab-content.tile-tab.active .settings-hidden-parking { flex:0 0 auto; }
+      .tab-content.tile-tab.active .tile-settings { max-height:100%; }
+      .tab-content.tile-tab.active .folder-footer {
+        flex:1 1 auto;
+        min-height:90px;
+        overflow-y:auto;
+        overscroll-behavior:contain;
+        align-content:flex-start;
+      }
+    }
     /* Narrow window: the settings panel moves below the grid preview and the
        grid itself scrolls horizontally when needed (.tile-grid-scroll). */
     @media (max-width: 1180px) {
@@ -1441,6 +1610,7 @@
       .wrapper { height:auto; padding:16px; }
       .card { height:auto; min-height:calc(100vh - 32px); }
       #tab-network.active { flex:none; overflow:visible; }
+      .tab-content.tile-tab.active { flex:none; overflow:visible; }
       #tab-hardware.active {
         flex:1 1 auto;
         min-height:420px;
@@ -1535,11 +1705,12 @@
     body.tile-resize-active { user-select:none; cursor:default; }
   
 .tile.sensor,
-    .tile.cover { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr; }
+    .tile.cover,
+    .tile.device { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr; }
     /* These renderers share the Sensor header on the device. Scale its
        coordinates once and compensate the preview's 3 px selection border. */
     .tile:is(.sensor, .binary_sensor, .number, .select, .datetime,
-             .cover, .energy, .weather, .media, .climate) > .tile-title {
+             .cover, .device, .energy, .weather, .media, .climate, .switch-bar) > .tile-title {
       position:absolute;
       top:calc(var(--tile-header-title-top, 14px) - 3px);
       right:calc(var(--tile-header-title-right, 8px) - 3px);
@@ -1548,7 +1719,7 @@
       text-align:right;
     }
     .tile:is(.sensor, .binary_sensor, .number, .select, .datetime,
-             .cover, .energy, .weather, .media, .climate) > .tile-icon {
+             .cover, .device, .energy, .weather, .media, .climate, .switch-bar) > .tile-icon {
       position:absolute;
       top:calc(var(--tile-header-icon-top, 8px) - 3px);
       left:calc(var(--tile-header-icon-left, 6px) - 3px);
@@ -1588,6 +1759,41 @@
 .tile.energy { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr; }
 
 .tile.weather { position:relative; }
+    /* Weather tile preview (applyWeatherPreview): the device labels at their
+       positions, each as tall as its LVGL line height. */
+    .tile.weather > .weather-preview-row {
+      position:absolute; left:0; right:0; display:flex; justify-content:center; align-items:center;
+      color:#fff; white-space:nowrap; pointer-events:none;
+    }
+    .tile.weather > .weather-preview-row > span { position:relative; display:block; white-space:nowrap; }
+    .tile.weather > .weather-preview-row > .weather-preview-condition { overflow:hidden; text-overflow:ellipsis; min-width:0; }
+    .tile.weather > .weather-preview-row > .weather-preview-separator { color:#B0B0B0; }
+    .tile.weather > :is(.weather-preview-day, .weather-preview-icon, .weather-preview-temp-value, .weather-preview-temp-unit) {
+      position:absolute; color:#fff; white-space:nowrap; pointer-events:none;
+    }
+    .tile.weather > .weather-preview-day { text-align:center; overflow:hidden; text-overflow:ellipsis; }
+    .tile.weather > .weather-preview-icon { display:flex; justify-content:center; font-size:var(--icon-size, 24px); line-height:1; }
+    .tile.weather > .weather-preview-icon > .mdi { line-height:1; }
+    :is(.tile-weather-icon, .weather-preview-icon) > .weather-icon-svg { display:block; width:1em; height:1em; }
+    /* Media tile preview (applyMediaPreview): title, subtitle, artwork and
+       controls at the device positions. The title scrolls on the device; the
+       preview shows its start. */
+    .tile.media > :is(.media-preview-title, .media-preview-subtitle, .media-preview-control, .media-preview-cover) {
+      position:absolute; pointer-events:none;
+    }
+    .tile.media > :is(.media-preview-title, .media-preview-subtitle) { white-space:nowrap; overflow:hidden; text-overflow:clip; }
+    .tile.media > .media-preview-title { color:#fff; }
+    .tile.media > .media-preview-title.media-preview-state { text-overflow:ellipsis; }
+    .tile.media > .media-preview-subtitle { color:#D8DEE9; }
+    .tile.media > .media-preview-control { border-radius:50%; color:#fff; }
+    .tile.media > .media-preview-control.media-preview-play { background:#fff; }
+    .tile.media > .media-preview-control.media-preview-disabled { opacity:.3; }
+    .tile.media > .media-preview-control > .mdi {
+      position:absolute; left:0; right:0; display:block; text-align:center;
+      font-size:var(--icon-size, 24px); line-height:1;
+    }
+    .tile.media > .media-preview-cover { overflow:hidden; }
+    .tile.media > .media-preview-cover > img { display:block; width:100%; height:100%; object-fit:cover; }
 
 .tile.scene { display:flex; flex-direction:column; align-items:center; justify-content:center; }
     .tile.scene .tile-title { text-align:center; align-self:auto; width:100%; margin-top:4px; }
@@ -1610,32 +1816,196 @@
 .tile.switch { display:flex; flex-direction:column; align-items:center; justify-content:center; }
     .tile.switch .tile-title { text-align:center; align-self:auto; width:100%; margin-top:4px; }
     .tile.switch .tile-icon { margin-bottom:4px; }
-    .tile.switch.switch-toggle { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr; }
-    .tile.switch.switch-toggle .tile-title { text-align:left; align-self:start; width:100%; margin-top:0; }
-    .tile.switch.switch-toggle .tile-icon { position:absolute; top:10px; right:8px; margin:0; }
-    .tile-switch {
-      width:58px;
-      height:28px;
-      border-radius:999px;
-      background:#fff;
-      position:relative;
-      align-self:center;
-      justify-self:center;
-      margin-top:10px;
-      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
+    /* Switch header layouts (types/switch/renderer.cpp): the Sensor header,
+       the state line under the title (the pair centered where the Sensor
+       title alone sits) and the control bar with the Climate pill's box at
+       the card's bottom. Positions compensate the 3 px selection border. */
+    .tile.switch.switch-bar,
+    .tile.cover.switch-bar,
+    .tile.device.switch-bar { display:block; }
+    .tile.switch.switch-bar > .tile-icon,
+    .tile.cover.switch-bar > .tile-icon,
+    .tile.device.switch-bar > .tile-icon { margin:0; }
+    /* Title and state left-aligned beside the corner disc like the
+       half-height tiles (compact_sensor_layout): two insets from the disc,
+       the block centered on it, the state at the half-height value size. */
+    .tile.switch.switch-bar,
+    .tile.cover.switch-bar,
+    .tile.device.switch-bar,
+    .tile.climate.climate-header {
+      --switch-text-left:calc(3 * var(--compact-inset, 3px) + var(--icon-disc-corner, 30px) - 3px);
+      --switch-text-top:calc(var(--compact-inset, 3px) + var(--icon-disc-corner, 30px) / 2 - 3px
+        - (var(--compact-title-line, 12px) + var(--compact-value-line, 12px)) / 2);
     }
-    .tile-switch .tile-switch-knob {
+    .tile.switch.switch-bar > .tile-title,
+    .tile.cover.switch-bar > .tile-title,
+    .tile.device.switch-bar > .tile-title,
+    .tile.switch.switch-bar > .tile-switch-state,
+    .tile.cover.switch-bar > .tile-switch-state,
+    .tile.device.switch-bar > .tile-switch-state,
+    .tile.climate.climate-header > .tile-title,
+    .tile.climate.climate-header > .tile-switch-state {
       position:absolute;
-      top:3px;
-      left:3px;
-      width:22px;
-      height:22px;
-      border-radius:50%;
-      background:var(--switch-knob-color, #f8fafc);
-      transition:transform 0.15s ease, background 0.15s ease;
+      left:var(--switch-text-left);
+      right:calc(2 * var(--compact-inset, 3px) - 3px);
+      width:auto;
+      max-width:none;
+      margin:0;
+      padding:0;
+      transform:none;
+      text-align:left;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
     }
-    .tile-switch.is-on { background: var(--switch-on-color, #3B82F6); }
-    .tile-switch.is-on .tile-switch-knob { transform: translateX(30px); }
+    .tile.switch.switch-bar > .tile-title,
+    .tile.cover.switch-bar > .tile-title,
+    .tile.device.switch-bar > .tile-title,
+    .tile.climate.climate-header > .tile-title {
+      /* On the LVGL baseline like the half-height tiles (--compact-*-dy). */
+      top:calc(var(--switch-text-top) + var(--compact-title-dy, 0px));
+      font-size:var(--compact-title-font, 10px);
+      line-height:var(--compact-title-line, 12px);
+    }
+    .tile.switch.switch-bar > .tile-switch-state,
+    .tile.cover.switch-bar > .tile-switch-state,
+    .tile.device.switch-bar > .tile-switch-state,
+    .tile.climate.climate-header > .tile-switch-state {
+      top:calc(var(--switch-text-top) + var(--compact-title-line, 12px) + var(--compact-value-dy, 0px));
+      bottom:auto;
+      font-size:var(--compact-value-font, 10px);
+      line-height:var(--compact-value-line, 12px);
+    }
+    .tile.switch.switch-bar:not(:has(> .tile-title)) > .tile-switch-state,
+    .tile.cover.switch-bar:not(:has(> .tile-title)) > .tile-switch-state,
+    .tile.device.switch-bar:not(:has(> .tile-title)) > .tile-switch-state,
+    .tile.climate.climate-header:not(:has(> .tile-title)) > .tile-switch-state {
+      top:calc(var(--compact-inset, 3px) + var(--icon-disc-corner, 30px) / 2 - 3px
+        - var(--compact-value-line, 12px) / 2 + var(--compact-value-dy, 0px));
+    }
+    .tile.switch.switch-bar.compact-value-24,
+    .tile.cover.switch-bar.compact-value-24,
+    .tile.device.switch-bar.compact-value-24 {
+      --compact-value-font:var(--compact-value-font-24); --compact-value-line:var(--compact-value-line-step-24);
+      --compact-value-dy:var(--compact-value-dy-24);
+    }
+    .tile.switch.switch-bar.compact-value-28,
+    .tile.cover.switch-bar.compact-value-28,
+    .tile.device.switch-bar.compact-value-28 {
+      --compact-value-font:var(--compact-value-font-28); --compact-value-line:var(--compact-value-line-step-28);
+      --compact-value-dy:var(--compact-value-dy-28);
+    }
+    /* From 1.5 rows (switch_layout::sensor_look): the Sensor title top
+       right, the state at a Sensor value size centered between the disc and
+       the bar, the bar a third of the extra height higher. */
+    .tile.switch.switch-bar.switch-tall,
+    .tile.cover.switch-bar.switch-tall,
+    .tile.device.switch-bar.switch-tall {
+      --switch-bar-grow:calc((var(--switch-span-h, 1) - 1) * (var(--preview-cell-h, 73px) + var(--preview-gap, 10px)) / 3);
+      --switch-tall-font:var(--fs28, 14px);
+    }
+    .tile.switch.switch-bar.switch-tall.switch-value-20,
+    .tile.cover.switch-bar.switch-tall.switch-value-20,
+    .tile.device.switch-bar.switch-tall.switch-value-20 { --switch-tall-font:var(--fs20, 10px); }
+    .tile.switch.switch-bar.switch-tall.switch-value-24,
+    .tile.cover.switch-bar.switch-tall.switch-value-24,
+    .tile.device.switch-bar.switch-tall.switch-value-24 { --switch-tall-font:var(--fs24, 12px); }
+    .tile.switch.switch-bar.switch-tall.switch-value-32,
+    .tile.cover.switch-bar.switch-tall.switch-value-32,
+    .tile.device.switch-bar.switch-tall.switch-value-32 { --switch-tall-font:var(--fs32, 16px); }
+    .tile.switch.switch-bar.switch-tall.switch-value-40,
+    .tile.cover.switch-bar.switch-tall.switch-value-40,
+    .tile.device.switch-bar.switch-tall.switch-value-40 { --switch-tall-font:var(--fs40, 20px); }
+    .tile.switch.switch-bar.switch-tall > .tile-title,
+    .tile.cover.switch-bar.switch-tall > .tile-title,
+    .tile.device.switch-bar.switch-tall > .tile-title {
+      left:auto;
+      top:calc(var(--tile-header-title-top, 14px) - 3px);
+      right:calc(var(--tile-header-title-right, 8px) - 3px);
+      width:calc((100% + 6px - 2 * var(--tile-pad-h, 10px)) * .7);
+      font-size:var(--fs20, 10px);
+      line-height:1.35;
+      text-align:right;
+      overflow:visible;
+    }
+    .tile.switch.switch-bar.switch-tall > .tile-switch-state,
+    .tile.cover.switch-bar.switch-tall > .tile-switch-state,
+    .tile.device.switch-bar.switch-tall > .tile-switch-state {
+      left:calc(var(--tile-pad-h, 10px) - 3px);
+      right:calc(var(--tile-pad-h, 10px) - 3px);
+      top:calc((var(--compact-inset, 3px) + var(--icon-disc-corner, 30px) + 100% + 6px
+        - var(--climate-slots-bottom, 3px) - var(--switch-bar-height, 30px) - var(--switch-bar-grow, 0px)) / 2 - 3px);
+      transform:translateY(-50%);
+      font-size:var(--switch-tall-font);
+      line-height:1.21;
+      text-align:center;
+    }
+    .tile.switch.switch-bar > .tile-switch,
+    .tile.cover.switch-bar > .tile-switch,
+    .tile.device.switch-bar > .tile-switch {
+      position:absolute;
+      left:calc(var(--climate-margin-x, 5px) - 3px);
+      right:calc(var(--climate-margin-x, 5px) - 3px);
+      bottom:calc(var(--climate-slots-bottom, 3px) - 3px);
+      height:calc(var(--switch-bar-height, 30px) + var(--switch-bar-grow, 0px));
+      border-radius:var(--climate-control-radius, 8px);
+      background:var(--control-fill, rgba(255,255,255,0.12));
+      overflow:hidden;
+    }
+    /* Dimmer: the fill in the icon's color inside the bar's shape (overflow
+       hidden); its end has the end rounding (switch_layout::Dimmer), its
+       start reaches past the bar so only the bar's round start shows. */
+    .tile-switch .tile-switch-fill {
+      display:none;
+      position:absolute; left:calc(-1 * var(--switch-end-radius, 3px)); top:0; bottom:0; width:0;
+      background:var(--switch-accent, #FFD54F);
+      border-radius:var(--switch-end-radius, 3px);
+    }
+    .tile-switch[data-bar="dimmer"] .tile-switch-fill { display:block; }
+    .tile-switch .tile-switch-handle {
+      position:absolute; top:50%; right:var(--switch-handle-margin, 6px);
+      width:var(--switch-handle-w, 3px); height:var(--switch-handle-h, 42%);
+      transform:translate(50%, -50%);
+      border-radius:999px;
+      background:var(--switch-card, #1A1A1A);
+    }
+    /* Switch: a half-width thumb flush with the bar like the Light popup
+       switch, the power symbol on it; off in the grey of an off icon
+       (tone_color::kOffIcon). */
+    .tile-switch .tile-switch-knob {
+      display:none;
+      position:absolute; top:0; bottom:0; left:0; width:50%;
+      align-items:center; justify-content:center;
+      border-radius:inherit;
+      background:var(--switch-thumb-off, #555);
+      color:#B0B0B0;
+    }
+    .tile-switch[data-bar="toggle"] .tile-switch-knob { display:flex; }
+    .tile-switch.is-on .tile-switch-knob {
+      left:50%;
+      background:var(--switch-accent, #FFD54F);
+      color:var(--switch-card, #1A1A1A);
+    }
+    .tile-switch .tile-switch-symbol { font-size:calc(var(--switch-bar-height, 30px) * .55); line-height:1; }
+    /* Lock: the thumb in the state color on both sides, its symbol in the
+       card color (types/device/device_tile.cpp). */
+    .tile-switch.knob-accent .tile-switch-knob {
+      background:var(--switch-accent, #9E9E9E);
+      color:var(--switch-card, #1A1A1A);
+    }
+    /* Lock and Alarm buttons, Alarm modes and Fan speeds: parts side by side
+       (with the bar's gap for buttons and speeds), the current one lit. */
+    .tile-switch .tile-device-parts { display:none; position:absolute; inset:0; }
+    .tile-switch[data-bar="parts"] .tile-device-parts { display:flex; }
+    .tile-device-parts.gapped { gap:calc(var(--climate-margin-x, 5px)); }
+    .tile-device-part {
+      flex:1 1 0; display:flex; align-items:center; justify-content:center;
+      border-radius:var(--climate-control-radius, 8px);
+      color:#fff; font-size:calc(var(--switch-bar-height, 30px) * .45); line-height:1;
+    }
+    .tile-device-part.button { background:var(--device-button, rgba(255,255,255,0.18)); }
+    .tile-device-part.lit { background:var(--switch-accent, #9E9E9E); color:var(--switch-card, #1A1A1A); }
+    .tile-switch.is-unavailable > * { display:none !important; }
 
 .tile.cover .tile-cover-value {
       font-size:var(--fs20, 10px);
@@ -1643,7 +2013,7 @@
       white-space:normal;
     }
 
-.tile.media { position:relative; overflow:hidden; }
+.tile.media { position:relative; }
     .tile.media .tile-media-title,
     .tile.media .tile-media-subtitle,
     .tile.media .tile-media-state {
@@ -1746,8 +2116,9 @@
       border:0;
       /* 11 px outer radius - 3 px effective inset = 8 px. */
       border-radius:var(--climate-control-radius, 8px);
-      /* A lighter step of the tile like the device (kSlotSurfaceOpa 28/255). */
-      background:rgba(255,255,255,0.11);
+      /* The control fill like the device (tile_icon_source::refresh_controls),
+         set per tile by applyIconDiscTint. */
+      background:var(--control-fill, rgba(255,255,255,0.094));
     }
     .tile.climate .climate-slot-control span {
       font-size:var(--fs24, 12px);
@@ -2102,11 +2473,14 @@
       border:3px solid transparent;
       box-shadow:none;
     }
-    .tile.climate.climate-mini-selection-active.climate-parent-hover {
-      border:3px dashed rgba(38,166,154,.78);
-      box-shadow:
-        0 0 0 2px rgba(38,166,154,.18) inset,
-        0 0 10px rgba(38,166,154,.32);
+    /* The rings are drawn by ::after: a selected or hovered mini control
+       hides the parent's ring, the parent area hovers like any tile. */
+    .tile.climate.climate-mini-selection-active:is(.active, [data-selected="1"])::after,
+    .tile.climate.climate-child-hover:hover:not(.active):not([data-selected="1"])::after {
+      border-color:transparent;
+    }
+    .tile.climate.climate-mini-selection-active.climate-parent-hover::after {
+      border:3px dashed rgba(38,166,154,0.6);
     }
     .tile.climate.climate-mini-selection-active >
       .tile-resize-handle {
@@ -2195,59 +2569,89 @@
 .tile.animation { background:#000; }
     .tile.animation .tile-title { text-align:left; align-self:start; width:100%; }
 
-.tile.clock { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; }
+/* Clock tile (types/clock/renderer.cpp): Inter Regular lines as tall as their
+   LVGL fonts' line heights, centered with the device gap; a title or icon
+   moves the clock down. */
+.tile.clock { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:var(--clock-gap, 3px); }
+    .tile.clock.clock-has-header { padding-top:calc(var(--tile-pad-v, 12px) + 2 * var(--clock-header-shift, 9px)); }
+    /* Header: title top left, icon top right (web_admin_styles.cpp
+       emit_right_header), inside the 3 px editor border. */
     .tile.clock .tile-title {
       position:absolute;
-      top:8px;
-      left:8px;
+      top:calc(var(--clock-header-title-top, 8px) - 3px);
+      left:calc(var(--clock-header-pad-h, 10px) - 3px);
       text-align:left;
       width:auto;
       margin:0;
     }
     .tile.clock .tile-icon {
       position:absolute;
-      top:8px;
-      right:8px;
+      top:calc(var(--clock-header-icon-top, 8px) - 3px);
+      right:calc(var(--clock-header-icon-right, 8px) - 3px);
       margin:0;
     }
     .tile-clock-time {
+      position:relative;
+      top:var(--ldy40, 0px);
       color:#fff;
       font-size:var(--fs40, 20px);
-      font-weight:600;
-      line-height:1;
+      font-weight:400;
+      line-height:var(--lh40, 1.27);
     }
     .tile-clock-date {
+      position:relative;
+      top:var(--ldy20, 0px);
       color:#fff;
       font-size:var(--fs20, 10px);
-      font-weight:500;
-      line-height:1.1;
+      font-weight:400;
+      line-height:var(--lh20, 1.35);
     }
     /* Half-height clock: one row, no title or icon (clock/renderer.cpp). */
-    .tile.clock.clock-compact { flex-direction:row; gap:6px; padding:0 8px; }
+    .tile.clock.clock-compact { flex-direction:row; gap:var(--clock-gap, 3px); padding:0 var(--clock-compact-pad, 4px); }
     .tile.clock.clock-compact .tile-title,
     .tile.clock.clock-compact .tile-icon { display:none; }
     .tile.clock.clock-compact .tile-clock-time,
-    .tile.clock.clock-compact .tile-clock-date { white-space:nowrap; line-height:1; }
+    .tile.clock.clock-compact .tile-clock-date { white-space:nowrap; }
 
-.tile.text { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr; }
-    .tile.text .tile-title { text-align:left; align-self:start; width:100%; }
+/* Text tile (types/text/renderer.cpp): its own card padding, the title top
+   left and the icon top right like the Clock, the text wrapped over the
+   content width and centered in the card, 12 px lower below a header, its
+   lines as tall as the LVGL font's line height. */
+.tile.text { padding:var(--text-header-pad-v, 8px) var(--text-header-pad-h, 9px); }
+    .tile.text .tile-title {
+      position:absolute;
+      top:calc(var(--text-header-title-top, 8px) - 3px);
+      left:calc(var(--text-header-pad-h, 9px) - 3px);
+      right:calc(var(--text-header-pad-h, 9px) - 3px);
+      width:auto;
+      text-align:left;
+    }
     .tile.text .tile-text {
+      position:absolute;
+      left:calc(var(--text-header-pad-h, 9px) - 3px);
+      right:calc(var(--text-header-pad-h, 9px) - 3px);
+      top:50%;
+      transform:translateY(-50%);
       color:#fff;
       font-size:var(--fs28, 14px);
+      line-height:var(--lh28, 1.32);
       text-align:center;
       white-space:pre-wrap;
-      line-height:1.2;
-      align-self:center;
-      justify-self:center;
-      padding:0 8px;
-      overflow:hidden;
+      overflow-wrap:anywhere;
     }
-    .tile.text .tile-text.sensor-value-size-default { font-size:var(--fs28, 14px); }
-    .tile.text .tile-text.sensor-value-size-40 { font-size:var(--fs40, 20px); }
-    .tile.text .tile-text.sensor-value-size-32 { font-size:var(--fs32, 16px); }
-    .tile.text .tile-text.sensor-value-size-24 { font-size:var(--fs24, 12px); }
-    .tile.text .tile-text.sensor-value-size-20 { font-size:var(--fs20, 10px); }
-    .tile.text .tile-icon { position:absolute; top:10px; right:8px; }
+    .tile.text:has(> .tile-title, > .tile-icon) .tile-text {
+      transform:translateY(calc(-50% + var(--text-header-shift, 6px)));
+    }
+    .tile.text .tile-text.sensor-value-size-default { font-size:var(--fs28, 14px); line-height:var(--lh28, 1.32); }
+    .tile.text .tile-text.sensor-value-size-40 { font-size:var(--fs40, 20px); line-height:var(--lh40, 1.27); }
+    .tile.text .tile-text.sensor-value-size-32 { font-size:var(--fs32, 16px); line-height:var(--lh32, 1.31); }
+    .tile.text .tile-text.sensor-value-size-24 { font-size:var(--fs24, 12px); line-height:var(--lh24, 1.29); }
+    .tile.text .tile-text.sensor-value-size-20 { font-size:var(--fs20, 10px); line-height:var(--lh20, 1.35); }
+    .tile.text .tile-icon {
+      position:absolute;
+      top:calc(var(--text-header-icon-top, 8px) - 3px);
+      right:calc(var(--text-header-icon-right, 8px) - 3px);
+    }
     .tile-settings textarea {
       font-size:14px;
     }
@@ -2292,28 +2696,28 @@
       text-overflow:ellipsis;
     }
     textarea.tile-title-input { resize:none; line-height:1.4; }
-    .tile.clock .tile-title { width:calc(100% - 16px); }
+    .tile.clock .tile-title { width:calc(100% + 6px - 2 * var(--clock-header-pad-h, 10px)); }
     .tile.clock:has(.tile-icon) .tile-title,
-    .tile.text:has(.tile-icon) .tile-title,
-    .tile.switch.switch-toggle:has(.tile-icon) .tile-title { max-width:70%; }
+    .tile.text:has(.tile-icon) .tile-title { max-width:calc((100% + 6px - 2 * var(--text-header-pad-h, 9px)) * .7); }
+    .tile.clock:has(.tile-icon) .tile-title { max-width:calc((100% + 6px - 2 * var(--clock-header-pad-h, 10px)) * .7); }
 
     .tile-radius-control { display:flex; align-items:center; gap:8px; margin:0; }
     .tile-radius-control input[type="range"] { width:120px; height:18px; margin:0; accent-color:var(--accent); }
     .tile-radius-control input[type="range"]:focus { outline:none; box-shadow:none; }
     .tile-radius-control input[type="range"]:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
     /* Slider values in the label size of Tile Settings. */
-    .global-tile-radius-value, .global-icon-glow-value {
+    .global-tile-radius-value, .global-icon-glow-value, .global-tile-opacity-value {
       font-size:12px; font-weight:600; color:var(--text-2); text-align:right;
       white-space:nowrap; font-variant-numeric:tabular-nums;
     }
     .global-tile-radius-value { min-width:2ch; }
-    .global-icon-glow-value { min-width:4.5ch; }
+    .global-icon-glow-value, .global-tile-opacity-value { min-width:4.5ch; }
 
 /* Fractional placement preserves the existing cell pitch and gutter. */
 .tile-grid > .fractional-tile {
   position:absolute;
-  left:calc(var(--preview-pad) + var(--tile-col) * (var(--preview-cell-w) + var(--preview-gap)));
-  top:calc(var(--preview-pad) + var(--tile-row) * (var(--preview-cell-h) + var(--preview-gap)));
+  left:calc(var(--preview-frame, 0px) + var(--preview-pad-left, var(--preview-pad)) + var(--tile-col) * (var(--preview-cell-w) + var(--preview-gap)));
+  top:calc(var(--preview-frame, 0px) + var(--preview-pad-top, var(--preview-pad)) + var(--tile-row) * (var(--preview-cell-h) + var(--preview-gap)));
   width:calc(var(--tile-w) * (var(--preview-cell-w) + var(--preview-gap)) - var(--preview-gap));
   height:calc(var(--tile-h) * (var(--preview-cell-h) + var(--preview-gap)) - var(--preview-gap));
   box-sizing:border-box;
@@ -2321,7 +2725,9 @@
 .tile.sensor-compact {
   display:block;
   padding:0;
-  --compact-h:calc((var(--preview-cell-h) - var(--preview-gap)) / 2);
+  /* The disc row as the panel lays it out (tile_icon_disc::row_height, whole
+     device pixels). */
+  --compact-h:var(--compact-row, calc((var(--preview-cell-h) - var(--preview-gap)) / 2));
   --compact-icon:calc(var(--compact-h) - 2 * var(--compact-inset));
 }
 .tile.sensor-compact > .tile-icon {
@@ -2329,12 +2735,13 @@
   width:var(--compact-icon); height:var(--compact-icon); margin:0;
   display:flex; align-items:center; justify-content:center;
   border-radius:max(0px, calc(var(--tile-radius) - var(--compact-inset)));
-  background:rgba(255,255,255,var(--icon-disc-opa, 0.149));
+  /* The circle color (tone_color::fill), set per tile by applyIconDiscTint. */
+  background:var(--icon-disc-bg, rgba(255,255,255,0.149));
   font-size:var(--icon-size, 48px); line-height:1;
 }
 /* Glow: a colored icon tints its disc with its own hue (tile_icon_disc). */
 .tile.sensor-compact > .tile-icon.tile-icon-tinted {
-  background:color-mix(in srgb, currentColor var(--icon-disc-glow, 25%), transparent);
+  background:var(--icon-disc-bg, color-mix(in srgb, currentColor 25%, transparent));
 }
 /* Taller tiles: a disc of tile_icon_disc::round_diameter() centered on the
    unchanged icon, behind it, with the half-height radius rule. */
@@ -2343,20 +2750,29 @@
   width:var(--icon-disc-round, 30px); height:var(--icon-disc-round, 30px);
   transform:translate(-50%, -50%); pointer-events:none;
   border-radius:max(0px, calc(var(--tile-radius) - var(--compact-inset)));
-  background:rgba(255,255,255,var(--icon-disc-opa, 0.149));
+  background:var(--icon-disc-bg, rgba(255,255,255,0.149));
 }
 /* Corner headers (the shared Sensor header, icon top left): the disc grows
    into the corner like the half-height disc (tile_icon_disc::corner_diameter).
    Centered icons above a title (Folder, Scene, Camera, Switch) use the same
    size (tile_icon_disc::header_diameter). */
 .tile:is(.sensor, .binary_sensor, .number, .select, .datetime,
-         .cover, .energy, .weather, .media, .climate):not(.empty):not(.sensor-compact) > .tile-icon::after,
-.tile:is(.scene, .navigate, .camera, .switch:not(.switch-toggle)):not(.empty):not(.sensor-compact) > .tile-icon::after {
+         .cover, .device, .energy, .weather, .media, .climate, .switch-bar):not(.empty):not(.sensor-compact) > .tile-icon::after,
+.tile:is(.scene, .navigate, .camera, .switch:not(.switch-bar)):not(.empty):not(.sensor-compact) > .tile-icon::after {
   width:var(--icon-disc-corner, var(--icon-disc-round, 30px));
   height:var(--icon-disc-corner, var(--icon-disc-round, 30px));
 }
+/* The corner disc sits at the half-height inset from the card corner, as
+   tile_icon_disc::add_round places it, not centered on the icon box, whose
+   position and size are rounded to pixels. */
+.tile:is(.sensor, .binary_sensor, .number, .select, .datetime,
+         .cover, .device, .energy, .weather, .media, .climate, .switch-bar):not(.empty):not(.sensor-compact) > .tile-icon::after {
+  left:calc(var(--compact-inset, 2px) - var(--tile-header-icon-left, 6px));
+  top:calc(var(--compact-inset, 2px) - var(--tile-header-icon-top, 8px));
+  transform:none;
+}
 .tile:not(.sensor-compact) > .tile-icon.tile-icon-tinted::after {
-  background:color-mix(in srgb, currentColor var(--icon-disc-glow, 25%), transparent);
+  background:var(--icon-disc-bg, color-mix(in srgb, currentColor 25%, transparent));
 }
 .icon-discs-off .tile:not([data-icon-disc="1"]) > .tile-icon::after,
 .tile[data-icon-disc="2"] > .tile-icon::after { display:none; }
@@ -2364,6 +2780,41 @@
    style) and the per-tile override: data-icon-disc 0 global, 1 on, 2 off. */
 .icon-discs-off .tile.sensor-compact:not([data-icon-disc="1"]) > .tile-icon,
 .tile.sensor-compact[data-icon-disc="2"] > .tile-icon { background:transparent; }
+/* A PIN-protected Folder or Settings: the lock in the icon (icon_lock_mark.h):
+   46 % of the icon, its right and bottom edge at 0.9 of the icon's box like
+   mdi:folder-lock, on a rim of 6 % of the icon in the color behind it
+   (--icon-lock-rim, applyIconDiscTint). Offsets in the lock's own em (icon
+   em / 0.46). */
+.tile-icon > .tile-icon-lock {
+  position:absolute; left:50%; top:50%; width:1em; height:1em;
+  margin-left:0.037em; margin-top:-0.088em;
+  font-size:0.46em; line-height:1; pointer-events:none; color:inherit;
+  text-shadow:
+    0.130em 0.000em 0 var(--icon-lock-rim, #2e2e2e),
+    0.121em 0.050em 0 var(--icon-lock-rim, #2e2e2e),
+    0.092em 0.092em 0 var(--icon-lock-rim, #2e2e2e),
+    0.050em 0.121em 0 var(--icon-lock-rim, #2e2e2e),
+    0.000em 0.130em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.050em 0.121em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.092em 0.092em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.121em 0.050em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.130em 0.000em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.121em -0.050em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.092em -0.092em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.050em -0.121em 0 var(--icon-lock-rim, #2e2e2e),
+    0.000em -0.130em 0 var(--icon-lock-rim, #2e2e2e),
+    0.050em -0.121em 0 var(--icon-lock-rim, #2e2e2e),
+    0.092em -0.092em 0 var(--icon-lock-rim, #2e2e2e),
+    0.121em -0.050em 0 var(--icon-lock-rim, #2e2e2e),
+    0.065em 0.000em 0 var(--icon-lock-rim, #2e2e2e),
+    0.046em 0.046em 0 var(--icon-lock-rim, #2e2e2e),
+    0.000em 0.065em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.046em 0.046em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.065em 0.000em 0 var(--icon-lock-rim, #2e2e2e),
+    -0.046em -0.046em 0 var(--icon-lock-rim, #2e2e2e),
+    0.000em -0.065em 0 var(--icon-lock-rim, #2e2e2e),
+    0.046em -0.046em 0 var(--icon-lock-rim, #2e2e2e);
+}
 .tile-icon-disc-fields.hidden { display:none; }
 .tile-icon-disc-fields .inline-checkbox.hidden { display:none; }
 .tile.sensor-compact > .tile-title,
@@ -2381,12 +2832,14 @@
   right:calc(2 * var(--compact-inset));
   text-align:center;
 }
+/* Each line box as compact_sensor_layout places it, the glyphs moved onto
+   the LVGL baseline (--compact-*-dy). */
 .tile.sensor-compact > .tile-title {
-  top:max(0px, calc((var(--compact-h) - var(--compact-title-line) - var(--compact-value-line) - var(--compact-text-gap)) / 2));
+  top:calc(var(--compact-title-top, max(0px, (var(--compact-h) - var(--compact-title-line) - var(--compact-value-line) - var(--compact-text-gap)) / 2)) + var(--compact-title-dy, 0px));
   font-size:var(--compact-title-font); line-height:var(--compact-title-line);
 }
 .tile.sensor-compact > .tile-value {
-  top:calc(max(0px, (var(--compact-h) - var(--compact-title-line) - var(--compact-value-line) - var(--compact-text-gap)) / 2) + var(--compact-title-line) + var(--compact-text-gap)); bottom:auto;
+  top:calc(var(--compact-value-top, max(0px, (var(--compact-h) - var(--compact-title-line) - var(--compact-value-line) - var(--compact-text-gap)) / 2) + var(--compact-title-line) + var(--compact-text-gap)) + var(--compact-value-dy, 0px)); bottom:auto;
   font-size:var(--compact-value-font); line-height:var(--compact-value-line);
 }
 .tile.sensor-compact .tile-unit { font-size:inherit; }
@@ -2394,13 +2847,17 @@
    and value both use the value line to center their block. */
 .tile.sensor-compact.compact-value-24 {
   --compact-value-font:var(--compact-value-font-24); --compact-value-line:var(--compact-value-line-step-24);
+  --compact-value-dy:var(--compact-value-dy-24);
+  --compact-title-top:var(--compact-title-top-24); --compact-value-top:var(--compact-value-top-24);
 }
 .tile.sensor-compact.compact-value-28 {
   --compact-value-font:var(--compact-value-font-28); --compact-value-line:var(--compact-value-line-step-28);
+  --compact-value-dy:var(--compact-value-dy-28);
+  --compact-title-top:var(--compact-title-top-28); --compact-value-top:var(--compact-value-top-28);
 }
 /* Half-height Back: the title alone is centered on the disc row. */
 .tile.sensor-compact.compact-title-only > .tile-title {
-  top:max(0px, calc((var(--compact-h) - var(--compact-title-line)) / 2));
+  top:calc(var(--compact-title-only-top, max(0px, (var(--compact-h) - var(--compact-title-line)) / 2)) + var(--compact-title-dy, 0px));
 }
 .tile.sensor-half .tile-gauge, .tile.sensor-half .tile-graph { display:none; }
 
@@ -2411,9 +2868,17 @@
 /* Draw editor borders inward without shifting the concentric content. */
 .tile.sensor-compact, .tile.sensor-compact:hover,
 .tile.sensor-compact.active, .tile.sensor-compact[data-selected="1"] { border-width:0; background-clip:border-box; }
-.tile.sensor-compact:hover:not(.active) { box-shadow:inset 0 0 0 2px rgba(38,166,154,.6); }
-.tile.sensor-compact.active, .tile.sensor-compact[data-selected="1"] { box-shadow:inset 0 0 0 3px #26a69a, 0 0 12px rgba(38,166,154,.55); }
+.tile.sensor-compact:hover:not(.active) { box-shadow:none; }
+.tile.sensor-compact.active, .tile.sensor-compact[data-selected="1"] { box-shadow:0 0 12px rgba(38,166,154,.55); }
+/* Pills have no border: their rings lie on the card edge, over the disc,
+   and hover like every other tile. */
+.tile.sensor-compact:not(.empty)::after { inset:0; }
 .tile.sensor-compact:focus-visible { box-shadow:inset 0 0 0 3px #64d8cb, 0 0 12px rgba(38,166,154,.55); }
+/* A pill is lower than the side handle and its text runs to the bottom
+   handle: the handles fit its height and show only under the pointer, so a
+   selected pill shows no second rounded edge inside its ring. */
+.tile.sensor-compact > .tile-resize-handle-e { height:min(34px, 55%); }
+.tile.sensor-compact:is(.active, [data-selected="1"]):not(:hover):not(.resizing) > .tile-resize-handle { opacity:0; }
 
 /* Per-tile icon colors in the tile editor: the fixed icon color and the
    Binary On/Off colors use the tile color row; the color bar has a mode
@@ -2470,6 +2935,20 @@
   cursor:pointer;
 }
 .icon-color-segmented button.active { background:var(--accent-soft); color:#5fd4c7; }
+/* Switch fields like Tile color: the label on its own row, then one line of
+   choices across the panel (types/switch/web_html.cpp); every button keeps
+   its text on one line and takes the space its text needs. */
+.type-fields.show > .switch-choice-label { grid-column:1 / -1; }
+.type-fields.show > .switch-choices {
+  display:grid;
+  grid-auto-columns:auto;
+  width:100%;
+  margin:0;
+  box-sizing:border-box;
+}
+.switch-choices button { padding:6px 8px; white-space:nowrap; }
+/* Value sizes the tile size does not offer (syncSwitchChoices). */
+.switch-choices button.hidden { display:none; }
 .icon-color-presets { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
 .icon-color-chip {
   padding:4px 10px;
@@ -2554,3 +3033,13 @@
    .settings-note, the add button like the Copy/Paste/Delete actions. */
 .tile-icon-rule-add { margin-top:2px; padding:8px 10px; font-size:12px; }
 .tile-icon-color-fields .hint { font-size:12px; margin:4px 0 12px; }
+/* Optional Web Admin password: the login page reuses the admin card and brand
+   header in a narrow column; the settings section uses .settings-actions. */
+.login-wrapper { max-width:440px; height:auto; min-height:100vh; display:flex; align-items:center; }
+.login-wrapper .card { height:auto; width:100%; }
+.login-form { margin-bottom:0; }
+.login-form .section-title { margin:0; }
+.login-message { min-height:18px; font-size:13px; color:var(--text-3); }
+.login-message.is-error { color:var(--danger); }
+.web-auth-status { margin:0 0 14px; }
+.web-auth-actions { margin-top:16px; }
