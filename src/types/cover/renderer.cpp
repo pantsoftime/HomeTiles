@@ -270,11 +270,17 @@ String cover_value_text(const CoverState& state) {
 }
 
 // The header's state line, like Home Assistant's tile card: "Open · 58 %".
-String cover_state_line(const CoverState& state, bool has_position, uint8_t position) {
+// FORK: at an end stop (0 or 100) the reported state alone ("Closed", "Open"),
+// like Home Assistant's tile card for a closed cover. A garage door is almost
+// always at an end stop, and on a one-cell tile "Closed · 0 %" overflowed the
+// ~81 px beside the disc. While the finger drags the bar (`dragging`) the
+// number always shows, since it is what the finger is choosing.
+String cover_state_line(const CoverState& state, bool has_position, uint8_t position,
+                        bool dragging = false) {
   if (!state.valid) return "--";
   const String display_state = state.available ? String(state.state) : String("unavailable");
   String text = i18n::cover_state_label(configManager.getConfig().language, display_state);
-  if (state.available && has_position) {
+  if (state.available && has_position && (dragging || (position > 0 && position < 100))) {
     text += " \xC2\xB7 ";
     text += String(position);
     text += " %";
@@ -412,7 +418,7 @@ void show_local_position(CoverEventData* data, CoverTileWidgets& widget, uint8_t
   }
   if (widget.state_label) {
     const CoverState& state = tile_renderer_get_cover_states(data->grid_type)[data->index];
-    set_state_line(widget, cover_state_line(state, true, value));
+    set_state_line(widget, cover_state_line(state, true, value, true));
   }
 }
 
@@ -637,6 +643,12 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
     widget.state_width = text.state_width;
     widget.state_center = text.state_center;
     widget.compact = compact;
+    // FORK: one state line beside the disc. The label wrapped otherwise, and a
+    // line too long even at the smallest font step ran down into the bar;
+    // LONG_DOT now ends it with "..." instead.
+    if (!tall && !compact && widget.state_label && text.state_font) {
+      lv_obj_set_height(widget.state_label, lv_font_get_line_height(text.state_font));
+    }
     if (compact) {
       compact_sensor_layout::apply(card, widget.icon_label, widget.title_label, widget.state_label, tile);
     } else {

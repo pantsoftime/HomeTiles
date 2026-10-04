@@ -178,4 +178,19 @@ assert.match(navRender, /if \(has_value\) \{\s*lv_obj_align\(icon_lbl, LV_ALIGN_
   'the value layout must place its icon from the disc geometry');
 assert.doesNotMatch(navRender, /scale_i16\(-48\)/, 'the fixed lift that clipped the disc is gone');
 
+// --- 6. Cover header: "Closed", not "Closed · 0 %", and one line ------------
+// v0.8.0's one-cell Cover header leaves ~81 px beside the disc; the position at
+// an end stop overflowed it and the label wrapped into the position bar.
+const cover = read('src/types/cover/renderer.cpp');
+const coverLine = between(cover, 'String cover_state_line(', '\n}\n');
+assert.match(coverLine, /has_position && \(dragging \|\| \(position > 0 && position < 100\)\)/,
+  'an end stop shows the state alone; the number shows in between and while dragging');
+assert.match(cover, /set_state_line\(widget, cover_state_line\(state, true, value, true\)\);/,
+  'the drag path keeps the number the finger is choosing');
+assert.match(cover, /if \(!tall && !compact && widget\.state_label && text\.state_font\) \{\s*lv_obj_set_height\(widget\.state_label, lv_font_get_line_height\(text\.state_font\)\);/,
+  'the one-cell state line is one line high, so LONG_DOT ends it instead of wrapping into the bar');
+const coverPreview = between(read('src/types/cover/admin.js'), 'function coverPreviewStateLine(', '\n  }\n');
+assert.match(coverPreview, /state\.position > 0 && state\.position < 100/,
+  'the Web preview must drop the end-stop position like the device');
+
 console.log('Compact-tile fork integration regressions passed.');

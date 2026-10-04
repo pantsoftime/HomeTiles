@@ -110,11 +110,13 @@
     return (features & 4) !== 0;
   }
 
-  // cover_state_line(): "Open · 58 %".
+  // cover_state_line(): "Open · 58 %"; at an end stop (0 or 100) the state
+  // alone, "Closed" (fork, like Home Assistant's tile card).
   function coverPreviewStateLine(state) {
     if (!state || !state.reported) return '--';
     const text = coverPreviewStateText(state);
-    return state.available !== false && state.position !== null ? text + ' \u00B7 ' + state.position + ' %' : text;
+    const between = state.position !== null && state.position > 0 && state.position < 100;
+    return state.available !== false && between ? text + ' \u00B7 ' + state.position + ' %' : text;
   }
 
   // Markup after the icon and title: half height and full tiles of a
