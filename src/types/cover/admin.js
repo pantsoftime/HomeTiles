@@ -106,6 +106,9 @@
   // position when one is reported. Bit 4 is SET_POSITION.
   function coverPreviewPositionable(state) {
     if (!state || !state.reported) return true;
+    // Fork: garage doors and gates keep the classic layout without the bar,
+    // like cover_end_stop_only() on the device.
+    if (state.deviceClass === 'garage' || state.deviceClass === 'gate') return false;
     const features = state.supportedFeatures ?? (11 | (state.position !== null ? 4 : 0));
     return (features & 4) !== 0;
   }

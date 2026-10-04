@@ -3,6 +3,7 @@
 
 #include <ArduinoJson.h>
 #include <cstring>
+#include <strings.h>
 
 #include "src/core/config/config_manager.h"
 #include "src/core/i18n/i18n.h"
@@ -269,6 +270,17 @@ String cover_value_text(const CoverState& state) {
   return text;
 }
 
+// FORK: garage doors and gates only ever sit at an end stop, so a position
+// bar is a slider with two useful ends. They keep the classic Cover layout --
+// title top right (two lines allowed), the state over the position, centred --
+// even though they report SET_POSITION. Blinds, shades and the rest keep the
+// bar. Before the first state arrives the class is unknown, so the bar shows
+// until the next rebuild, and show_view() hides it as soon as the class is in.
+bool cover_end_stop_only(const CoverState& state) {
+  return state.valid && (strcasecmp(state.device_class, "garage") == 0 ||
+                         strcasecmp(state.device_class, "gate") == 0);
+}
+
 // The header's state line, like Home Assistant's tile card: "Open · 58 %".
 // FORK: at an end stop (0 or 100) the reported state alone ("Closed", "Open"),
 // like Home Assistant's tile card for a closed cover. A garage door is almost
@@ -526,8 +538,9 @@ void show_view(GridType grid_type, uint8_t index) {
   if (!widget.bar) return;
   // A Cover that reports no position control keeps the header without a bar.
   const bool positionable = !state.valid || (state.supported_features & COVER_FEATURE_SET_POSITION);
-  if (lv_obj_has_flag(widget.bar, LV_OBJ_FLAG_HIDDEN) == positionable) {
-    if (positionable) lv_obj_remove_flag(widget.bar, LV_OBJ_FLAG_HIDDEN);
+  const bool show_bar = positionable && !cover_end_stop_only(state);  // FORK
+  if (lv_obj_has_flag(widget.bar, LV_OBJ_FLAG_HIDDEN) == show_bar) {
+    if (show_bar) lv_obj_remove_flag(widget.bar, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(widget.bar, LV_OBJ_FLAG_HIDDEN);
   }
   const uint32_t fill_color = cover_icon_color(state);
@@ -609,7 +622,8 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
                              : String();
   const CoverState reported = initial.length() ? parse_cover_payload(initial.c_str()) : CoverState{};
   const bool positionable = !reported.valid || (reported.supported_features & COVER_FEATURE_SET_POSITION);
-  const bool header = compact || positionable;
+  // FORK: garage doors and gates keep the classic layout (cover_end_stop_only).
+  const bool header = compact || (positionable && !cover_end_stop_only(reported));
 
   const bool icon_visible = !isMdiIconDisabled(tile.icon_name);
   String configured_icon =

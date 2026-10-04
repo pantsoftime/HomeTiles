@@ -193,4 +193,16 @@ const coverPreview = between(read('src/types/cover/admin.js'), 'function coverPr
 assert.match(coverPreview, /state\.position > 0 && state\.position < 100/,
   'the Web preview must drop the end-stop position like the device');
 
+// --- 7. Garage doors and gates: classic Cover layout, no position bar --------
+const endStop = between(cover, 'bool cover_end_stop_only(', '\n}\n');
+assert.match(endStop, /strcasecmp\(state\.device_class, "garage"\) == 0/);
+assert.match(endStop, /strcasecmp\(state\.device_class, "gate"\) == 0/);
+assert.match(cover, /const bool header = compact \|\| \(positionable && !cover_end_stop_only\(reported\)\);/,
+  'a full garage tile must render the classic layout, not the header with the bar');
+assert.match(cover, /const bool show_bar = positionable && !cover_end_stop_only\(state\);/,
+  'a tile rendered before its class was known must hide the bar once it is');
+const previewPositionable = between(read('src/types/cover/admin.js'), 'function coverPreviewPositionable(', '\n  }\n');
+assert.match(previewPositionable, /state\.deviceClass === 'garage' \|\| state\.deviceClass === 'gate'\) return false;/,
+  'the Web preview must drop the bar for the same classes');
+
 console.log('Compact-tile fork integration regressions passed.');
