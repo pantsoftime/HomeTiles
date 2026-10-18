@@ -5,8 +5,7 @@
 
 void append_navigate_fields_html(String& html,
                                  const String& tab_id,
-                                 const String& navigateOptionsHtml,
-                                 const std::vector<String>& sensorOptions) {
+                                 const String& navigateOptionsHtml) {
   (void)navigateOptionsHtml;
   const auto& tr = i18n::strings(configManager.getConfig().language);
 
@@ -15,28 +14,13 @@ void append_navigate_fields_html(String& html,
             <div id=")html";
   html += tab_id;
   html += R"html(_navigate_fields" class="type-fields folder-pin-fields is-hidden">
-              <label>)html";
-  html += tr.sensor_entity;
-  html += R"html( (optional)</label>
-              <select id=")html";
-  html += tab_id;
-  html += R"html(_navigate_sensor_entity">
-                <option value="">)html";
-  html += tr.no_selection;
-  html += R"html(</option>
-)html";
-
-  for (const auto& opt : sensorOptions) {
-    html += "<option value=\"";
-    appendHtmlEscaped(html, opt);
-    html += "\">";
-    String label = humanizeIdentifier(opt, true) + " - " + opt;
-    appendHtmlEscaped(html, label);
-    html += "</option>";
-  }
-
+              )html";
+  // FORK: the folder's optional live value. Upstream v0.9 replaced the entity
+  // lists with the shared entity picker (a hidden input with the field's id,
+  // so load/save/drafts keep reading it); an empty value shows no value line.
+  appendEntityPickerField(html, tab_id, "navigate_sensor_entity", tr.sensor_entity, "sensors",
+                          tr.no_selection);
   html += R"html(
-              </select>
               <label>)html";
   html += tr.sensor_decimals;
   html += R"html(</label>

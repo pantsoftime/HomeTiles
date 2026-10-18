@@ -440,8 +440,7 @@ void append_scene_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
 }
 
 void append_navigate_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
-  append_navigate_fields_html(html, safeString(ctx.tab_id), safeString(ctx.navigate_options_html),
-                              safeStrings(ctx.sensor_options));
+  append_navigate_fields_html(html, safeString(ctx.tab_id), safeString(ctx.navigate_options_html));
 }
 
 void append_back_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
