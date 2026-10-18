@@ -13,9 +13,6 @@ const read = file => readRepoFile(file).replace(/\r\n?/g, '\n');
 const source = read('src/tiles/runtime/tile_icon_source.cpp');
 const fromIconCard = cppFunctionDefinitions(source).find(f => f.name === 'from_icon_card');
 assert.ok(fromIconCard, 'tile_icon_source registers from_icon_card');
-const brighten = cppFunctionDefinitions(read('src/tiles/runtime/tile_renderer_shared.h'))
-  .find(f => f.name === 'brighten_rgb_color');
-assert.ok(brighten);
 
 const harness = String.raw`
 #include "src/ui/shared/tone_color.h"
@@ -26,7 +23,6 @@ const harness = String.raw`
 #include <initializer_list>
 
 static uint32_t tileDefaultBgColor() { return 0x1A1A1A; }
-${brighten.source}
 ${fromIconCard.source}
 
 int main() {

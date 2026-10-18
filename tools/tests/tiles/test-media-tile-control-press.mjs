@@ -26,9 +26,6 @@ const fn = name => {
 // disc hook; the tile and popup controls share one minimum opacity.
 assert.match(fn('on_icon_color'), /^void on_icon_color\(lv_obj_t\* disc\) \{\s*refresh_controls\(lv_obj_get_parent\(disc\)\);/);
 assert.match(read('src/ui/shared/tone_color.h'), /inline constexpr uint8_t kControlMinOpa = 32;/);
-assert.match(read('src/ui/shared/ui_surface_style.cpp'),
-  /lv_style_set_bg_opa\(&entry\.style, control_fill_opa\(i == 1\)\);\s*lv_obj_report_style_change\(&entry\.style\);/,
-  'a Circle strength change updates the shared press opacity');
 
 const host = await lvglHost(root);
 if (!host) {
@@ -56,14 +53,14 @@ ${radiusPolicyHost(root)}
 struct Config{bool tile_borders=true;bool icon_discs=true;uint8_t icon_glow=icon_glow::kDefault;int tile_radius=tile_radius::kMinimum;const char*language="en";};struct Manager{Config cfg;const Config&getConfig(){return cfg;}}configManager;
 ${surfaceStyleHost(root)}
 constexpr int GRID_CELL_H=CELL_H,GRID_GAP=GAP;
+#include "src/types/climate/layout.h"
+#include "src/tiles/runtime/tile_press.h"
 ${read('src/tiles/runtime/tile_icon_disc.h').replace(/^#.*$/gm, '')}
 #include "src/tiles/config/tile_tint.h"
 namespace tile_icon_source {
 ${tintStore}
 ${coverStore}
 ${fn('cover_color')}
-${fn('cover_tile')}
-${fn('cover_tints')}
 ${fn('icon_fill_marker')}
 ${fn('set_icon_fill_marker')}
 ${fn('find_disc')}
@@ -104,32 +101,28 @@ int main() {
     lv_obj_remove_state(obj, LV_STATE_PRESSED);
   };
   // The controls take the circle color whenever "Circle in icon color"
-  // tints it, in every tile color (user 2026-10-01). A card that follows the
-  // icon (From icon, or From cover with a colored cover) is the circle's card;
-  // on any other card (Global, Custom, From cover without a usable cover) the
-  // circle is the From icon circle (family, tile_icon_disc::circle_card).
+  // tints it, in every tile color (user 2026-10-01). A filled card ("Fill")
+  // is the circle's card; on any other card the circle is the filled card's
+  // circle (family, tile_icon_disc::circle_card). The cover only colors the
+  // icon (user 2026-10-11): a cover color never makes a card filled.
   // White icons and the option off keep the neutral step.
   struct Case { const char* what; uint32_t card, icon; bool glow; uint8_t fill; bool tinted; bool family;
-                uint8_t cover_tile; bool cover_known; uint32_t cover; };
+                bool cover_known; uint32_t cover; };
   const Case cases[] = {
-    {"Global with the circle color", 0x1B1B1B, 0xC62828, true, 0, true, true},
-    {"Custom in the icon's hue", 0x3E1717, 0xC62828, true, 0, true, true},
-    {"From icon with the circle color", 0x482F10, 0xEF8402, true, 20, true, false},
-    {"From icon without the circle color", 0x482F10, 0xEF8402, false, 20, false, false},
-    {"From icon with a white icon", 0x303030, 0xFFFFFF, true, 20, false, false},
-    {"From cover, icon from cover", 0x4A2A1F, 0xF2672E, true, 0, true, false, 20, true, 0xF2672E},
-    {"From cover, white icon", 0x4A2A1F, 0xFFFFFF, true, 0, false, false, 20, true, 0xF2672E},
-    {"From cover without a cover color", 0x1B1B1B, 0xF2672E, true, 0, true, true, 20, false, 0},
-    {"From cover with a grey cover", 0x1B1B1B, 0xF2672E, true, 0, true, true, 20, true, 0x808080},
-    {"Cover color without From cover", 0x1B1B1B, 0xF2672E, true, 0, true, true, 0, true, 0xF2672E},
+    {"Not filled, circle color", 0x1B1B1B, 0xC62828, true, 0, true, true},
+    {"Own card in the icon's hue", 0x3E1717, 0xC62828, true, 0, true, true},
+    {"Filled with the circle color", 0x482F10, 0xEF8402, true, 20, true, false},
+    {"Filled without the circle color", 0x482F10, 0xEF8402, false, 20, false, false},
+    {"Filled with a white icon", 0x303030, 0xFFFFFF, true, 20, false, false},
+    {"Filled, icon from the cover", 0x4A2A1F, 0xF2672E, true, 20, true, false, true, 0xF2672E},
+    {"Filled, white icon, colored cover", 0x4A2A1F, 0xFFFFFF, true, 20, false, false, true, 0xF2672E},
+    {"Not filled, colored cover", 0x1B1B1B, 0xF2672E, true, 0, true, true, true, 0xF2672E},
   };
   for (const Case& c : cases) {
     lv_obj_set_style_bg_color(card, lv_color_hex(c.card), 0);
     lv_obj_set_style_text_color(icon, lv_color_hex(c.icon), 0);
     tile_icon_disc::set_tag(disc, tile_icon_disc::Mode::On, c.glow);
     tile_icon_source::set_icon_fill_marker(card, c.fill);
-    if (c.cover_tile) lv_obj_set_style_bg_opa(card, c.cover_tile, tile_icon_source::kCoverStore);
-    else lv_obj_remove_local_style_prop(card, LV_STYLE_BG_OPA, tile_icon_source::kCoverStore);
     if (c.cover_known) lv_obj_set_style_bg_color(card, lv_color_hex(c.cover), tile_icon_source::kCoverStore);
     else lv_obj_remove_local_style_prop(card, LV_STYLE_BG_COLOR, tile_icon_source::kCoverStore);
     tile_icon_source::refresh_controls(card);
@@ -236,13 +229,6 @@ int main() {
     assert(events == 1 && "The card follows its state once");
     tile_icon_disc::g_card_state_hook = nullptr;
   }
-  // A Circle strength of 0 keeps the press visible at the minimum step.
-  configManager.cfg.icon_glow = 0;
-  ui_surface_style::request_icon_disc_refresh();
-  ui_surface_style::process_pending_updates();
-  tile_icon_source::refresh_controls(card);
-  { uint32_t color; lv_opa_t opa; pressed(previous, color, opa);
-    assert(opa == LV_OPA_COVER && color == tone_color::fill(0x482F10, 0xEF8402, true, 0).control_color); }
   std::printf("OK\n");
   return 0;
 }

@@ -95,6 +95,8 @@ export function mountInstaller(root) {
 
   const state = {
     busy: false,
+    // Every block is sent; the device still writes before esptool returns.
+    finishing: false,
     flashMutationStarted: false,
     lastPersistedProgress: -5,
     lastRun: readLastRun(),
@@ -278,8 +280,9 @@ export function mountInstaller(root) {
     state.progress = Math.max(0, Math.min(100, Number(value) || 0));
     elements.progress.value = state.progress;
     elements.progressText.textContent = `${Math.round(state.progress)}%`;
-    if (state.busy) serialActivity.set("installer", state.flashMutationStarted
-      ? `Flashing · ${Math.round(state.progress)}%` : elements.phase.textContent, "busy", true);
+    if (state.busy) serialActivity.set("installer", state.finishing ? "Finishing…"
+      : state.flashMutationStarted ? `Flashing · ${Math.round(state.progress)}%` : elements.phase.textContent,
+    "busy", true);
   }
 
   function persistLastRun(overrides = {}) {
@@ -620,6 +623,15 @@ export function mountInstaller(root) {
     return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
   }
 
+  // The last block is sent, but the device still writes (the empty end of a
+  // 32 MB factory image takes a minute or two) before esptool returns: say
+  // so once, or the page looks stuck at 100 % (user 2026-10-12).
+  function showFinishing(phase, message) {
+    if (state.finishing) return;
+    state.finishing = true;
+    showActivity(phase, message, { progress: state.progress });
+  }
+
   async function writeFlashPart(esploader, part, reportProgress) {
     await esploader.writeFlash({
       fileArray: [{ data: part.data, address: part.address }],
@@ -666,6 +678,7 @@ export function mountInstaller(root) {
     setLogActionStatus("");
     elements.logPanel.hidden = false;
     state.busy = true;
+    state.finishing = false;
     state.flashMutationStarted = false;
     state.lastPersistedProgress = -5;
     showActivity("Waiting for USB port", "Choose the USB serial port for the selected display.", {
@@ -770,7 +783,10 @@ export function mountInstaller(root) {
             state.lastPersistedProgress = Math.floor(overallPercent / 5) * 5;
             persistLastRun();
           }
+          if (fraction >= 1) showFinishing("Finishing update",
+            "All data is sent. The device is still writing and checking the new image, which can take up to a minute. Keep it connected.");
         });
+        state.finishing = false;
 
         showActivity(
           "Activating verified update",
@@ -796,7 +812,10 @@ export function mountInstaller(root) {
             state.lastPersistedProgress = Math.floor(overallPercent / 5) * 5;
             persistLastRun();
           }
+          if (fraction >= 1) showFinishing("Finishing factory image",
+            "All data is sent. The device is still writing the rest of its flash memory, which can take one to two minutes. Keep it connected.");
         });
+        state.finishing = false;
       }
       setProgress(100);
       completed = true;

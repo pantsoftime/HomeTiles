@@ -83,15 +83,16 @@ function firmwareFixture(deviceKey, appOffset = 0, silicon = null) {
   return bytes;
 }
 
-assert.equal(DEVICE_PROFILES.length, 18, "Every explicit firmware choice needs an installer profile.");
-assert.equal(new Set(DEVICE_PROFILES.map((device) => device.key)).size, 18);
-assert.equal(DEVICE_PROFILES.filter((device) => device.chipFamily === "ESP32-S3").length, 3);
-assert.equal(DEVICE_PROFILES.filter((device) => device.chipFamily === "ESP32-P4").length, 15);
+assert.equal(DEVICE_PROFILES.length, 21, "Every explicit firmware choice needs an installer profile.");
+assert.equal(new Set(DEVICE_PROFILES.map((device) => device.key)).size, 21);
+assert.equal(DEVICE_PROFILES.filter((device) => device.chipFamily === "ESP32-S3").length, 4);
+assert.equal(DEVICE_PROFILES.filter((device) => device.chipFamily === "ESP32-P4").length, 17);
 for (const device of DEVICE_PROFILES.filter((candidate) => candidate.chipFamily === "ESP32-P4")) {
   const contract = {
     waveshare_touch_lcd_7b_rev3: ["post_v3", 301, 399],
     waveshare_touch_lcd_10_1_rev3: ["post_v3", 301, 399],
     guition_jc8012p4a1_v3: ["post_v3", 301, 399],
+    waveshare_touch_lcd_5_rev3: ["post_v3", 301, 399],
   }[device.key] || ["pre_v3", 1, 199];
   assert.equal(device.siliconVariant, contract[0]);
   assert.equal(device.minimumRevision, contract[1]);
@@ -107,6 +108,8 @@ assert.equal(
 );
 for (const [key, chipFamily, flashSize, labelPattern, status = "validation-pending"] of [
   ["waveshare_touch_lcd_4_3", "ESP32-P4", 32 * 1024 * 1024, /4\.3 inch/],
+  ["waveshare_touch_lcd_5", "ESP32-P4", 32 * 1024 * 1024, /5 inch \(ESP32-P4 before v3\.0\)/],
+  ["waveshare_touch_lcd_5_rev3", "ESP32-P4", 32 * 1024 * 1024, /5 inch \(ESP32-P4 v3\.1 or newer, experimental\)/],
   ["waveshare_touch_lcd_7b", "ESP32-P4", 32 * 1024 * 1024, /before v3\.0/],
   ["waveshare_touch_lcd_7b_rev3", "ESP32-P4", 32 * 1024 * 1024, /7B-C \(ESP32-P4 v3\.1 or newer, experimental\)/],
   ["guition_jc8012p4a1_v3", "ESP32-P4", 16 * 1024 * 1024, /JC8012P4A1 V3 \(experimental\)/],
@@ -114,6 +117,7 @@ for (const [key, chipFamily, flashSize, labelPattern, status = "validation-pendi
   ["guition_jc1060p470c_v2", "ESP32-P4", 16 * 1024 * 1024, /V2 \(New Panel\)/],
   ["guition_jc4880p443_portrait", "ESP32-P4", 16 * 1024 * 1024, /JC4880P443/],
   ["waveshare_s3_touch_lcd_4b", "ESP32-S3", 16 * 1024 * 1024, /ESP32-S3 Touch LCD 4B/],
+  ["golden_security_gs_t3e_v2", "ESP32-S3", 16 * 1024 * 1024, /GS-T3E v2 \(PCB v2\.3\)/],
 ]) {
   const device = DEVICE_PROFILES.find((candidate) => candidate.key === key);
   assert.ok(device, `Missing installer profile ${key}.`);
@@ -159,7 +163,7 @@ assert.throws(
 
 const sketchProfiles = read("sketch.yaml");
 const releaseTargets = DEVICE_PROFILES;
-assert.equal(releaseTargets.length, 18, "The explicit 7B, 10.1 and JC8012 silicon choices need separate release builds.");
+assert.equal(releaseTargets.length, 21, "The explicit 5-inch, 7B, 10.1 and JC8012 silicon choices need separate release builds.");
 for (const target of releaseTargets) {
   const escapedProfile = target.buildProfile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = sketchProfiles.match(new RegExp(`^  ${escapedProfile}:\\r?\\n    fqbn: ([^\\r\\n]+)$`, "m"));
@@ -174,6 +178,8 @@ assert.match(sketchProfiles, /^  guition_jc8012p4a1_v2:\r?\n    fqbn: [^\r\n]*Ch
 assert.match(sketchProfiles, /^  guition_jc8012p4a1_v3:\r?\n    fqbn: [^\r\n]*ChipVariant=postv3\r?$/m);
 assert.match(sketchProfiles, /^  waveshare_10_1:\r?\n    fqbn: [^\r\n]*ChipVariant=prev3\r?$/m);
 assert.match(sketchProfiles, /^  waveshare_10_1_rev3:\r?\n    fqbn: [^\r\n]*ChipVariant=postv3\r?$/m);
+assert.match(sketchProfiles, /^  waveshare_5:\r?\n    fqbn: [^\r\n]*ChipVariant=prev3\r?$/m);
+assert.match(sketchProfiles, /^  waveshare_5_rev3:\r?\n    fqbn: [^\r\n]*ChipVariant=postv3\r?$/m);
 
 const firmwareWorkflowKeys = [...read(".github/workflows/firmware.yml").matchAll(/^\s+key:\s+([a-z0-9_]+)\s*$/gm)]
   .map((match) => match[1]);
@@ -206,7 +212,7 @@ assert.match(packageSource, /const otaSlotSize = 0x680000;/);
 
 const releaseIndex = buildReleaseIndex(fixtureRelease());
 assert.equal(releaseIndex.tag, "v0.6.5");
-assert.equal(releaseIndex.devices.length, 18);
+assert.equal(releaseIndex.devices.length, 21);
 for (const device of releaseIndex.devices) {
   const names = releaseAssetNames("v0.6.5", device.key);
   assert.equal(device.update.file, names.update);
@@ -282,9 +288,28 @@ for (const revision of [1, 103, 199]) {
   assert.throws(() => assertFirmwareRevisionCompatible(jc8012V3, revision), /does not match the selected/);
 }
 
+// The 5-inch has a pre-v3 and a v3 image under one firmware key (#76).
+const waveshare5Pre = releaseIndex.devices.find((device) => device.key === "waveshare_touch_lcd_5");
+const waveshare5Rev3 = releaseIndex.devices.find((device) => device.key === "waveshare_touch_lcd_5_rev3");
+assert.equal(waveshare5Pre.siliconVariant, "pre_v3");
+assert.equal(waveshare5Rev3.siliconVariant, "post_v3");
+assert.equal(waveshare5Pre.metadataDeviceKey, "waveshare_touch_lcd_5");
+assert.equal(waveshare5Rev3.metadataDeviceKey, "waveshare_touch_lcd_5");
+for (const revision of [1, 103, 199]) {
+  assert.equal(assertFirmwareRevisionCompatible(waveshare5Pre, revision), true);
+  assert.throws(() => assertFirmwareRevisionCompatible(waveshare5Rev3, revision), /does not match the selected/);
+}
+for (const revision of [301, 302, 399]) {
+  assert.equal(assertFirmwareRevisionCompatible(waveshare5Rev3, revision), true);
+  assert.throws(() => assertFirmwareRevisionCompatible(waveshare5Pre, revision), /does not match the selected/);
+}
+for (const revision of [0, 200, 300, 400]) {
+  assert.throws(() => assertFirmwareRevisionCompatible(waveshare5Rev3, revision), /does not match the selected/);
+}
+
 const fullPublication = selectDevicesForPublication(releaseIndex);
 assert.equal(fullPublication.partial, false);
-assert.equal(fullPublication.devices.length, 18);
+assert.equal(fullPublication.devices.length, 21);
 const localPublication = selectDevicesForPublication(releaseIndex, "guition_esp32_4848s040");
 assert.equal(localPublication.partial, true);
 assert.deepEqual(localPublication.devices.map((device) => device.key), ["guition_esp32_4848s040"]);
@@ -308,7 +333,7 @@ legacy7bRelease.assets = legacy7bRelease.assets.filter(
 );
 assert.throws(() => buildReleaseIndex(legacy7bRelease), /waveshare_touch_lcd_7b_rev3/);
 const legacy7bIndex = buildReleaseIndex(legacy7bRelease, { allowMissingProfiles: true });
-assert.equal(legacy7bIndex.devices.length, 16);
+assert.equal(legacy7bIndex.devices.length, 19);
 assert.equal(
   legacy7bIndex.devices.some((device) => device.key === "waveshare_touch_lcd_7b"),
   true,
@@ -322,6 +347,8 @@ assert.equal(
 const previousRelease = fixtureRelease("v0.6.7");
 const pendingDeviceKeys = new Set([
   "waveshare_touch_lcd_4_3",
+  "waveshare_touch_lcd_5",
+  "waveshare_touch_lcd_5_rev3",
   "waveshare_touch_lcd_7b",
   "waveshare_touch_lcd_7b_rev3",
   "waveshare_touch_lcd_10_1_rev3",
@@ -330,6 +357,7 @@ const pendingDeviceKeys = new Set([
   "guition_jc4880p443_portrait",
   "waveshare_s3_touch_lcd_4",
   "waveshare_s3_touch_lcd_4b",
+  "golden_security_gs_t3e_v2",
 ]);
 previousRelease.assets = previousRelease.assets.filter(
   (asset) =>
@@ -365,7 +393,7 @@ beforeLcd4Release.assets = beforeLcd4Release.assets.filter(
 const beforeLcd4Publication = selectDevicesForPublication(
   buildReleaseIndex(beforeLcd4Release, { allowMissingProfiles: true }),
 );
-assert.equal(beforeLcd4Publication.devices.length, 16);
+assert.equal(beforeLcd4Publication.devices.length, 19);
 assert.equal(beforeLcd4Publication.partial, true);
 assert.equal(beforeLcd4Publication.devices.some((device) => device.key === waveshareS3Lcd4.key), false);
 assert.throws(
@@ -656,6 +684,13 @@ assert.match(installerSource, /if \(!detectedFlashSize\)/);
 assert.doesNotMatch(installerSource, /esploader\.after\("hard_reset"/);
 assert.doesNotMatch(installerSource, /github\.com\/GalusPeres\/HomeTiles\/releases\/download/);
 assert.match(installerSource, /resolveSameOriginAsset/);
+// After the last block the device still writes (a minute or two for a 32 MB
+// factory image): the page says so instead of standing at 100 % (user
+// 2026-10-12: "andere Leute könnten meinen, dass es hängt").
+assert.match(installerSource, /if \(fraction >= 1\) showFinishing\("Finishing factory image",/);
+assert.match(installerSource, /if \(fraction >= 1\) showFinishing\("Finishing update",/);
+assert.match(installerSource, /state\.finishing \? "Finishing…"/);
+assert.match(installerSource, /function showFinishing\(phase, message\) \{\s*if \(state\.finishing\) return;\s*state\.finishing = true;/);
 assert.match(installerSource, /verifyExistingLayout/);
 assert.match(installerSource, /eraseFlash\(\)/);
 assert.match(installerSource, /populateDevices\(index\.devices\)/);
@@ -721,9 +756,11 @@ assert.match(installerDocs, /class="ht-installer-form"/);
 assert.match(installerDocs, /id="installer-firmware-source"/);
 assert.match(installerDocs, /Local HomeTiles \.bin file/);
 assert.match(installerDocs, /id="installer-firmware-file"[^>]*type="file"/);
-assert.match(installerDocs, /<label id="installer-device-label" class="ht-installer-section-heading" for="installer-device">2\. Device<\/label>/);
-for (const label of ["1. Firmware", "3. Flash mode", "4. Confirm", "5. Connect and flash"]) {
-  assert.match(installerDocs, new RegExp(label.replace(".", "\\.")));
+// The flasher sits in the installation's first step card (user 2026-10-14):
+// plain names, the card numbers the step.
+assert.match(installerDocs, /<label id="installer-device-label" class="ht-installer-section-heading" for="installer-device">Device<\/label>/);
+for (const label of ["Firmware", "Mode", "Check", "Flash"]) {
+  assert.match(installerDocs, new RegExp(`class="ht-installer-section-heading"[^>]*>${label}<`));
 }
 assert.match(installerDocs, /<strong>Update<\/strong>/);
 assert.match(installerDocs, /<strong>First install \/ factory reset<\/strong>/);
@@ -741,23 +778,30 @@ assert.doesNotMatch(installerDocs, /<strong>Factory\s*\//);
 assert.doesNotMatch(installerDocs, /Lokaler|Veröffentlichung|Gerät auswählen|gültigen Werte/);
 assert.match(installerDocs, /Select the exact model printed on the device or rear label/);
 assert.doesNotMatch(installerDocs, /Choose the right mode|\| Mode \| Use it for \| Local data \|/);
-for (const heading of ["Browser installer", "Manual flashing", "Troubleshooting"]) {
-  assert.ok(installerDocs.includes(`## ${heading}`), `Missing installer section ${heading}.`);
+// One installation page: four step cards, the flasher in the first.
+for (const [id, heading] of [["browser-installer", "Flash the firmware"], ["install-the-bridge", "Install the Bridge"],
+  ["set-up-the-display", "Set up the display"], ["add-your-tiles", "Add your tiles"]]) {
+  assert.ok(installerDocs.includes(`## ${heading} { #${id} }`), `Missing installation step ${heading}.`);
 }
-assert.match(installerDocs, /Device list\]\(index\.md#device-support\)/);
-assert.match(installerDocs, /write-flash --erase-all 0x0/);
-assert.match(installerDocs, /chip-id/);
-assert.match(installerDocs, /7B and 10\.1 `_rev3` images and the Guition JC8012P4A1 V3 image are for v3\.1 and newer, including v3\.2/);
-assert.doesNotMatch(installerDocs, /exact v3\.1 only|v3\.2 or newer are not supported/);
+assert.match(installerDocs, /\[exact device\]\(index\.md#device-support\)/);
+// Manual flashing and its problems moved to the Advanced setup page.
+const advancedDocs = read("docs/advanced-setup.md");
+for (const heading of ["Manual Flashing { #manual-flashing }", "Flashing Problems { #flashing-problems }"]) {
+  assert.ok(advancedDocs.includes(`## ${heading}`), `Missing advanced section ${heading}.`);
+}
+assert.match(advancedDocs, /write-flash --erase-all 0x0/);
+assert.match(advancedDocs, /chip-id/);
+assert.match(advancedDocs, /7B and 10\.1 `_rev3` images and the Guition JC8012P4A1 V3 image are for v3\.1 and newer, including v3\.2/);
+assert.doesNotMatch(advancedDocs, /exact v3\.1 only|v3\.2 or newer are not supported/);
 assert.doesNotMatch(installerDocs, /Local test before publication|Update safety and partition details/);
 assert.doesNotMatch(installerDocs, /manual flashing guide\]\(flashing\.md\)/);
 
 const overviewDocs = read("docs/index.md");
-assert.match(overviewDocs, /\[Flash the firmware\]\(installer\.md\)/);
+assert.match(overviewDocs, /href="installer\/#browser-installer"/);
 assert.match(overviewDocs, /\[Open online flasher\]\(installer\.md#browser-installer\)/);
 assert.match(overviewDocs, /### ESP32-P4/);
 assert.match(overviewDocs, /### ESP32-S3/);
-assert.match(read("docs/home-assistant-setup.md"), /\(installer\.md(?:#browser-installer)?\)/);
+assert.match(read("docs/home-assistant-setup.md"), /\(installer\.md#install-the-bridge\)\{data-docs-redirect=""\}/);
 assert.doesNotMatch(read("docs/home-assistant-setup.md"), /\(flashing\.md(?:#[^)]*)?\)/);
 
 const updatingDocs = read("docs/updating.md");
@@ -781,7 +825,7 @@ assert.match(installerStylesOnly, /\.ht-installer-log-panel pre\s*\{[\s\S]*?max-
 
 const docsNavigation = read("mkdocs.yml");
 assert.equal(
-  [...docsNavigation.matchAll(/^\s+- Flash firmware:\s*installer\.md\s*$/gm)].length,
+  [...docsNavigation.matchAll(/^\s+- Installation:\s*installer\.md\s*$/gm)].length,
   1,
   "The sidebar must contain one clear flashing entry.",
 );

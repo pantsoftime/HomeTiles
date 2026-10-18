@@ -3,7 +3,9 @@
 #include "src/tiles/runtime/tile_icon_source.h"
 #include "src/ui/shared/ui_surface_style.h"
 #include "src/types/sensor/renderer.h"
+#include "src/types/sensor/gauge_range.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/tiles/icons/mdi_icons.h"
@@ -15,6 +17,7 @@
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"
 #include <Arduino.h>
 #include "src/types/value/value_control.h"
+#include "src/ui/shared/ui_theme.h"
 
 // True when the entity's current value spans multiple lines. The cache is the
 // same source the value label is filled from, so alignment and content agree.
@@ -156,8 +159,9 @@ lv_obj_t* render_sensor_tile(lv_obj_t* parent, int col, int row, const Tile& til
   const uint8_t display_mode = tile.span_h == 0.5f ? 0 : tile.sensor_display_mode;  // 0=none, 1=gauge, 2=graph
   const bool gauge_enabled = (display_mode == 1);
   const bool graph_enabled = (display_mode == 2);
-  int32_t gauge_min = tile.sensor_gauge_min;
-  int32_t gauge_max = tile.sensor_gauge_max;
+  // The bounds with their decimals (gauge_range.h, issue #83).
+  float gauge_min = sensor_gauge::value(tile.sensor_gauge_min, tile.sensor_gauge_decimals);
+  float gauge_max = sensor_gauge::value(tile.sensor_gauge_max, tile.sensor_gauge_decimals);
   if (gauge_max <= gauge_min) {
     gauge_min = 0;
     gauge_max = 100;
@@ -176,7 +180,7 @@ lv_obj_set_style_bg_grad_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV
 lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
 
   // Pressed state: 10% brighter.
-  uint32_t pressed_color = brighten_rgb_color(card_color, 0x10);
+  uint32_t pressed_color = tone_color::pressed_card(card_color);
   lv_obj_set_style_bg_color(card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
 lv_obj_set_style_bg_grad_color(card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
 lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
@@ -212,7 +216,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     if (iconChar.length() > 0) {
       icon_lbl = lv_label_create(card);
       if (icon_lbl) {
-        set_label_style(icon_lbl, lv_color_white(), FONT_MDI_ICONS);
+        set_label_style(icon_lbl, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
         lv_label_set_text(icon_lbl, iconChar.c_str());
         lv_obj_align(icon_lbl, LV_ALIGN_TOP_LEFT,
                      tile_layout::scale_480(-8),
@@ -226,7 +230,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
   if (tile.title.length() > 0) {
     title_label = lv_label_create(card);
     if (title_label) {
-      set_label_style(title_label, lv_color_hex(0xFFFFFF),
+      set_label_style(title_label, lv_color_hex(ui_theme::text()),
                       tile_layout::header_title_font());
       lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
       lv_obj_set_width(title_label, LV_PCT(70));
@@ -327,9 +331,9 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
       lv_obj_set_style_pad_all(chart, 0, LV_PART_MAIN);
 
       // Series - white color, line width 4 (same as popup)
-      series = lv_chart_add_series(chart, lv_color_white(), LV_CHART_AXIS_PRIMARY_Y);
+      series = lv_chart_add_series(chart, lv_color_hex(ui_theme::text()), LV_CHART_AXIS_PRIMARY_Y);
       lv_obj_set_style_line_width(chart, 2, LV_PART_ITEMS);
-      lv_obj_set_style_line_color(chart, lv_color_white(), LV_PART_ITEMS);
+      lv_obj_set_style_line_color(chart, lv_color_hex(ui_theme::text()), LV_PART_ITEMS);
       lv_obj_set_style_line_rounded(chart, true, LV_PART_ITEMS);
       lv_obj_set_style_size(chart, 0, 0, LV_PART_INDICATOR);
 
@@ -346,7 +350,7 @@ lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRE
     Serial.println("[TileRenderer] ERROR: Could not create value label");
     return card;
   }
-  set_label_style(v, lv_color_white(), get_sensor_value_font(tile));
+  set_label_style(v, lv_color_hex(ui_theme::text()), get_sensor_value_font(tile));
   lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(v, LV_PCT(100));
   lv_obj_set_style_text_line_space(v, 8, 0);

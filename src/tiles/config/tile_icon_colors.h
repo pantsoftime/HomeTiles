@@ -40,7 +40,10 @@
 //            thousandths (0..1000), min < max are plain decimal numbers
 //   then up to six state lines for text states:
 //            "is RRGGBB <text>" (equals) or "has RRGGBB <text>" (contains),
-//            compared case-insensitively, first match wins
+//            compared case-insensitively, first match wins. "is+"/"has+"
+//            fill the tile while the line matches, "is-"/"has-" keep it
+//            unfilled (user 2026-10-11: "Fuellen" per rule row); a plain
+//            "is"/"has" follows the tile's "fill" line (records before b382)
 //
 // A state with a leading decimal number takes the bar color when there is a
 // bar. Smooth bars interpolate linearly in 8-bit RGB between neighbouring
@@ -71,8 +74,8 @@ inline constexpr size_t kLegacyMaxRules = 3;
 inline constexpr size_t kMaxEntityBytes = 128;
 // "\nbar smooth <min> <max>" plus " PPPP:RRGGBB" per stop.
 inline constexpr size_t kMaxBarBytes = 5 + 6 + 1 + kMaxNumberBytes + 1 + kMaxNumberBytes + kMaxStops * 12;
-// "\nhas RRGGBB <text>".
-inline constexpr size_t kMaxRowBytes = 1 + 3 + 1 + 6 + 1 + kMaxValueBytes;
+// "\nhas+ RRGGBB <text>".
+inline constexpr size_t kMaxRowBytes = 1 + 4 + 1 + 6 + 1 + kMaxValueBytes;
 // Tile tint strength of the rule layer in percent.
 inline constexpr uint8_t kTintMinimum = 10;
 inline constexpr uint8_t kTintMaximum = 50;
@@ -267,9 +270,14 @@ inline bool text_matches(Op op, const char* value, size_t value_len, const char*
                       : fold_contains(begin, len, value, value_len);
 }
 
-// One parsed "<op> RRGGBB <value>" line; value points into the record.
+// The fill of a state line: "is+" fills the tile while it matches, "is-"
+// keeps it unfilled, a plain "is" follows the tile's "fill" line.
+enum class RowFill : int8_t { Inherit = -1, Off = 0, On = 1 };
+
+// One parsed "<op>[+|-] RRGGBB <value>" line; value points into the record.
 struct Rule {
   Op op = Op::None;
+  RowFill fill = RowFill::Inherit;
   uint32_t color = 0;
   const char* value = nullptr;
   size_t value_len = 0;
@@ -279,8 +287,16 @@ inline bool parse_rule(const char* begin, const char* end, Rule& rule) {
   trim(begin, end);
   const char* space = begin;
   while (space < end && *space != ' ') ++space;
-  rule.op = parse_op(begin, space);
+  // Only state lines carry a fill mark.
+  const char* op_end = space;
+  rule.fill = RowFill::Inherit;
+  if (op_end - begin >= 3 && (op_end[-1] == '+' || op_end[-1] == '-')) {
+    rule.fill = op_end[-1] == '+' ? RowFill::On : RowFill::Off;
+    --op_end;
+  }
+  rule.op = parse_op(begin, op_end);
   if (rule.op == Op::None || space >= end) return false;
+  if (rule.fill != RowFill::Inherit && !text_op(rule.op)) return false;
   const char* color = space + 1;
   const char* color_end = color;
   while (color_end < end && *color_end != ' ') ++color_end;
@@ -568,6 +584,16 @@ inline Source source_of(const char* record) {
   return out;
 }
 
+// "Ausfuellen" (user 2026-10-11: the one tile color option): the tile is
+// filled with its icon's color. Stored as "fill NN"; earlier records that
+// tinted the tile "From cover" or by a rule ("tile=NN") count as filled too,
+// and their icon takes that color (cover_colors_icon, rule_colors_icon).
+inline bool fills(const char* record) {
+  return fill_of(record) > 0 || cover_of(record).tile > 0 || source_of(record).tile > 0;
+}
+inline bool rule_colors_icon(const Source& layer) { return layer.icon || layer.tile > 0; }
+inline bool cover_colors_icon(const Cover& cover) { return cover.icon || cover.tile > 0; }
+
 // The other entity of an enabled rule layer (subscriptions and dispatch), or
 // None for no layer, the tile's own entity or a switched-off layer.
 inline SourceMode source(const char* record, const char*& entity, size_t& entity_len) {
@@ -597,8 +623,11 @@ inline bool own_state_colors_icon(const char* record) {
 // false when the type's default color applies. Callers skip unavailable or
 // unknown states, which always use the default. Only v2 records are
 // evaluated; stored records are always normalized first.
+// `row_fill`, when set, receives the fill of the matching state line
+// (RowFill::Inherit for a bar color, the fixed color or no match).
 inline bool resolve(const char* record, const char* state, const char* display, uint32_t& rgb,
-                    bool fixed_fallback = true) {
+                    bool fixed_fallback = true, RowFill* row_fill = nullptr) {
+  if (row_fill) *row_fill = RowFill::Inherit;
   if (!is_v2(record) || !state) return false;
   const char* fixed_begin = second_line(record);
   const char* fixed_end = line_end(fixed_begin);
@@ -625,6 +654,7 @@ inline bool resolve(const char* record, const char* state, const char* display, 
     if (text_matches(rule.op, rule.value, rule.value_len, state) ||
         (display && text_matches(rule.op, rule.value, rule.value_len, display))) {
       rgb = rule.color;
+      if (row_fill) *row_fill = rule.fill;
       return true;
     }
   }
@@ -646,6 +676,31 @@ inline uint32_t state_icon_color(const char* record, bool known, const char* sta
   const bool own_rules = own_state_colors_icon(record);
   uint32_t rgb = 0;
   return resolve(record, own_rules ? state : "", own_rules ? display : nullptr, rgb) ? rgb : fallback;
+}
+
+// The fill the matching state line decides for a tile's own state (the
+// lines state_icon_color() reads): RowFill::Inherit without a matching line
+// with its own mark, for an unknown state and while own rules are off.
+inline RowFill state_fill(const char* record, bool known, const char* state, const char* display) {
+  if (!known || !record || !state || !own_state_colors_icon(record)) return RowFill::Inherit;
+  uint32_t rgb = 0;
+  RowFill fill = RowFill::Inherit;
+  return resolve(record, state, display, rgb, false, &fill) ? fill : RowFill::Inherit;
+}
+
+// Whether a state line may fill the tile ("is+"/"has+"): the light theme
+// then lets the tile change between its plain and its filled look
+// (tile_renderer.cpp tile_surface_rule_of).
+inline bool rows_fill(const char* record) {
+  if (!is_v2(record)) return false;
+  for (const char* p = line_end(second_line(record)); *p == '\n';) {
+    const char* begin = p + 1;
+    const char* end = line_end(begin);
+    p = end;
+    Rule rule;
+    if (parse_rule(begin, end, rule) && rule.fill == RowFill::On) return true;
+  }
+  return false;
 }
 
 // Copies at most `max_bytes` of [begin, end) without splitting a UTF-8
@@ -769,6 +824,7 @@ inline bool append_row(const Rule& rule, char* out, size_t& n) {
   if (begin == end) return false;
   out[n++] = '\n';
   append_text(out, n, rule.op == Op::Is ? "is" : "has");
+  if (rule.fill != RowFill::Inherit) out[n++] = rule.fill == RowFill::On ? '+' : '-';
   out[n++] = ' ';
   append_hex(out, n, rule.color);
   out[n++] = ' ';

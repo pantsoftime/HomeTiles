@@ -23,13 +23,13 @@
 #include "src/tiles/config/tile_config.h"
 #include <Arduino.h>
 #include <algorithm>
+#include "src/ui/shared/ui_theme.h"
 
 using switch_layout::Bar;
 using switch_layout::Layout;
 
 namespace {
 
-constexpr uint32_t kIconOff = tone_color::kOffIcon;
 // Remote brightness echoes stay out of a dimmer the finger just released,
 // like the Light popup (kRemoteBlockMs).
 constexpr uint32_t kRemoteBlockMs = 3000;
@@ -257,7 +257,12 @@ void show_state_text(SwitchBarView* view, const SwitchState& state, bool dimmabl
 // opacity layer: every shape lies inside the bar's own outline.
 
 uint32_t accent_color(const SwitchBarView* view) {
-  if (view->icon) return lv_color_to_u32(lv_obj_get_style_text_color(view->icon, LV_PART_MAIN)) & 0xFFFFFF;
+  if (view->icon) {
+    // The light theme: the light's own color, a white light in light grey
+    // (tone_color::light_accent), like the Light popup's fill.
+    if (ui_theme::light()) return tone_color::light_accent(tile_icon_disc::icon_color(view->icon));
+    return lv_color_to_u32(lv_obj_get_style_text_color(view->icon, LV_PART_MAIN)) & 0xFFFFFF;
+  }
   return view->fill_rgb;
 }
 
@@ -302,6 +307,8 @@ void bar_draw_cb(lv_event_t* e) {
   SwitchBarView* view = static_cast<SwitchBarView*>(lv_event_get_user_data(e));
   lv_layer_t* layer = lv_event_get_layer(e);
   if (!view || !view->bar || !layer || !view->available) return;
+  // The bar draws with its tile's surface (tile_surface, tile_icon_disc.h).
+  const ui_theme::SurfaceScope surface = tile_surface::scope(view->card);
   lv_area_t area;
   lv_obj_get_coords(view->bar, &area);
   const int32_t width = lv_area_get_width(&area);
@@ -310,10 +317,16 @@ void bar_draw_cb(lv_event_t* e) {
   const int32_t radius =
       std::min<int32_t>(lv_obj_get_style_radius(view->bar, LV_PART_MAIN), height / 2);
   const lv_color_t card = lv_obj_get_style_bg_color(view->card, LV_PART_MAIN);
-  const lv_color_t accent = lv_color_hex(accent_color(view));
+  const uint32_t accent_rgb = accent_color(view);
+  const lv_color_t accent = lv_color_hex(accent_rgb);
+  // Marks on the accent (the handle line, the power symbol): dark on a light
+  // accent, white on a dark one (tone_color::mark_on), like the Light popup.
+  const lv_color_t mark = lv_color_hex(tone_color::mark_on(accent_rgb, lv_color_to_u32(card) & 0xFFFFFF));
 
   if (view->bar_kind == static_cast<uint8_t>(Bar::Dimmer)) {
-    level_bar::draw_fill(layer, view->bar, view->level, view->bar_base, accent, card);
+    // The handle line: the card's color (tone_color::notch_on).
+    const lv_color_t notch = lv_color_hex(tone_color::notch_on(accent_rgb, lv_color_to_u32(card) & 0xFFFFFF));
+    level_bar::draw_fill(layer, view->bar, view->level, view->bar_base, accent, notch);
     return;
   }
 
@@ -323,7 +336,7 @@ void bar_draw_cb(lv_event_t* e) {
   const lv_area_t thumb = view->on ? lv_area_t{area.x2 - half + 1, area.y1, area.x2, area.y2}
                                    : lv_area_t{area.x1, area.y1, area.x1 + half - 1, area.y2};
   lv_color_t thumb_color = accent;
-  lv_color_t symbol_color = card;
+  lv_color_t symbol_color = mark;
   if (!view->on) {
     // One circle step above the bar, computed once per bar color; the symbol
     // in the grey of an off icon, like the Light popup switch.
@@ -333,7 +346,7 @@ void bar_draw_cb(lv_event_t* e) {
       view->thumb_off = tone_color::switch_thumb_off(base);
     }
     thumb_color = lv_color_hex(view->thumb_off);
-    symbol_color = lv_color_hex(kIconOff);
+    symbol_color = lv_color_hex(tone_color::off_icon());
   }
   level_bar::draw_rect(layer, thumb, thumb_color, radius);
   draw_power_symbol(layer, thumb, symbol_color, view->on, view->bar_base);
@@ -520,7 +533,7 @@ lv_obj_t* create_icon(lv_obj_t* card, const Tile& tile) {
   if (!glyph.length()) return nullptr;
   lv_obj_t* icon = lv_label_create(card);
   if (!icon) return nullptr;
-  set_label_style(icon, lv_color_white(), FONT_MDI_ICONS);
+  set_label_style(icon, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
   lv_label_set_text(icon, glyph.c_str());
   return icon;
 }
@@ -591,6 +604,7 @@ void release_timer_cb(lv_timer_t*) {
   if (!widgets || !tile || data->index >= TILES_PER_GRID || widgets[data->index].view != data->view) return;
   // Icon, circle and tile tint too: they kept the held on/off.
   const SwitchState state = get_switch_state(data->grid_type, data->index);
+  const ui_theme::SurfaceScope surface = tile_surface::scope(data->view->card);
   switch_tile_show_state(widgets[data->index], *tile, state, switch_state_icon_color(state));
 }
 
@@ -617,7 +631,7 @@ bool switch_tile_held_on(const SwitchTileWidgets& widgets, bool& on) {
 void switch_tile_show_state(SwitchTileWidgets& widgets, const Tile& tile, const SwitchState& state,
                             uint32_t icon_rgb) {
   SwitchBarView* view = widgets.view;
-  const lv_color_t icon_color = lv_color_hex(state.available ? icon_rgb : kIconOff);
+  const lv_color_t icon_color = lv_color_hex(state.available ? icon_rgb : tone_color::off_icon());
   if (widgets.icon_label) {
     tile_icon_disc::set_icon_color(widgets.icon_label, icon_color);
   } else if (widgets.title_label && !view) {
@@ -647,7 +661,7 @@ lv_obj_t* render_switch_tile(lv_obj_t* parent, int col, int row, const Tile& til
   lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
 
   // Pressed state: 10% brighter.
-  uint32_t pressed_color = brighten_rgb_color(tile_color, 0x10);
+  uint32_t pressed_color = tone_color::pressed_card(tile_color);
   lv_obj_set_style_bg_color(container, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_color(container, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
@@ -670,10 +684,13 @@ lv_obj_t* render_switch_tile(lv_obj_t* parent, int col, int row, const Tile& til
   const bool has_title = tile.title.length() > 0;
 
   if (!header) {
-    // Icon button: icon and title centered on two lines, or the icon alone.
+    // Icon button: icon and title centered on two lines like a Folder
+    // (tile_icon_disc::icon_title_offsets), or the icon alone.
+    const tile_icon_disc::IconTitleOffsets offsets =
+        tile_icon_disc::icon_title_offsets(FONT_MDI_ICONS, tile_layout::header_title_font());
     if (icon_lbl) {
       if (has_title) {
-        lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0, tile_layout::scale_480(-20));
+        lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0, offsets.icon);
       } else {
         lv_obj_center(icon_lbl);
       }
@@ -681,10 +698,10 @@ lv_obj_t* render_switch_tile(lv_obj_t* parent, int col, int row, const Tile& til
     if (has_title) {
       title_lbl = lv_label_create(container);
       if (title_lbl) {
-        set_label_style(title_lbl, lv_color_white(), tile_layout::header_title_font());
+        set_label_style(title_lbl, lv_color_hex(ui_theme::text()), tile_layout::header_title_font());
         hometiles_title::tile(title_lbl, tile.title.c_str(), false);
         if (icon_lbl) {
-          lv_obj_align(title_lbl, LV_ALIGN_CENTER, 0, tile_layout::scale_480(35));
+          lv_obj_align(title_lbl, LV_ALIGN_CENTER, 0, offsets.title);
         } else {
           lv_obj_center(title_lbl);
         }

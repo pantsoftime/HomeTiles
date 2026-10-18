@@ -100,7 +100,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\
 const tileConfig = read('src/tiles/config/tile_config.cpp');
 const previewFn = tileConfig.slice(tileConfig.indexOf('bool TileConfig::previewSettingsTileVisible('));
 assert.ok(previewFn.slice(0, 400).includes('TileGridConfig& grid = activeGrid();') &&
-  previewFn.slice(0, 400).includes('? ensureSettingsTile(grid, target_col, target_row)') &&
+  previewFn.slice(0, 400).includes('? ensureSettingsTile(grid, target_col, target_row, true)') &&
   previewFn.slice(0, 400).includes(': removeSettingsTiles(grid);'));
 // Nothing is read from flash before the move shows (each Home grid load took
 // about 350 ms on the V2: "parse=718 ms"), and a restored tile takes its

@@ -184,6 +184,33 @@ fork keeps it (folder value and battery caption need the grid's widget table and
 the screensaver check); the registry passes it, and upstream's 5-argument
 declaration in `tile_renderer.h` is left unused, as it already was in v0.7.01.
 
+### Icon circles option (since v0.9.31)
+
+Upstream v0.9 draws the icon circles always and removed their setting. The fork
+keeps it: `ConfigManager::icon_discs` (NVS key `icon_disc`, the one v0.7/v0.8
+used, so a panel keeps the choice it made then), `POST /api/display/icon-discs`
+with `enabled=0|1`, and `ui_surface_style::icon_discs_shown()` makes the tile
+circles (Global mode) transparent. The Web preview follows through the root
+class `icon-discs-off`. There is no editor toggle; set it with the route.
+Upstream's own tests that assert the option is gone carry fork exceptions.
+
+### Sensor folder target bytes (since v0.9.31)
+
+A Sensor tile's tap-to-folder target (`sensor_navigate_target`) lives in the
+last two bytes of its `scene_alias` blob (`kSensorNavTargetByte`). Up to
+v0.8.01 it used bytes 11-12, which upstream v0.9 gave to the gauge decimals;
+no panel used a target when it moved, so nothing was migrated.
+
+## Releases are tagged (since v0.9.31)
+
+From v0.9.1 on, a panel downloads its icon file from
+`<kRepoUrl>/releases/download/<FW_VERSION>/hometiles-icons-<px>.bin`, and
+`kRepoUrl` is this fork. Every build that goes onto a panel therefore needs a
+tagged release here: CI publishes the firmware and the icon files on the tag.
+Test a CI artifact on the Tab5 first, then tag; a panel without its icon file
+shows the 399 built-in icons and retries the download on restart (the Web
+Admin's Icons card can also upload the file by hand).
+
 ## Regenerating the WebUI assets
 
 `src/web/assets/admin.css` is a source. Since v0.7.0 `src/web/assets/admin.js`

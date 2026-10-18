@@ -1,9 +1,16 @@
 #pragma once
 
+// The maintainer's test builds measure every opening too (user 2026-10-14:
+// the Weather popup still felt slow, the log showed no drawing time).
+#if (defined(HOMETILES_ISSUE38_BETA) || defined(HOMETILES_TEST_BETA)) && !defined(HOMETILES_POPUP_TIMING)
+#define HOMETILES_POPUP_TIMING
+#endif
+
 #if defined(HOMETILES_POPUP_TIMING)
 #include <Arduino.h>
 #include <lvgl.h>
 #include <lvgl_private.h>
+#include "src/ui/popups/popup_shell.h"
 
 // Diagnostic builds only: one current touch, no history, buffers or timers.
 // Report after the first refresh following a click, outside the measured work.
@@ -18,6 +25,99 @@ struct Sample {
   bool press_layout = false;
 };
 inline Sample sample;
+
+// Where an opening's first frame spends its drawing time: the screen under
+// the popup, its overlay, the overlay's children (frame, body, header) and
+// every block of the body. LVGL draws one object after the other here
+// (LV_OS_NONE, one software draw unit), so a block's time runs from its
+// DRAW_MAIN_BEGIN to the next marked object's or to its band's flush.
+constexpr int kMaxSegments = 32;
+struct Segment {
+  lv_obj_t* obj;
+  char kind;  // 'u' under the popup, 'v' overlay, 'o' overlay child, 'B' body, 'b' body child
+  uint32_t us;
+};
+inline Segment segments[kMaxSegments];
+inline int segment_count = 0;
+inline int open_segment = -1;
+inline uint32_t open_since = 0;
+inline int unmarked = 0;
+inline void close_segment(uint32_t now) {
+  if (open_segment >= 0) segments[open_segment].us += now - open_since;
+  open_segment = -1;
+}
+inline void open_segment_at(int index, uint32_t now) {
+  close_segment(now);
+  open_segment = index;
+  open_since = now;
+}
+inline void mark_event(lv_event_t* event) {
+  open_segment_at(static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event))), micros());
+}
+inline void add_mark(lv_obj_t* obj, char kind) {
+  if (segment_count >= kMaxSegments) {
+    ++unmarked;
+    return;
+  }
+  segments[segment_count] = {obj, kind, 0};
+  lv_obj_add_event_cb(obj, mark_event, LV_EVENT_DRAW_MAIN_BEGIN,
+                      reinterpret_cast<void*>(static_cast<intptr_t>(segment_count)));
+  ++segment_count;
+}
+inline void mark_popup() {
+  segment_count = unmarked = 0;
+  open_segment = -1;
+  lv_obj_t* body = popup_shell_body();
+  lv_obj_t* overlay = body ? lv_obj_get_parent(body) : nullptr;
+  if (!overlay) return;
+  segments[segment_count++] = {nullptr, 'u', 0};
+  add_mark(overlay, 'v');
+  for (uint32_t i = 0; i < lv_obj_get_child_count(overlay); ++i) {
+    lv_obj_t* child = lv_obj_get_child(overlay, static_cast<int32_t>(i));
+    add_mark(child, child == body ? 'B' : 'o');
+  }
+  for (uint32_t i = 0; i < lv_obj_get_child_count(body); ++i) {
+    add_mark(lv_obj_get_child(body, static_cast<int32_t>(i)), 'b');
+  }
+}
+inline void unmark_popup() {
+  for (int i = 0; i < segment_count; ++i) {
+    if (segments[i].obj) lv_obj_remove_event_cb(segments[i].obj, mark_event);
+  }
+  segment_count = 0;
+  open_segment = -1;
+}
+inline uint32_t descendants(lv_obj_t* obj) {
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < lv_obj_get_child_count(obj); ++i) {
+    count += 1 + descendants(lv_obj_get_child(obj, static_cast<int32_t>(i)));
+  }
+  return count;
+}
+// One line: each part's time in ms (blocks under 0.5 ms left out), its size
+// and how many objects it holds.
+inline void report_segments() {
+  static char line[1024];
+  size_t used = snprintf(line, sizeof(line), "[PopupDraw] under=%lu.%lu",
+                         static_cast<unsigned long>(segments[0].us / 1000),
+                         static_cast<unsigned long>(segments[0].us / 100 % 10));
+  int overlay_child = 0, body_child = 0;
+  for (int i = 1; i < segment_count && used < sizeof(line); ++i) {
+    const Segment& s = segments[i];
+    char name[12];
+    if (s.kind == 'v') snprintf(name, sizeof(name), "overlay");
+    else if (s.kind == 'B') snprintf(name, sizeof(name), "body");
+    else if (s.kind == 'o') snprintf(name, sizeof(name), "o%d", overlay_child++);
+    else snprintf(name, sizeof(name), "b%d", body_child++);
+    if (s.us < 500) continue;
+    used += snprintf(line + used, sizeof(line) - used, " | %s %ldx%ld n=%lu %lu.%lu", name,
+                     static_cast<long>(lv_obj_get_width(s.obj)), static_cast<long>(lv_obj_get_height(s.obj)),
+                     static_cast<unsigned long>(descendants(s.obj)), static_cast<unsigned long>(s.us / 1000),
+                     static_cast<unsigned long>(s.us / 100 % 10));
+  }
+  if (unmarked && used < sizeof(line)) snprintf(line + used, sizeof(line) - used, " | %d unmarked", unmarked);
+  Serial.printf("%s\n", line);
+}
 
 inline void input_event(lv_event_t* event) {
   const auto code = lv_event_get_code(event);
@@ -51,15 +151,22 @@ inline void display_event(lv_event_t* event) {
     sample.frame_started = now;
     sample.flush_us = sample.flushes = sample.pixels = 0;
     sample.in_frame = true;
+    if (sample.click_pending) mark_popup();
+  } else if (sample.in_frame && code == LV_EVENT_RENDER_START) {
+    if (segment_count) open_segment_at(0, now);
   } else if (sample.in_frame && code == LV_EVENT_FLUSH_START) {
+    if (segment_count) close_segment(now);
     sample.flush_started = now;
     ++sample.flushes;
     const auto* area = static_cast<const lv_area_t*>(lv_event_get_param(event));
     if (area) sample.pixels += lv_area_get_size(area);
   } else if (sample.in_frame && code == LV_EVENT_FLUSH_FINISH) {
     sample.flush_us += now - sample.flush_started;
+    if (segment_count) open_segment_at(0, now);
   } else if (sample.in_frame && code == LV_EVENT_REFR_READY) {
     sample.in_frame = false;
+    // The open "under" segment after the last flush drew nothing.
+    open_segment = -1;
     const uint32_t frame_us = now - sample.frame_started;
     if (!sample.click_pending) {
       if (sample.flushes) {
@@ -71,7 +178,10 @@ inline void display_event(lv_event_t* event) {
       return;
     }
     // Ignore timer passes that did not draw; the next dirty frame is the result.
-    if (!sample.flushes) return;
+    if (!sample.flushes) {
+      unmark_popup();
+      return;
+    }
     sample.active = false;
     Serial.printf(
         "[PopupPerf] source=%ldx%ld hold_us=%lu release_to_click_us=%lu "
@@ -87,6 +197,10 @@ inline void display_event(lv_event_t* event) {
         static_cast<unsigned long>(sample.press_frame_us),
         static_cast<unsigned long>(sample.press_flush_us),
         static_cast<unsigned long>(sample.press_frame_max_us), sample.press_layout ? 1u : 0u);
+    if (segment_count) {
+      report_segments();
+      unmark_popup();
+    }
   }
 }
 

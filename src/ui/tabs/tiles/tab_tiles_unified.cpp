@@ -5,6 +5,7 @@
 #include "src/core/power/power_manager.h"
 #include "src/core/display/lvgl_tick_service.h"
 #include "src/tiles/config/tile_config.h"
+#include "src/tiles/config/tile_layouts.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
 #include "src/tiles/runtime/tile_icon_disc.h"
@@ -16,6 +17,7 @@
 #include "src/ui/ui_manager.h"
 #include "src/ui/shared/ui_surface_style.h"
 #include "src/network/bridge/ha_bridge_config.h"
+#include "src/network/mqtt/mqtt_handlers.h"
 #include "src/types/cover/renderer.h"
 #include "src/types/binary_sensor/renderer.h"
 #include "src/types/navigate/renderer.h"
@@ -25,13 +27,18 @@
 #include "src/web/server/web_admin.h"
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/runtime/tile_icon_source.h"
+#include "src/ui/tabs/tiles/home_bar.h"
+#include "src/ui/tabs/tiles/page_preview.h"
 #include <misc/cache/instance/lv_image_cache.h>
 #include <Arduino.h>
 #include <atomic>
+#include <algorithm>
 #include <cstring>
 #include <strings.h>
 #include <esp_heap_caps.h>
+#include <memory>
 #include <new>
+#include "src/ui/shared/ui_theme.h"
 
 // Layout constants
 static const int GAP = GRID_GAP;
@@ -62,6 +69,7 @@ static constexpr size_t kMaxNavigationPreloadTargets = 5;
 static constexpr uint32_t kNavigationPreloadIdleMs = 750;
 static constexpr uint32_t kNavigationPreloadInitialDelayMs = 3000;
 static constexpr uint32_t kNavigationPreloadStepGapMs = 250;
+static constexpr uint32_t kNavigationPreloadQuietMs = 0;
 // Measured ESP32-P4 logs show that creating or deleting a folder grid changes
 // total internal RAM by only a few kilobytes while the largest block is usually
 // constrained by the LVGL draw band. Keep real post-build reserves and budget
@@ -72,6 +80,15 @@ static constexpr uint32_t kFolderCacheMinLargestDmaBlock = 24UL * 1024UL;
 static constexpr uint32_t kFolderCacheInitialEstimatedCost = 8UL * 1024UL;
 #else
 static constexpr size_t kMaxResidentFolderUiCaches = 4;
+// The S3 warms the same navigation targets as the P4 (Back first, then the
+// visible Folder tiles), but a hidden grid build blocks its loop for
+// 200-450 ms. Wait for a longer idle pause, let the network finish its start
+// before the first build and leave more room between builds.
+static constexpr size_t kMaxNavigationPreloadTargets = 3;
+static constexpr uint32_t kNavigationPreloadIdleMs = 1500;
+static constexpr uint32_t kNavigationPreloadInitialDelayMs = 8000;
+static constexpr uint32_t kNavigationPreloadStepGapMs = 500;
+static constexpr uint32_t kNavigationPreloadQuietMs = 300;
 // Guition S3 logs (b85): a 16-tile folder grid costs 1-2 KB internal RAM,
 // since LVGL objects live in PSRAM; runtime free internal RAM is 43-48 KB
 // (b87: 43 KB at the first growth check, so the floor sits a little lower).
@@ -81,6 +98,17 @@ static constexpr size_t kMaxResidentFolderUiCaches = 4;
 // grid only makes small allocations, so its floor stays below that.
 static constexpr uint32_t kFolderCacheGrowMinInternalFreeBytes = 40UL * 1024UL;
 static constexpr uint32_t kFolderCacheGrowMinLargestInternalBytes = 16UL * 1024UL;
+// Background builds need the same reserve as the fourth grid
+// (kFolderCacheGrowMin*), before and after the build. A perf1 S3 that kept
+// four grids fell to 33 KB free with an 11 KB largest block after a while,
+// and Wi-Fi/Web Admin got slow (user log 2026-10-07).
+static constexpr uint32_t kFolderCachePreloadMinInternalAfterBuild = 40UL * 1024UL;
+static constexpr uint32_t kFolderCachePreloadMinLargestInternalAfterBuild = 16UL * 1024UL;
+// The background fills at most three grids; a fourth only comes from a tap.
+static constexpr size_t kMaxPreloadResidentGrids = 3;
+// Below this the S3 releases one hidden grid (checked every 2 s).
+static constexpr uint32_t kFolderCachePressureInternalBytes = 32UL * 1024UL;
+static constexpr uint32_t kFolderCachePressureLargestBytes = 12UL * 1024UL;
 #endif
 
 struct FolderCacheEntry {
@@ -115,12 +143,12 @@ static size_t g_folder_only_invalidation_count = 0;
 static TileWidgetCache* g_cache_build_saved_widgets = nullptr;
 static bool g_folder_switch_pending = false;
 static uint16_t g_pending_folder_id = kInvalidFolderId;
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
 static uint16_t g_navigation_preload_targets[kMaxNavigationPreloadTargets] = {};
 static size_t g_navigation_preload_target_count = 0;
 static size_t g_navigation_preload_cursor = 0;
 static uint32_t g_navigation_preload_not_before_ms = 0;
 static uint16_t g_navigation_parent_folder_id = kInvalidFolderId;
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
 static uint32_t g_folder_cache_observed_internal_cost =
     kFolderCacheInitialEstimatedCost;
 static uint32_t g_folder_cache_observed_dma_cost =
@@ -129,7 +157,6 @@ static uint32_t g_folder_cache_observed_dma_cost =
 static bool g_visible_cache_refresh_requested = false;
 static bool g_bridge_cache_refresh_requested = false;
 static uint32_t g_bridge_cache_refresh_snapshot_ms = 0;
-static constexpr uint32_t kFolderPreloadMinHeapBytes = 384UL * 1024UL;
 static constexpr uint32_t kFolderPreloadMinPsramBytes = 4UL * 1024UL * 1024UL;
 
 static bool ensure_folder_cache_storage() {
@@ -210,20 +237,6 @@ static void log_folder_switch_memory(const char* phase, uint16_t folder_id) {
                 ESP.getFreePsram() / 1024);
 }
 
-static bool can_preload_more_folders() {
-  const uint32_t free_heap = ESP.getFreeHeap();
-  const uint32_t psram_total = ESP.getPsramSize();
-  const uint32_t free_psram = ESP.getFreePsram();
-  if (free_heap < kFolderPreloadMinHeapBytes) {
-    return false;
-  }
-  if (psram_total > 0 && free_psram < kFolderPreloadMinPsramBytes) {
-    return false;
-  }
-  return true;
-}
-
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
 static void clear_navigation_preload_plan() {
   for (size_t i = 0; i < kMaxNavigationPreloadTargets; ++i) {
     g_navigation_preload_targets[i] = kInvalidFolderId;
@@ -259,6 +272,19 @@ static uint16_t navigation_folder_id_from_tile(const Tile& tile) {
       (static_cast<uint16_t>(tile.key_modifier) << 8) | tile.key_code);
 }
 
+// A prepared folder dropped by an edit (Web Admin) is built again while the
+// panel rests, once the editing has paused (user 2026-10-14: after edits on
+// Home the way back built it, 412 ms; the panel should get fast again by
+// itself). Its place in the plan comes round again.
+static constexpr uint32_t kNavigationPreloadAfterEditMs = 5000;
+static size_t navigation_preload_priority(uint16_t folder_id);
+static void rewind_navigation_preload(uint16_t folder_id) {
+  const size_t priority = navigation_preload_priority(folder_id);
+  if (priority >= g_navigation_preload_target_count) return;
+  if (priority < g_navigation_preload_cursor) g_navigation_preload_cursor = priority;
+  g_navigation_preload_not_before_ms = millis() + kNavigationPreloadAfterEditMs;
+}
+
 static size_t navigation_preload_priority(uint16_t folder_id) {
   for (size_t i = 0; i < g_navigation_preload_target_count; ++i) {
     if (g_navigation_preload_targets[i] == folder_id) return i;
@@ -275,6 +301,18 @@ static void schedule_navigation_preload(
     uint16_t source_folder_id, const TileGridConfig& config,
     uint32_t initial_delay_ms = kNavigationPreloadIdleMs) {
   clear_navigation_preload_plan();
+
+  // Home and its pages: the pages beside it come first, so a swipe shows
+  // them at once (user 2026-10-12).
+  const int page = grid_layout::head_bar() ? tile_layouts::page_number(source_folder_id) : -1;
+  if (page >= 0) {
+    uint16_t pages[tile_layouts::kMaxPages];
+    const int count = static_cast<int>(tile_layouts::pages(pages));
+    for (const int neighbour : {page + 1, page - 1}) {
+      if (neighbour < 0 || neighbour > count) continue;
+      navigation_preload_add_target(source_folder_id, neighbour == 0 ? TileConfig::rootFolderId() : pages[neighbour - 1]);
+    }
+  }
 
   // Back is always the most useful warm target and is admitted before normal
   // folder buttons even if it appears later in the grid layout.
@@ -336,8 +374,6 @@ static void schedule_navigation_preload(
   }
   Serial.println();
 }
-
-#endif
 
 static void build_grid_track_descriptors(lv_coord_t* dsc, uint8_t count, lv_coord_t cell_size) {
   if (!dsc) return;
@@ -431,20 +467,22 @@ static bool merge_cached_cover_fields(const String& old_payload, String& new_pay
   return true;
 }
 
-static void cache_entity_payload_at(const char* entity_id, const char* payload, uint32_t updated_ms, bool keep_newer) {
-  if (!entity_id || !payload || entity_id[0] == '\0') return;
-  if (!ensure_entity_cache_storage()) return;
+// Returns false when the cache already held this exact payload (or a newer
+// one), so callers can skip per-update logging for repeated states.
+static bool cache_entity_payload_at(const char* entity_id, const char* payload, uint32_t updated_ms, bool keep_newer) {
+  if (!entity_id || !payload || entity_id[0] == '\0') return false;
+  if (!ensure_entity_cache_storage()) return true;
   if (updated_ms == 0) updated_ms = millis();
 
   for (size_t i = 0; i < kEntityCacheSize; ++i) {
     EntityCacheEntry& entry = g_entity_cache[i];
     if (entry.valid && entry.entity_id.equalsIgnoreCase(entity_id)) {
       if (keep_newer && entry.updated_ms != 0 && (int32_t)(entry.updated_ms - updated_ms) > 0) {
-        return;
+        return false;
       }
       if (entry.payload.equals(payload)) {
         entry.updated_ms = updated_ms;
-        return;
+        return false;
       }
       // Apply cheap filters before the merge's String work: sensors are not
       // JSON objects, and only media entries contain artwork.
@@ -455,13 +493,13 @@ static void cache_entity_payload_at(const char* entity_id, const char* payload, 
           entry.payload = incoming;
           refresh_entity_payload_signature(entry);
           entry.updated_ms = updated_ms;
-          return;
+          return true;
         }
       }
       entry.payload = payload;
       refresh_entity_payload_signature(entry);
       entry.updated_ms = updated_ms;
-      return;
+      return true;
     }
   }
 
@@ -472,7 +510,7 @@ static void cache_entity_payload_at(const char* entity_id, const char* payload, 
       refresh_entity_payload_signature(g_entity_cache[i]);
       g_entity_cache[i].updated_ms = updated_ms;
       g_entity_cache[i].valid = true;
-      return;
+      return true;
     }
   }
 
@@ -482,10 +520,24 @@ static void cache_entity_payload_at(const char* entity_id, const char* payload, 
   refresh_entity_payload_signature(g_entity_cache[idx]);
   g_entity_cache[idx].updated_ms = updated_ms;
   g_entity_cache[idx].valid = true;
+  return true;
 }
 
-static void cache_entity_payload(const char* entity_id, const char* payload) {
-  cache_entity_payload_at(entity_id, payload, millis(), false);
+static bool cache_entity_payload(const char* entity_id, const char* payload) {
+  return cache_entity_payload_at(entity_id, payload, millis(), false);
+}
+
+// Power sensors change every few seconds. Log one "queued" line per tile and
+// 30 s; every value is still applied.
+static bool tile_queue_log_due(GridType grid_type, uint8_t index) {
+  static uint32_t last_log_ms[3][TILES_PER_GRID] = {};
+  const uint8_t grid = static_cast<uint8_t>(grid_type);
+  if (grid >= 3 || index >= TILES_PER_GRID) return true;
+  const uint32_t now = millis();
+  uint32_t& last = last_log_ms[grid][index];
+  if (last != 0 && now - last < 30000UL) return false;
+  last = now ? now : 1;
+  return true;
 }
 
 static void cache_entity_payload_from_bridge(const char* entity_id, const char* payload, uint32_t snapshot_ms) {
@@ -703,21 +755,14 @@ static const char* getGridName(GridType type) {
 }
 
 static bool get_tile_layout(const Tile& tile, float& col, float& row, float& span_w, float& span_h) {
-  if (tile.col >= GRID_COLS || tile.row >= GRID_ROWS) return false;
-  col = tile.col;
-  row = tile.row;
-  span_w = tile.span_w < 0.5f ? 1 : tile.span_w;
-  span_h = tile.span_h < 0.5f ? 1 : tile.span_h;
-  clamp_media_tile_layout(tile.type, col, row, span_w, span_h);
-  if (span_w > GRID_COLS - col) span_w = GRID_COLS - col;
-  if (span_h > GRID_ROWS - row) span_h = GRID_ROWS - row;
-  return true;
+  return shownTileLayout(tile, col, row, span_w, span_h);
 }
 
-static void mark_occupied(bool occupied[GRID_ROWS][GRID_COLS], float col, float row, float span_w, float span_h) {
+static void mark_occupied(bool occupied[GRID_SPACE_ROWS][GRID_SPACE_COLS], float col, float row, float span_w,
+                          float span_h) {
   for (uint8_t r = static_cast<uint8_t>(row); r < row + span_h; ++r) {
     for (uint8_t c = static_cast<uint8_t>(col); c < col + span_w; ++c) {
-      if (r < GRID_ROWS && c < GRID_COLS) {
+      if (r < GRID_SPACE_ROWS && c < GRID_SPACE_COLS) {
         occupied[r][c] = true;
       }
     }
@@ -744,7 +789,92 @@ static void reconstruct_cache_entry(FolderCacheEntry& entry,
   entry.folder_id = folder_id;
 }
 
+// The pages' overview pictures (page_preview.cpp), one per page (Home and
+// tile_layouts::pages): kept so the overview reads no grid from storage
+// (user 2026-10-13: the S3 keeps four built grids; from Home and four pages
+// on, every opening read the others). Made from a built grid whenever the
+// overview shows it or the grid is let go, from the stored one while the
+// panel rests (prefill_page_picture); dropped when the grid changes (a Web
+// Admin edit, the theme: process_folder_cache_invalidation). A few hundred
+// bytes each, in PSRAM.
+struct PagePicture {
+  uint16_t folder_id = kInvalidFolderId;
+  uint16_t count = 0;
+  PageTileRect* rects = nullptr;  // TILES_PER_GRID
+};
+static PagePicture g_page_pictures[tile_layouts::kMaxPages + 1];
+
+static bool is_page_folder(uint16_t folder_id) {
+  return folder_id != kInvalidFolderId && tile_layouts::page_number(folder_id) >= 0;
+}
+
+static PagePicture* find_page_picture(uint16_t folder_id) {
+  for (PagePicture& picture : g_page_pictures) {
+    if (picture.folder_id == folder_id) return &picture;
+  }
+  return nullptr;
+}
+
+// The picture's slot for a page: its own, a free one or one of a folder
+// that is no page any more.
+static PagePicture* page_picture_slot(uint16_t folder_id) {
+  PagePicture* slot = find_page_picture(folder_id);
+  for (size_t i = 0; !slot && i < sizeof(g_page_pictures) / sizeof(g_page_pictures[0]); ++i) {
+    PagePicture& picture = g_page_pictures[i];
+    if (picture.folder_id == kInvalidFolderId || !is_page_folder(picture.folder_id)) slot = &picture;
+  }
+  if (!slot) return nullptr;
+  if (!slot->rects) {
+    slot->rects = static_cast<PageTileRect*>(
+        heap_caps_malloc(TILES_PER_GRID * sizeof(PageTileRect), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!slot->rects) return nullptr;
+  }
+  slot->folder_id = folder_id;
+  slot->count = 0;
+  return slot;
+}
+
+static void forget_page_picture(uint16_t folder_id) {
+  if (PagePicture* picture = find_page_picture(folder_id)) picture->folder_id = kInvalidFolderId;
+}
+
+static void forget_page_pictures() {
+  for (PagePicture& picture : g_page_pictures) picture.folder_id = kInvalidFolderId;
+}
+
+// A grid's shown tiles: with its built objects the card colors as drawn,
+// else the theme's card color; transparent cards are left out.
+static size_t page_schematic_from(const TileGridConfig& config, lv_obj_t* const* objs, PageTileRect* out,
+                                  size_t max) {
+  size_t count = 0;
+  for (size_t i = 0; i < TILES_PER_GRID && count < max; ++i) {
+    const Tile& tile = config.tiles[i];
+    float col = 0, row = 0, span_w = 1, span_h = 1;
+    if (tile.type == TILE_EMPTY || !shownTileLayout(tile, col, row, span_w, span_h)) continue;
+    uint32_t color = ui_theme::card();
+    if (lv_obj_t* obj = objs ? objs[i] : nullptr) {
+      if (lv_obj_get_style_bg_opa(obj, LV_PART_MAIN) < LV_OPA_50) continue;
+      color = lv_color_to_u32(lv_obj_get_style_bg_color(obj, LV_PART_MAIN)) & 0xFFFFFF;
+    } else if (tileTransparent(tile)) {
+      continue;
+    }
+    out[count++] = {col, row, span_w, span_h, color};
+  }
+  return count;
+}
+
+static void keep_page_picture(uint16_t folder_id, const TileGridConfig& config, lv_obj_t* const* objs) {
+  if (!is_page_folder(folder_id)) return;
+  if (PagePicture* picture = page_picture_slot(folder_id)) {
+    picture->count = static_cast<uint16_t>(page_schematic_from(config, objs, picture->rects, TILES_PER_GRID));
+  }
+}
+
 static void release_cache_entry(FolderCacheEntry& entry, uint16_t next_folder_id) {
+  // A page's built grid leaves its picture behind (its card colors as drawn).
+  if (entry.grid && entry.grid_loaded && entry.widgets_valid && !entry.dirty) {
+    keep_page_picture(entry.folder_id, entry.grid_config, entry.tile_objs);
+  }
   lv_obj_t* grid = entry.grid;
   entry.grid = nullptr;
   if (grid) {
@@ -796,9 +926,9 @@ static size_t resident_folder_cache_count() {
   return count;
 }
 
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
 struct FolderCacheMemorySnapshot {
   uint32_t internal_free = 0;
+  uint32_t internal_largest = 0;
   uint32_t dma_free = 0;
   uint32_t dma_largest = 0;
   uint32_t psram_free = 0;
@@ -808,6 +938,8 @@ static FolderCacheMemorySnapshot folder_cache_memory_snapshot() {
   FolderCacheMemorySnapshot snapshot;
   snapshot.internal_free =
       heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  snapshot.internal_largest =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   snapshot.dma_free = heap_caps_get_free_size(
       MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
   snapshot.dma_largest = heap_caps_get_largest_free_block(
@@ -819,12 +951,19 @@ static FolderCacheMemorySnapshot folder_cache_memory_snapshot() {
 
 static bool folder_cache_post_build_reserve_ok(
     const FolderCacheMemorySnapshot& snapshot) {
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
   return snapshot.internal_free >= kFolderCacheMinInternalAfterBuild &&
          snapshot.dma_free >= kFolderCacheMinDmaAfterBuild &&
          snapshot.dma_largest >= kFolderCacheMinLargestDmaBlock &&
          snapshot.psram_free >= kFolderPreloadMinPsramBytes;
+#else
+  return snapshot.internal_free >= kFolderCachePreloadMinInternalAfterBuild &&
+         snapshot.internal_largest >=
+             kFolderCachePreloadMinLargestInternalAfterBuild;
+#endif
 }
 
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
 static void observe_folder_cache_build_cost(
     const FolderCacheMemorySnapshot& before,
     const FolderCacheMemorySnapshot& after) {
@@ -897,7 +1036,6 @@ static bool folder_cache_requires_eviction_before_build() {
 
 static FolderCacheEntry* find_folder_cache_eviction_candidate(
     uint16_t requested_folder_id, bool for_preload) {
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
   FolderCacheEntry* best = nullptr;
   bool best_outside_working_set = false;
   size_t best_priority = 0;
@@ -905,6 +1043,12 @@ static FolderCacheEntry* find_folder_cache_eviction_candidate(
   const uint32_t now = millis();
   const size_t requested_priority =
       navigation_preload_priority(requested_folder_id);
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+  // With four slots Home leaves the cache only when nothing else can, and a
+  // background preload never displaces it.
+  static constexpr uint16_t kRootFolderId = 0;
+  FolderCacheEntry* root_fallback = nullptr;
+#endif
 
   for (size_t i = 0; i < g_folder_cache_slot_count; ++i) {
     FolderCacheEntry& entry = g_folder_cache[i];
@@ -916,6 +1060,12 @@ static FolderCacheEntry* find_folder_cache_eviction_candidate(
     // preload and every normal child navigation. The active grid is excluded
     // above and becomes the new parent after entering a child.
     if (navigation_folder_is_parent(entry.folder_id)) continue;
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+    if (entry.folder_id == kRootFolderId) {
+      root_fallback = &entry;
+      continue;
+    }
+#endif
 
     const uint32_t age = now - entry.last_used_ms;
     const size_t priority = navigation_preload_priority(entry.folder_id);
@@ -947,33 +1097,10 @@ static FolderCacheEntry* find_folder_cache_eviction_candidate(
     best_priority = priority;
     best_age = age;
   }
-  return best;
-#else
-  (void)for_preload;
-  static constexpr uint16_t kRootFolderId = 0;
-  FolderCacheEntry* oldest = nullptr;
-  FolderCacheEntry* root_fallback = nullptr;
-  uint32_t oldest_age = 0;
-  const uint32_t now = millis();
-
-  for (size_t i = 0; i < g_folder_cache_slot_count; ++i) {
-    FolderCacheEntry& entry = g_folder_cache[i];
-    if (!entry.grid || &entry == g_active_cache ||
-        entry.folder_id == requested_folder_id) {
-      continue;
-    }
-    if (entry.folder_id == kRootFolderId) {
-      root_fallback = &entry;
-      continue;
-    }
-    const uint32_t age = now - entry.last_used_ms;
-    if (!oldest || age > oldest_age) {
-      oldest = &entry;
-      oldest_age = age;
-    }
-  }
-  return oldest ? oldest : root_fallback;
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+  if (!best && !for_preload) return root_fallback;
 #endif
+  return best;
 }
 
 static bool evict_folder_cache_before_build(uint16_t requested_folder_id,
@@ -1102,6 +1229,7 @@ static void build_folder_cache_entry(FolderCacheEntry& entry, GridType grid_type
   // unchanged payload is skipped there.
   tile_renderer_set_build_grid(&config);
   render_tile_grid(entry.grid, config, grid_type, g_tiles_scene_cbs[idx], entry.tile_objs);
+  home_bar::build(entry.grid, entry.folder_id);
 
   // Warm hidden folder caches with lightweight states only. Media payloads can
   // include cover data and are applied when the folder becomes visible.
@@ -1125,7 +1253,6 @@ static void build_folder_cache_entry(FolderCacheEntry& entry, GridType grid_type
   entry.last_used_ms = millis();
 }
 
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
 static void process_navigation_preload() {
   if (g_navigation_preload_cursor >= g_navigation_preload_target_count ||
       g_folder_switch_pending || powerManager.isInSleep() ||
@@ -1138,6 +1265,11 @@ static void process_navigation_preload() {
     return;
   }
   if (now - displayManager.getLastActivityTime() < kNavigationPreloadIdleMs) {
+    return;
+  }
+  // A hidden grid build blocks the loop (S3: 200-450 ms). During a burst of
+  // Bridge messages (start, snapshot) the inbound queue would overflow.
+  if (mqttInboundBusy(kNavigationPreloadQuietMs)) {
     return;
   }
 
@@ -1178,6 +1310,30 @@ static void process_navigation_preload() {
       g_navigation_preload_cursor = g_navigation_preload_target_count;
       return;
     }
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+    if (!target->grid &&
+        resident_folder_cache_count() >= kMaxPreloadResidentGrids) {
+      if (evict_folder_cache_before_build(folder_id, true)) {
+        g_navigation_preload_not_before_ms =
+            millis() + kNavigationPreloadStepGapMs;
+        return;
+      }
+      g_navigation_preload_cursor = g_navigation_preload_target_count;
+      return;
+    }
+    if (!target->grid &&
+        !folder_cache_post_build_reserve_ok(folder_cache_memory_snapshot())) {
+      // Building first and rolling back would block the loop for nothing.
+      const FolderCacheMemorySnapshot low = folder_cache_memory_snapshot();
+      Serial.printf(
+          "[Tiles] nav-preload paused for folder=%u: int=%lu KB largest=%lu KB\n",
+          static_cast<unsigned>(folder_id),
+          static_cast<unsigned long>(low.internal_free / 1024),
+          static_cast<unsigned long>(low.internal_largest / 1024));
+      g_navigation_preload_cursor = g_navigation_preload_target_count;
+      return;
+    }
+#endif
 
     const FolderCacheMemorySnapshot memory_before =
         folder_cache_memory_snapshot();
@@ -1185,7 +1341,9 @@ static void process_navigation_preload() {
     build_folder_cache_entry(*target, GridType::TAB0);
     const FolderCacheMemorySnapshot memory_after =
         folder_cache_memory_snapshot();
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
     observe_folder_cache_build_cost(memory_before, memory_after);
+#endif
     if (target->grid && target->loaded && target->widgets_valid) {
       if (!folder_cache_post_build_reserve_ok(memory_after)) {
         Serial.printf(
@@ -1231,13 +1389,39 @@ static void process_navigation_preload() {
     return;  // At most one expensive hidden-grid build per loop iteration.
   }
 }
+
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+// S3: when internal RAM runs low at runtime, give back one hidden grid (Back
+// and Home stay as long as anything else can go). It is rebuilt on its next
+// visit.
+static void release_folder_cache_under_pressure() {
+  static uint32_t last_check_ms = 0;
+  const uint32_t now = millis();
+  if (last_check_ms != 0 && now - last_check_ms < 2000UL) return;
+  last_check_ms = now;
+  if (g_folder_switch_pending || resident_folder_cache_count() <= 1) return;
+  const uint32_t internal_free =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint32_t largest =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (internal_free >= kFolderCachePressureInternalBytes &&
+      largest >= kFolderCachePressureLargestBytes) {
+    return;
+  }
+  Serial.printf(
+      "[Tiles] folder-cache memory pressure int=%lu KB largest=%lu KB: "
+      "releasing a hidden grid\n",
+      static_cast<unsigned long>(internal_free / 1024),
+      static_cast<unsigned long>(largest / 1024));
+  evict_folder_cache_before_build(kInvalidFolderId, false);
+}
 #endif
 
 /* === Create tiles grid === */
 static lv_obj_t* create_tiles_grid(lv_obj_t* parent) {
   if (!parent) return nullptr;
   lv_obj_t* grid = lv_obj_create(parent);
-  lv_obj_set_style_bg_color(grid, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_color(grid, lv_color_hex(ui_theme::screen()), 0);
   lv_obj_set_style_bg_opa(grid, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(grid, 0, 0);
   lv_obj_set_style_pad_left(grid, GRID_PAD_LEFT, 0);
@@ -1249,12 +1433,19 @@ static lv_obj_t* create_tiles_grid(lv_obj_t* parent) {
   lv_obj_set_style_pad_column(grid, GAP, 0);
   lv_obj_set_style_pad_row(grid, GAP, 0);
 
-  static lv_coord_t col_dsc[GRID_COLS + 1];
-  static lv_coord_t row_dsc[GRID_ROWS + 1];
+  // The shown grid's tracks (grid_layout.h), fixed for this boot; an upright
+  // layout's half row is a last track half a cell high (a half-height tile
+  // there, tile_geometry::extent).
+  static lv_coord_t col_dsc[GRID_SPACE_COLS + 1];
+  static lv_coord_t row_dsc[GRID_SPACE_ROWS + 1];
   static bool dsc_ready = false;
   if (!dsc_ready) {
-    build_grid_track_descriptors(col_dsc, GRID_COLS, GRID_CELL_W);
-    build_grid_track_descriptors(row_dsc, GRID_ROWS, GRID_CELL_H);
+    build_grid_track_descriptors(col_dsc, GRID_SHOWN_COLS, GRID_CELL_W);
+    build_grid_track_descriptors(row_dsc, GRID_SHOWN_ROWS, GRID_CELL_H);
+    if (grid_layout::shown().half_row) {
+      row_dsc[GRID_SHOWN_ROWS] = tile_geometry::extent(GRID_SHOWN_ROWS, 0.5f, GRID_CELL_H, GAP);
+      row_dsc[GRID_SHOWN_ROWS + 1] = LV_GRID_TEMPLATE_LAST;
+    }
     dsc_ready = true;
   }
   lv_obj_set_layout(grid, LV_LAYOUT_GRID);
@@ -1380,6 +1571,16 @@ void tiles_request_visible_cache_refresh() {
 }
 
 void tiles_process_visible_cache_refresh(bool allow_now) {
+  // A sensor update the full queue overwrote is still in the entity cache:
+  // repair the visible grid from it locally, at most every 5 s.
+  static uint32_t last_overflow_repair_ms = 0;
+  if (!g_visible_cache_refresh_requested &&
+      (last_overflow_repair_ms == 0 ||
+       millis() - last_overflow_repair_ms >= 5000UL) &&
+      tile_renderer_take_sensor_queue_overflow()) {
+    last_overflow_repair_ms = millis();
+    g_visible_cache_refresh_requested = true;
+  }
   if (!g_visible_cache_refresh_requested || !allow_now) return;
   tiles_refresh_visible_from_cache();
 }
@@ -1544,7 +1745,7 @@ void build_tiles_tab(lv_obj_t *parent, GridType grid_type, scene_publish_cb_t sc
   }
   g_tiles_scene_cbs[idx] = scene_cb;
 
-  lv_obj_set_style_bg_color(parent, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_color(parent, lv_color_hex(ui_theme::screen()), 0);
   lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
   lv_obj_set_scroll_dir(parent, LV_DIR_VER);
   lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLL_ELASTIC);
@@ -1578,37 +1779,15 @@ void build_tiles_tab(lv_obj_t *parent, GridType grid_type, scene_publish_cb_t sc
         process_media_update_queue();
         g_active_cache->last_used_ms = millis();
         preloaded_folder_count = 1;
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
+        // Back and the visible Folder tiles warm in the background once the
+        // panel is idle (both chips). The S3 used to build the first folders
+        // in configuration order here, behind a 384 KB heap gate it never
+        // reached (b255 log: "preload stopped heap=127 KB").
         schedule_navigation_preload(g_active_cache->folder_id,
                                     tileConfig.getActiveGrid(),
                                     kNavigationPreloadInitialDelayMs);
-#endif
       }
     }
-#if !defined(CONFIG_IDF_TARGET_ESP32P4)
-    for (const auto& folder : tileConfig.getFolders()) {
-      if (g_active_cache && folder.id == g_active_cache->folder_id) continue;
-      // UI setup runs before network/SDIO/MQTT allocations. Preload only the
-      // guaranteed working set; slot four is admitted later from a real
-      // runtime heap measurement on the first miss.
-      if (resident_folder_cache_count() >= kMinResidentFolderUiCaches) {
-        Serial.printf("[Tiles] TAB0 folder preload capped at %u resident grids\n",
-                      static_cast<unsigned>(kMinResidentFolderUiCaches));
-        break;
-      }
-      if (!can_preload_more_folders()) {
-        Serial.printf("[Tiles] TAB0 folder preload stopped: heap=%lu KB, psram=%lu KB\n",
-                      ESP.getFreeHeap() / 1024, ESP.getFreePsram() / 1024);
-        break;
-      }
-      FolderCacheEntry* entry = allocate_folder_cache(folder.id);
-      if (!entry) break;
-      build_folder_cache_entry(*entry, grid_type);
-      if (entry->loaded) {
-        ++preloaded_folder_count;
-      }
-    }
-#endif
     Serial.printf("[Tiles] TAB0 folder preload cached %u/%u folders (heap %lu -> %lu KB, psram %lu -> %lu KB)\n",
                   static_cast<unsigned>(preloaded_folder_count),
                   static_cast<unsigned>(tileConfig.getFolders().size()),
@@ -1659,9 +1838,13 @@ void tiles_reload_layout(GridType grid_type) {
     g_tiles_objs[idx][i] = nullptr;
   }
   lv_obj_clean(g_tiles_grids[idx]);
+  // The head bar layout's head (grid_layout.h), above the tiles.
+  if (grid_type == GridType::TAB0) {
+    home_bar::build(g_tiles_grids[idx], g_active_cache ? g_active_cache->folder_id : tileConfig.getActiveFolderId());
+  }
 
   const TileGridConfig& config = getGridConfig(grid_type);
-  bool occupied[GRID_ROWS][GRID_COLS] = {};
+  bool occupied[GRID_SPACE_ROWS][GRID_SPACE_COLS] = {};
   struct TileLayout {
     float col = 0;
     float row = 0;
@@ -1683,8 +1866,9 @@ void tiles_reload_layout(GridType grid_type) {
     mark_occupied(occupied, col, row, span_w, span_h);
   }
 
-  for (uint8_t r = 0; r < GRID_ROWS; ++r) {
-    for (uint8_t c = 0; c < GRID_COLS; ++c) {
+  // The empty cells of the shown grid (grid_layout.h).
+  for (uint8_t r = 0; r < GRID_SHOWN_ROWS; ++r) {
+    for (uint8_t c = 0; c < GRID_SHOWN_COLS; ++c) {
       if (!occupied[r][c]) {
         render_empty_tile(g_tiles_grids[idx], c, r);
       }
@@ -1744,12 +1928,10 @@ void tiles_reload_layout(GridType grid_type) {
   // options (regression: they appeared only after closing and reopening).
   viewNavigationReopenPopup(reopen_popup_tile);
   schedule_preview_load(grid_type);
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
   if (grid_type == GridType::TAB0 && g_active_cache) {
     schedule_navigation_preload(g_active_cache->folder_id,
                                 tileConfig.getActiveGrid());
   }
-#endif
 }
 
 void tiles_release_layout(GridType grid_type) {
@@ -1784,9 +1966,7 @@ void tiles_release_layout(GridType grid_type) {
 }
 
 void tiles_release_all() {
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
   clear_navigation_preload_plan();
-#endif
   // Invalidate queued TAB0 Binary Sensor work and clear its LVGL bindings
   // before the folder-cache grids that own those objects are deleted.
   reset_binary_sensor_widgets(GridType::TAB0);
@@ -1823,6 +2003,15 @@ void tiles_request_reload_if_loaded(GridType grid_type) {
   g_tiles_reload_requested[idx] = true;
 }
 
+void tiles_apply_screen_color() {
+  const lv_color_t screen = lv_color_hex(ui_theme::screen());
+  for (uint8_t i = 0; i < 3; ++i) {
+    if (g_tiles_roots[i]) lv_obj_set_style_bg_color(g_tiles_roots[i], screen, 0);
+    if (g_tiles_grids[i]) lv_obj_set_style_bg_color(g_tiles_grids[i], screen, 0);
+  }
+  if (g_active_cache && g_active_cache->grid) lv_obj_set_style_bg_color(g_active_cache->grid, screen, 0);
+}
+
 void tiles_request_reload_all() {
   for (uint8_t i = 0; i < 3; ++i) {
     if (!g_tiles_reload_requested[i]) {
@@ -1852,6 +2041,9 @@ void tiles_request_release_all() {
 
 void tiles_switch_to_folder(uint16_t folder_id) {
   viewNavigationClosePopups();
+  // A page turn under the open overview keeps it (user 2026-10-13), any
+  // other folder closes it.
+  page_preview::follow(folder_id);
   const uint8_t idx = static_cast<uint8_t>(GridType::TAB0);
   if (!g_tiles_roots[idx] || !tileConfig.folderExists(folder_id)) {
     uiManager.finishFolderSwitch(folder_id, false);
@@ -1913,21 +2105,27 @@ static bool update_active_layout() {
   bool rebuilds = false;
   for (size_t i = 0; i < TILES_PER_GRID; ++i) {
     const Tile& after = next.tiles[i];
-    if (after.type != TILE_EMPTY && !get_tile_layout(after, col, row, span_w, span_h)) return false;
+    // A tile the head bar layout does not show (grid_layout.h) is fine here;
+    // otherwise no layout means invalid data and a full rebuild.
+    if (after.type != TILE_EMPTY && !get_tile_layout(after, col, row, span_w, span_h) &&
+        !grid_layout::head_bar()) {
+      return false;
+    }
     if (shown.tiles[i].type == TILE_EMPTY && after.type == TILE_EMPTY) continue;
     if (!tileContentEquals(shown.tiles[i], after) || !g_tiles_objs[idx][i]) rebuilds = true;
   }
   // Only tiles and the empty cell placeholders (render_empty_tile) live in
   // the grid; anything else rebuilds.
-  lv_obj_t* placeholders[GRID_ROWS * GRID_COLS] = {};
+  lv_obj_t* placeholders[GRID_SPACE_ROWS * GRID_SPACE_COLS] = {};
   size_t placeholder_count = 0;
   const uint32_t child_count = lv_obj_get_child_count(grid);
   for (uint32_t c = 0; c < child_count; ++c) {
     lv_obj_t* child = lv_obj_get_child(grid, static_cast<int32_t>(c));
+    if (home_bar::is_bar(child)) continue;
     bool is_tile = false;
     for (size_t i = 0; i < TILES_PER_GRID && !is_tile; ++i) is_tile = g_tiles_objs[idx][i] == child;
     if (is_tile) continue;
-    if (lv_obj_get_child_count(child) != 0 || placeholder_count >= GRID_ROWS * GRID_COLS) return false;
+    if (lv_obj_get_child_count(child) != 0 || placeholder_count >= GRID_SPACE_ROWS * GRID_SPACE_COLS) return false;
     placeholders[placeholder_count++] = child;
   }
 
@@ -1955,7 +2153,7 @@ static bool update_active_layout() {
   lv_display_t* disp = lv_obj_get_display(grid);
   if (disp) lv_display_enable_invalidation(disp, false);
   for (size_t p = 0; p < placeholder_count; ++p) lv_obj_delete(placeholders[p]);
-  bool occupied[GRID_ROWS][GRID_COLS] = {};
+  bool occupied[GRID_SPACE_ROWS][GRID_SPACE_COLS] = {};
   unsigned moved = 0;
   unsigned rebuilt = 0;
   // The rebuilt slots, for the log: an unchanged tile must never be among them.
@@ -1989,7 +2187,22 @@ static bool update_active_layout() {
       note_rebuilt(i);
       continue;
     }
-    if (!get_tile_layout(after, col, row, span_w, span_h)) continue;
+    if (!get_tile_layout(after, col, row, span_w, span_h)) {
+      // Not shown with the head bar (outside the grid, Settings, Back): a
+      // tile shown before goes like a removed one.
+      if (g_tiles_objs[idx][i]) {
+        lv_obj_delete(g_tiles_objs[idx][i]);
+        g_tiles_objs[idx][i] = nullptr;
+        reset_sensor_widget(GridType::TAB0, static_cast<uint8_t>(i));
+        reset_switch_widget(GridType::TAB0, static_cast<uint8_t>(i));
+        reset_climate_widget(GridType::TAB0, static_cast<uint8_t>(i));
+        reset_cover_widget(GridType::TAB0, static_cast<uint8_t>(i));
+        reset_binary_sensor_widget(GridType::TAB0, static_cast<uint8_t>(i));
+        reset_weather_widget(GridType::TAB0, static_cast<uint8_t>(i));
+        note_rebuilt(i);
+      }
+      continue;
+    }
     mark_occupied(occupied, col, row, span_w, span_h);
     if (!tileContentEquals(before, after) || !g_tiles_objs[idx][i]) {
       rebuild_tile_at_index(GridType::TAB0, static_cast<uint8_t>(i));
@@ -2008,8 +2221,8 @@ static bool update_active_layout() {
     place_tile_card(g_tiles_objs[idx][i], static_cast<int>(col), static_cast<int>(row), layout_tile);
     ++moved;
   }
-  for (uint8_t r = 0; r < GRID_ROWS; ++r) {
-    for (uint8_t c = 0; c < GRID_COLS; ++c) {
+  for (uint8_t r = 0; r < GRID_SHOWN_ROWS; ++r) {
+    for (uint8_t c = 0; c < GRID_SHOWN_COLS; ++c) {
       if (occupied[r][c]) continue;
       // Behind the tiles, as tiles_reload_layout creates them first.
       lv_obj_move_to_index(render_empty_tile(grid, c, r), 0);
@@ -2050,10 +2263,8 @@ static bool update_active_layout() {
   Serial.printf("[%s] Layout updated: %u moved, %u rebuilt%s in %lu ms\n", getGridName(GridType::TAB0),
                 moved, rebuilt, rebuilt_slots, static_cast<unsigned long>(millis() - started_ms));
   if (rebuilt) schedule_preview_load(GridType::TAB0);
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
   // New or changed Folder tiles warm their targets, as after a rebuild.
   if (folders_changed) schedule_navigation_preload(g_active_cache->folder_id, next);
-#endif
   return true;
 }
 
@@ -2066,6 +2277,23 @@ bool tiles_show_active_layout_now() {
   if (!update_active_layout()) tiles_reload_layout(GridType::TAB0);
   g_tiles_reload_requested[idx] = false;
   return true;
+}
+
+lv_obj_t* tiles_visible_grid() { return g_tiles_grids[static_cast<uint8_t>(GridType::TAB0)]; }
+
+void tiles_rebuild_heads(bool draw_now) {
+  page_preview::close();
+  const uint8_t idx = static_cast<uint8_t>(GridType::TAB0);
+  bool active_done = false;
+  for (size_t i = 0; i < g_folder_cache_slot_count; ++i) {
+    FolderCacheEntry& entry = g_folder_cache[i];
+    if (!entry.grid) continue;
+    home_bar::rebuild(entry.grid, entry.folder_id);
+    active_done = active_done || entry.grid == g_tiles_grids[idx];
+  }
+  if (g_tiles_grids[idx] && !active_done) home_bar::rebuild(g_tiles_grids[idx], tileConfig.getActiveFolderId());
+  lv_display_t* disp = g_tiles_grids[idx] ? lv_obj_get_display(g_tiles_grids[idx]) : nullptr;
+  if (draw_now && disp) lv_refr_now(disp);
 }
 
 // Loop-only: actually drop the cached folder grids so they rebuild from NVS.
@@ -2082,15 +2310,16 @@ static void process_folder_cache_invalidation() {
         }
         reset_cache_entry(entry);
       }
+      // Its picture shows the grid before the change.
+      forget_page_picture(g_folder_only_invalidations[n]);
+      rewind_navigation_preload(g_folder_only_invalidations[n]);
     }
     g_folder_only_invalidation_count = 0;
     return;
   }
   g_folder_cache_invalidate_requested = false;
   g_folder_only_invalidation_count = 0;
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
   clear_navigation_preload_plan();
-#endif
   for (size_t i = 0; i < g_folder_cache_slot_count; ++i) {
     FolderCacheEntry& entry = g_folder_cache[i];
     entry.dirty = true;
@@ -2098,6 +2327,35 @@ static void process_folder_cache_invalidation() {
     if (&entry != g_active_cache) {
       reset_cache_entry(entry);
     }
+  }
+  forget_page_pictures();
+}
+
+// While the panel rests (no touch for 3 s, no Web Admin, nothing to build),
+// one page without a picture gets it from its stored grid, at most one a
+// second: the overview then opens at once from the start on.
+static void prefill_page_picture() {
+  static uint32_t last_ms = 0;
+  if (!grid_layout::head_bar() || g_folder_switch_pending || page_preview::is_open()) return;
+  if (lv_display_get_inactive_time(nullptr) < 3000 || millis() - last_ms < 1000) return;
+  uint16_t pages[tile_layouts::kMaxPages];
+  const size_t count = tile_layouts::pages(pages);
+  for (size_t i = 0; i <= count; ++i) {
+    const uint16_t folder_id = i == 0 ? TileConfig::rootFolderId() : pages[i - 1];
+    // A built grid is read live (and leaves its picture when let go).
+    const FolderCacheEntry* built = find_folder_cache(folder_id);
+    if (find_page_picture(folder_id) || (built && built->grid) ||
+        (g_active_cache && g_active_cache->folder_id == folder_id)) {
+      continue;
+    }
+    last_ms = millis();
+    std::unique_ptr<TileGridConfig> stored(new (std::nothrow) TileGridConfig{});
+    const uint32_t started = millis();
+    if (!stored || !tileConfig.loadFolderGrid(folder_id, *stored)) return;
+    keep_page_picture(folder_id, *stored, nullptr);
+    Serial.printf("[Pages] Picture of folder %u from storage in %lu ms\n", static_cast<unsigned>(folder_id),
+                  static_cast<unsigned long>(millis() - started));
+    return;
   }
 }
 
@@ -2211,15 +2469,14 @@ void tiles_process_reload_requests() {
           lv_obj_add_flag(previous->grid, LV_OBJ_FLAG_HIDDEN);
         }
         lv_obj_clear_flag(target->grid, LV_OBJ_FLAG_HIDDEN);
+        home_bar::shown(target->grid, folder_id, previous ? previous->folder_id : kInvalidFolderId);
         // The regular path is followed by the normal LVGL refresh. The
         // post-input fast path refreshes once after this function returns, so
         // never nest a full-screen refresh inside the cache transaction.
         lv_obj_invalidate(target->grid);
         target->last_used_ms = millis();
         schedule_preview_load(GridType::TAB0);
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
         schedule_navigation_preload(folder_id, tileConfig.getActiveGrid());
-#endif
         log_folder_switch_memory("folder-switch-cached", folder_id);
         uiManager.finishFolderSwitch(folder_id, true);
         return;
@@ -2260,12 +2517,11 @@ void tiles_process_reload_requests() {
           lv_obj_add_flag(previous->grid, LV_OBJ_FLAG_HIDDEN);
         }
         lv_obj_clear_flag(target->grid, LV_OBJ_FLAG_HIDDEN);
+        home_bar::shown(target->grid, folder_id, previous ? previous->folder_id : kInvalidFolderId);
         lv_obj_invalidate(target->grid);
         target->last_used_ms = millis();
         schedule_preview_load(GridType::TAB0);
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
         schedule_navigation_preload(folder_id, tileConfig.getActiveGrid());
-#endif
         log_folder_switch_memory("folder-switch-built", folder_id);
         uiManager.finishFolderSwitch(folder_id, true);
       } else if (previous && previous->grid) {
@@ -2325,9 +2581,36 @@ void tiles_process_reload_requests() {
     }
   }
 
-#if defined(CONFIG_IDF_TARGET_ESP32P4)
-  if (!did_reload) process_navigation_preload();
+#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+  release_folder_cache_under_pressure();
 #endif
+  if (!did_reload) process_navigation_preload();
+  if (!did_reload) prefill_page_picture();
+}
+
+size_t tiles_page_schematic(uint16_t folder_id, PageTileRect* out, size_t max) {
+  const TileGridConfig* config = nullptr;
+  lv_obj_t* const* objs = nullptr;
+  std::unique_ptr<TileGridConfig> stored;
+  FolderCacheEntry* entry = find_folder_cache(folder_id);
+  if (g_active_cache && g_active_cache->folder_id == folder_id && g_active_cache->grid) {
+    config = &tileConfig.getActiveGrid();
+    objs = g_tiles_objs[static_cast<uint8_t>(GridType::TAB0)];
+  } else if (entry && entry->grid && entry->grid_loaded && entry->widgets_valid && !entry->dirty) {
+    config = &entry->grid_config;
+    objs = entry->tile_objs;
+  } else if (const PagePicture* picture = find_page_picture(folder_id)) {
+    // Not built: its kept picture, no read from storage.
+    const size_t count = std::min<size_t>(picture->count, max);
+    memcpy(out, picture->rects, count * sizeof(PageTileRect));
+    return count;
+  } else {
+    stored.reset(new (std::nothrow) TileGridConfig{});
+    if (!stored || !tileConfig.loadFolderGrid(folder_id, *stored)) return 0;
+    config = stored.get();
+  }
+  keep_page_picture(folder_id, *config, objs);
+  return page_schematic_from(*config, objs, out, max);
 }
 
 void tiles_process_pending_folder_switch() {
@@ -2490,12 +2773,14 @@ static void tiles_refresh_icons_for_grid(GridType grid_type) {
             tile, states ? states[i] : BinarySensorState{}, &dynamic_icon);
         if (widgets) widgets[i].dynamic_icon = dynamic_icon;
       } else if (tile.type == TILE_SCENE) {
-        if (tile.scene_alias.length()) {
-          String scene_entity = haBridgeConfig.findSceneEntity(tile.scene_alias);
+        if (sceneTarget(tile).length()) {
+          String scene_entity = haBridgeConfig.findSceneEntity(sceneTarget(tile));
           if (scene_entity.length()) {
             icon_name = normalizeMdiIconName(haBridgeConfig.findEntityIcon(scene_entity));
           }
         }
+      } else if (tile.type == TILE_ENERGY) {
+        icon_name = normalizeMdiIconName(energy_source_icon(tile.sensor_entity));
       } else if (tile.sensor_entity.length()) {
         icon_name = normalizeMdiIconName(haBridgeConfig.findEntityIcon(tile.sensor_entity));
       }
@@ -2550,7 +2835,11 @@ void tiles_update_tile(GridType grid_type, uint8_t index) {
 void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, const char* value) {
   if (!entity_id || !value) return;
 
-  cache_entity_payload(entity_id, value);
+  // The Bridge repeats unchanged states (minute snapshot, reconnects). They
+  // still go through the queues below (cheap, and a changed unit or decimal
+  // setting must reach the label), but only a new payload is logged; the
+  // renderers skip identical texts and colors.
+  const bool changed = cache_entity_payload(entity_id, value);
   // Previously, returning immediately during sleep cached only the latest
   // state and left UI queues empty. Waking then required a special
   // catch-up in tiles_refresh_visible_from_cache(), which could omit tile
@@ -2589,10 +2878,12 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
       String unit = resolve_tile_sensor_unit(tile);
       const char* unit_cstr = unit.length() > 0 ? unit.c_str() : nullptr;
       queue_sensor_tile_update(grid_type, i, value, unit_cstr);
-      Serial.printf("[%s] %s %s@%u queued: %s %s\n",
-                    getGridName(grid_type),
-                    tile.type == TILE_ENERGY ? "Energy" : "Sensor",
-                    entity_id, i, value, unit_cstr ? unit_cstr : "");
+      if (changed && tile_queue_log_due(grid_type, i)) {
+        Serial.printf("[%s] %s %s@%u queued: %s %s\n",
+                      getGridName(grid_type),
+                      tile.type == TILE_ENERGY ? "Energy" : "Sensor",
+                      entity_id, i, value, unit_cstr ? unit_cstr : "");
+      }
       // Sensor popups have their own live queue. Energy popups update from
       // the energy period cache and must not accidentally take the sensor
       // popup path here.
@@ -2607,8 +2898,10 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
     if (navigate_settings_shows_battery(tile, grid_type) &&
         strcasecmp(entity_id, kEntityInternalBatterySoc) == 0) {
       queue_sensor_tile_update(grid_type, i, value, "%");
-      Serial.printf("[%s] Settings battery@%u queued: %s %%\n",
-                    getGridName(grid_type), i, value);
+      if (changed && tile_queue_log_due(grid_type, i)) {
+        Serial.printf("[%s] Settings battery@%u queued: %s %%\n",
+                      getGridName(grid_type), i, value);
+      }
     }
     if (tile.type == TILE_SWITCH && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       switch_indices |= uint64_t{1} << i;
@@ -2618,17 +2911,34 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
     }
     if (tile.type == TILE_MEDIA && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       queue_media_tile_update(grid_type, i, value);
-      Serial.printf("[%s] Media %s@%u queued\n", getGridName(grid_type), entity_id, i);
+      if (changed && tile_queue_log_due(grid_type, i)) {
+        Serial.printf("[%s] Media %s@%u queued\n", getGridName(grid_type), entity_id, i);
+      }
     }
     if (tile.type == TILE_CLIMATE && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       queue_climate_tile_update(grid_type, i, value);
-      Serial.printf("[%s] Climate %s@%u queued\n",
-                    getGridName(grid_type), entity_id, i);
+      if (changed && tile_queue_log_due(grid_type, i)) {
+        Serial.printf("[%s] Climate %s@%u queued\n",
+                      getGridName(grid_type), entity_id, i);
+      }
     }
     if (tile.type == TILE_COVER && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       queue_cover_tile_update(grid_type, i, value);
-      Serial.printf("[%s] Cover %s@%u queued\n",
-                    getGridName(grid_type), entity_id, i);
+      if (changed && tile_queue_log_due(grid_type, i)) {
+        Serial.printf("[%s] Cover %s@%u queued\n",
+                      getGridName(grid_type), entity_id, i);
+      }
+    }
+    // Weather tiles can show their current temperature/humidity from chosen
+    // sensors; re-render them from the cached weather payload.
+    if (tile.type == TILE_WEATHER && !powerManager.isInSleep() &&
+        (tile.weather_temperature_sensor.equalsIgnoreCase(entity_id) ||
+         tile.weather_humidity_sensor.equalsIgnoreCase(entity_id))) {
+      String weather_payload;
+      if (get_cached_or_initial_payload(tile, weather_payload)) {
+        queue_weather_tile_update(grid_type, i, weather_payload.c_str());
+      }
+      queue_weather_popup_sensor_refresh(entity_id);
     }
     if (tile.type == TILE_BINARY_SENSOR &&
         tile.sensor_entity.equalsIgnoreCase(entity_id)) {
@@ -2665,7 +2975,7 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
 void tiles_update_weather_by_entity(GridType grid_type, const char* entity_id, const char* payload) {
   if (!entity_id || !payload) return;
 
-  cache_entity_payload(entity_id, payload);
+  const bool changed = cache_entity_payload(entity_id, payload);
   // During sleep, cache only the latest state; leave UI queues empty.
   if (powerManager.isInSleep()) return;
   if (!tiles_is_loaded(grid_type)) return;
@@ -2677,7 +2987,9 @@ void tiles_update_weather_by_entity(GridType grid_type, const char* entity_id, c
     if (tile.type == TILE_WEATHER && tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       queue_weather_tile_update(grid_type, i, payload);
       queue_weather_popup_payload(entity_id, payload);
-      Serial.printf("[%s] Weather %s@%u queued\n", getGridName(grid_type), entity_id, i);
+      if (changed && tile_queue_log_due(grid_type, i)) {
+        Serial.printf("[%s] Weather %s@%u queued\n", getGridName(grid_type), entity_id, i);
+      }
     }
   }
 }

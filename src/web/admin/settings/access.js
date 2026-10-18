@@ -46,6 +46,23 @@
     };
   }
 
+  // The gesture menu saved the Settings swipe (display-borders.js
+  // saveGestureEdge): the hidden fields and the committed state carry it, so
+  // a later access save keeps it.
+  function noteSettingsSwipeSaved(enabled, edge) {
+    const swipe = settingsAccessElement('settings_swipe_enabled');
+    const reveal = settingsAccessElement('settings_reveal_edge');
+    if (swipe) swipe.checked = !!enabled;
+    if (reveal && Number.isInteger(edge) && edge >= 0 && edge <= 3) reveal.value = String(edge);
+    if (settingsAccessCommittedState) {
+      settingsAccessCommittedState = {
+        ...settingsAccessCommittedState,
+        swipeEnabled: settingsAccessCommittedState.tileHidden || !!enabled,
+        revealEdge: reveal ? reveal.value : settingsAccessCommittedState.revealEdge
+      };
+    }
+  }
+
   function settingsAccessStatesEqual(a, b) {
     return !!a && !!b &&
       a.pinEnabled === b.pinEnabled &&
@@ -134,6 +151,7 @@
     tile.dataset.spanW = String(snapshot.span_w || 1);
     tile.dataset.spanH = String(snapshot.span_h || 1);
     tile.innerHTML = '';
+    tile.style.removeProperty('--tile-border-tint');
     if (!hidden) {
       tile.style.background = 'transparent';
       const icon = document.createElement('i');
@@ -145,6 +163,9 @@
       ? tileBackgroundCss(getTileTypeMeta('7'), true,
           getTileTypeMeta('7').defaultBg || '#2A2A2A')
       : snapshot.color;
+    // Its frame line from its card like every tile's (grid-preview.js): it
+    // showed the bright fallback line in its field (user 2026-10-14).
+    if (typeof applyFrameLine === 'function') applyFrameLine(tile);
     // The Settings PIN shows its lock here too (previewTileLocked); without
     // an icon the lock is the icon.
     const locked = typeof previewTileLocked === 'function' && previewTileLocked('7', tile);
@@ -171,6 +192,12 @@
   // (previewTileLocked): redraw it, in the grid or parked, once the PIN is
   // set or cleared.
   function refreshSettingsTileLock() {
+    // The head's gear shows the lock too (home_bar.cpp).
+    const locked = typeof previewTileLocked === 'function' && previewTileLocked('7');
+    document.querySelectorAll('.head-bar-preview .head-gear > i').forEach(icon => {
+      icon.querySelector('.tile-icon-lock')?.remove();
+      if (locked) icon.insertAdjacentHTML('beforeend', PREVIEW_LOCK_MARK);
+    });
     const editing = currentTileTab === 'folder0' &&
       (currentTileIndex === HIDDEN_SETTINGS_TILE_INDEX ||
        document.getElementById('folder0-tile-' + currentTileIndex)?.dataset.type === '7');
@@ -350,6 +377,9 @@
         pinConfigured: persistPinEnabled
       };
       settingsAccessCommittedState = savedState;
+      // A hidden tile keeps its swipe: the gesture menu shows what the panel
+      // keeps.
+      if (typeof refreshGestureMenu === 'function') refreshGestureMenu();
       if (reconcileAfterSave &&
           (visibilityChanged || visibilityMismatch)) {
         await reconcileSettingsTileUi(requested.tileHidden, snapshotHint);
@@ -440,7 +470,8 @@
         form.elements.namedItem('language')?.value || '').toLowerCase();
       const currentLanguage = String(
         document.documentElement.lang || APP_LOCALE || '').toLowerCase();
-      const submitButton =
+      // Several pages carry a Save for this form; the pressed one shows the result.
+      const submitButton = event.submitter ||
         document.querySelector('button[form="admin_settings_form"][type="submit"]');
       const originalLabel = submitButton ? submitButton.textContent : '';
       if (submitButton) submitButton.disabled = true;

@@ -1,6 +1,7 @@
 #include "src/ui/shared/ui_surface_style.h"
 #include "src/types/navigate/renderer.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_icon_disc.h"
 #include "src/tiles/runtime/compact_sensor_layout.h"
@@ -12,6 +13,7 @@
 #include "src/ui/shared/icon_lock_mark.h"
 #include "src/core/config/config_manager.h"
 #include <Arduino.h>
+#include "src/ui/shared/ui_theme.h"
 
 struct NavigateEventData {
   uint8_t target_kind;
@@ -37,7 +39,7 @@ static void lock_mark_event_cb(lv_event_t* event) {
   if (lv_event_get_code(event) != LV_EVENT_DRAW_POST) return;
   lv_obj_t* disc = tile_icon_disc::disc_of(icon);
   lv_obj_t* card = lv_obj_get_parent(disc ? disc : icon);
-  const lv_color_t under = card ? lv_obj_get_style_bg_color(card, LV_PART_MAIN) : lv_color_black();
+  const lv_color_t under = card ? lv_obj_get_style_bg_color(card, LV_PART_MAIN) : lv_color_hex(ui_theme::screen());
   icon_lock_mark::draw(lv_event_get_layer(event), icon, icon_lock_mark::behind(disc, under));
 }
 
@@ -96,7 +98,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_FOCUSED);
 
   // Pressed state: 10% brighter.
-  uint32_t pressed_color = brighten_rgb_color(btn_color, 0x10);
+  uint32_t pressed_color = tone_color::pressed_card(btn_color);
   lv_obj_set_style_bg_color(btn, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_color(btn, lv_color_hex(pressed_color), LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_PRESSED));
   lv_obj_set_style_bg_grad_color(btn, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
@@ -136,6 +138,8 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   // A half-height navigation tile uses the half-height Sensor header: the
   // icon in the concentric corner disc and the title, if any, beside it.
   const bool compact = tile_geometry::compact_icon_title(tile.type, tile.span_w, tile.span_h);
+  const tile_icon_disc::IconTitleOffsets offsets =
+      tile_icon_disc::icon_title_offsets(FONT_MDI_ICONS, tile_layout::header_title_font());
   // Optionaler Live-Wert: Ordner-Kacheln legen ihr Navigationsziel in
   // key_code/key_modifier ab, sensor_entity ist daher frei und wird hier fuer
   // eine mitlaufende Sensor-Anzeige genutzt (z.B. ein Ordner, der zusaetzlich
@@ -167,7 +171,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   if (has_icon) {
     icon_lbl = lv_label_create(btn);
     if (icon_lbl) {
-      set_label_style(icon_lbl, lv_color_white(), FONT_MDI_ICONS);
+      set_label_style(icon_lbl, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
       lv_label_set_text(icon_lbl, iconChar.c_str());
       tile_icon_source::apply_initial(icon_lbl, tile);
 
@@ -184,8 +188,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
         if (has_value) {
           lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0, navigate_value_icon_y(iconChar));
         } else if (has_title) {
-          lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0,
-                       tile_layout::scale_i16(-20));
+          lv_obj_align(icon_lbl, LV_ALIGN_CENTER, 0, offsets.icon);
         } else {
           lv_obj_center(icon_lbl);  // Center the icon when there is no title.
         }
@@ -232,7 +235,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
     lv_obj_t* l = lv_label_create(btn);
     title_lbl = l;
     if (l) {
-      set_label_style(l, lv_color_white(), tile_layout::header_title_font());
+      set_label_style(l, lv_color_hex(ui_theme::text()), tile_layout::header_title_font());
       hometiles_title::tile(l, tile.title.c_str(), false);
 
       // Position below the icon, or center when there is no icon.
@@ -241,7 +244,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
       } else if (has_value) {
         lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(55));
       } else if (icon_lbl) {
-        lv_obj_align(l, LV_ALIGN_CENTER, 0, tile_layout::scale(35));
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, offsets.title);
       } else {
         lv_obj_center(l);  // Center the title when there is no icon.
       }
@@ -262,7 +265,6 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
   uint16_t target_folder = 0;
   if (tile.type == TILE_SETTINGS) {
     target_kind = NAV_KIND_SETTINGS;
-    uiManager.setSettingsGestureStyle(tile.title, tile.icon_name, btn_color);
   } else if (tile.type == TILE_BACK) {
     target_kind = NAV_KIND_BACK;
   } else {
@@ -289,8 +291,7 @@ lv_obj_t* render_navigate_tile(lv_obj_t* parent, int col, int row, const Tile& t
         if (!data) return;
         if (data->target_kind == NAV_KIND_SETTINGS) {
           Serial.printf("[Tile] Navigation CLICKED! Settings, title: %s\n", data->title.c_str());
-          uiManager.requestSettingsAccess(data->title, data->icon_name,
-                                          data->bg_color);
+          uiManager.requestSettingsAccess();
         } else if (data->target_kind == NAV_KIND_BACK) {
           uint16_t current = tileConfig.getActiveFolderId();
           uint16_t parent = tileConfig.getFolderParent(current);

@@ -11,6 +11,7 @@ const POST_V3_TARGETS = Object.freeze({
   waveshare_touch_lcd_7b_rev3: { metadataDeviceKey: 'waveshare_touch_lcd_7b', define: 'DEVICE_WAVESHARE_TOUCH_LCD_7B' },
   waveshare_touch_lcd_10_1_rev3: { metadataDeviceKey: 'waveshare_touch_lcd_10_1', define: 'DEVICE_WAVESHARE_TOUCH_LCD_10_1' },
   guition_jc8012p4a1_v3: { metadataDeviceKey: 'guition_jc8012p4a1_v2', define: 'DEVICE_GUITION_JC8012P4A1_V2' },
+  waveshare_touch_lcd_5_rev3: { metadataDeviceKey: 'waveshare_touch_lcd_5', define: 'DEVICE_WAVESHARE_TOUCH_LCD_5' },
 });
 
 function validateCatalog(catalog) {
@@ -125,10 +126,14 @@ function releaseAssetNames(version) {
   ]).sort();
 }
 
+// The MDI icon files (tools/generate-icon-files.mjs) a panel fetches from the
+// release of its own version after an update; one per icon size.
+const iconFileNames = ['hometiles-icons-32.bin', 'hometiles-icons-40.bin', 'hometiles-icons-48.bin'];
+
 function verifyReleaseAssets(directory, version) {
   const actual = fs.readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.bin')).map((entry) => entry.name).sort();
-  const expected = releaseAssetNames(version);
+  const expected = [...releaseAssetNames(version), ...iconFileNames].sort();
   assert(JSON.stringify(actual) === JSON.stringify(expected),
     `release asset set mismatch; missing: ${expected.filter((name) => !actual.includes(name)).join(', ') || '(none)'}; unexpected: ${actual.filter((name) => !expected.includes(name)).join(', ') || '(none)'}`);
 }
@@ -151,4 +156,4 @@ if (require.main === module) {
 }
 
 module.exports = { profiles, releaseProfiles, validateCatalog, getBuildProfile, getReleaseProfile,
-  installerProfiles, releaseFileVersion, releaseAssetNames, verifyReleaseAssets };
+  installerProfiles, releaseFileVersion, releaseAssetNames, iconFileNames, verifyReleaseAssets };

@@ -2,6 +2,7 @@
 
 #include <lvgl.h>
 #include <initializer_list>
+#include "src/ui/shared/ui_theme.h"
 
 // Only the Number, Select and Date/Time popup editors use this palette.
 namespace editable_colors {
@@ -20,6 +21,9 @@ inline lv_color_t blend(lv_color_t base, lv_color_t tint, unsigned amount) {
 // The open option list is the card with the popup hairline. White text.
 struct Palette {
   lv_color_t base, fill, surface, list;
+  // The text and arrow color of the popup's surface (white on a filled
+  // tile's popup in the light theme, user 2026-10-10).
+  lv_color_t text;
   lv_opa_t opa;
 };
 
@@ -31,6 +35,7 @@ inline Palette from(lv_color_t base, lv_color_t fill, lv_opa_t opa) {
   // What the fill shows over the card.
   p.surface = blend(base, fill, opa);
   p.list = base;
+  p.text = lv_color_hex(ui_theme::text());
   return p;
 }
 
@@ -56,6 +61,8 @@ inline void dropdown(lv_obj_t* obj, const Palette& p) {
     lv_obj_set_style_bg_opa(obj, p.opa, LV_PART_MAIN | state);
     lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN | state);
     if (state & LV_STATE_PRESSED) lv_obj_set_style_recolor_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN | state);
+    lv_obj_set_style_text_color(obj, p.text, LV_PART_MAIN | state);
+    lv_obj_set_style_text_color(obj, p.text, LV_PART_INDICATOR | state);
   }
 }
 
@@ -68,7 +75,8 @@ inline void dropdownList(lv_obj_t* obj, const Palette& p) {
   lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_color_filter_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_recolor_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_border_color(obj, lv_color_white(), LV_PART_MAIN);
+  lv_obj_set_style_text_color(obj, p.text, LV_PART_MAIN);
+  lv_obj_set_style_border_color(obj, p.text, LV_PART_MAIN);
   lv_obj_set_style_border_opa(obj, kHairlineOpa, LV_PART_MAIN);
   lv_obj_set_style_border_width(obj, 1, LV_PART_MAIN);
   lv_obj_set_style_border_post(obj, true, LV_PART_MAIN);
@@ -76,7 +84,7 @@ inline void dropdownList(lv_obj_t* obj, const Palette& p) {
   for (lv_style_selector_t state : std::initializer_list<lv_style_selector_t>{LV_STATE_DEFAULT, LV_STATE_CHECKED,
        LV_STATE_PRESSED, LV_STATE_CHECKED | LV_STATE_PRESSED}) {
     lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_PART_SELECTED | state);
-    lv_obj_set_style_text_color(obj, lv_color_white(), LV_PART_SELECTED | state);
+    lv_obj_set_style_text_color(obj, p.text, LV_PART_SELECTED | state);
   }
 }
 }  // namespace editable_colors

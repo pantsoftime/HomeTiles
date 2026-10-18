@@ -48,7 +48,14 @@
     return tab === 'screensaver';
   }
   function firstAllowedGridRow(tab) {
-    return isScreensaverTileTab(tab) ? Math.max(0, GRID_ROWS - 2) : 0;
+    // The screensaver's two rows at the bottom of the shown grid, three
+    // upright (screensaver_places.cpp); in the layout window at the bottom
+    // of that layout's screen.
+    if (!isScreensaverTileTab(tab)) return 0;
+    const inWindow = typeof layoutWindow !== 'undefined' && layoutWindow;
+    const key = inWindow ? layoutWindow.key : typeof ACTIVE_LAYOUT === 'string' ? ACTIVE_LAYOUT : 'classic';
+    const rows = inWindow ? LAYOUTS[key].rows : placeRows(tab);
+    return Math.max(0, rows - (key === 'portrait' ? 3 : 2));
   }
   function restoreCurrentTileSelectionUi() {
     if (currentTileIndex === -1 || !currentTileTab) return;
@@ -88,7 +95,6 @@
 
   function syncFolderFragmentWithRoot(tabEl) {
     if (!tabEl) return;
-    syncTileRadiusControls(tabEl);
     syncGlobalDisplayControls(tabEl);
 
     const sourceBorderToggle = Array.from(
@@ -184,6 +190,8 @@
     const screensaverTab = document.getElementById('tab-tiles-screensaver');
     networkTab.parentNode.insertBefore(tabEl, screensaverTab || networkTab);
     syncFolderFragmentWithRoot(tabEl);
+    // Markup kept from before a page change shows the pages as they are now.
+    if (typeof syncPageHeads === 'function') syncPageHeads();
     associateFieldLabels(tabEl);
 
     initTileTabs();
@@ -211,6 +219,16 @@
         ensureNavigateTargetOption(
           folderNum, formatFolderLabel(name, folderNum));
       }
+      return true;
+    }
+    // A known folder whose page is not loaded yet: its tab takes the name
+    // and icon at once, its page loads (fresh) when it is opened. Loading it
+    // here held the tab back until the panel had built the page.
+    if ((name !== null || icon !== null) && !folderTabLoadPromises[folderNum] &&
+        document.querySelector('.folder-tab-btn[data-folder-id="' + folderNum + '"]')) {
+      updateFolderTabUi(folderNum, name || '', icon || '');
+      ensureNavigateTargetOption(folderNum, formatFolderLabel(name, folderNum));
+      forgetFolderTabSessionFragment(folderNum);
       return true;
     }
     if (folderTabLoadPromises[folderNum]) {

@@ -15,4 +15,6 @@
 // From v0.7.0 on, upstream's patch is one digit again: v0.8.01 is upstream v0.8.0
 // plus the patch digit; atoi() reads "01" as 1, so it parses as {0,8,1} and
 // sorts above every v0.7.x release.
-#define FW_VERSION "v0.8.01"
+// v0.9.31 = upstream v0.9.3 + the patch digit ({0,9,31}); releases are tagged
+// from v0.9.31 on so the panels find their icon file on this fork's release.
+#define FW_VERSION "v0.9.31"

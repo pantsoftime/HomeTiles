@@ -23,7 +23,8 @@ if (!fs.existsSync(path.join(root, 'build/issue-70/export.json'))) {
 }
 const exported = JSON.parse(read('build/issue-70/export.json'));
 
-const COLS = 4, ROWS = 4, COUNT = COLS * ROWS;
+// A folder's list: the classic cells plus the storage's entries (grid_slots.h).
+const COLS = 4, ROWS = 4, COUNT = Math.min(COLS * ROWS * 2, 64);
 const HALF_TYPES = [1, 2, 4, 5, 7, 8, 9, 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26];
 const empty = () => ({type: 0, title: '', icon_name: '', bg_color: 0, col: 0, row: 0, span_w: 1, span_h: 1});
 
@@ -122,7 +123,7 @@ function loadImport(panel, parkedTile = null) {
   const context = vm.createContext({
     console: {error() {}, warn() {}, log() {}},
     URL, FormData, Blob: class {}, Promise, setTimeout: () => 0,
-    GRID_COLS: COLS, GRID_ROWS: ROWS, MEDIA_TILE_TYPE: 15, MEDIA_TILE_MIN_SPAN: 2, MEDIA_TILE_MAX_SPAN: 4,
+    GRID_COLS: COLS, GRID_ROWS: ROWS, TILES_PER_GRID: COUNT, MEDIA_TILE_TYPE: 15, MEDIA_TILE_MIN_SPAN: 2, MEDIA_TILE_MAX_SPAN: 4,
     SCREENSAVER_FOLDER_ID: 65535, tabByFolder: {0: 'folder0'}, currentTileTab: 'folder0',
     firstAllowedGridRow: tab => (tab === 'screensaver' ? ROWS - 2 : 0),
     normalizeIconName: value => String(value || '').replace(/^mdi[:-]/, '').toLowerCase(),

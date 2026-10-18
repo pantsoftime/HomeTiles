@@ -1,4 +1,4 @@
-import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
+import {radiusPolicyHost, surfaceStyleHost, popupSurfaceHost} from '../../lib/surface-style-host.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,6 +43,7 @@ const cpp = `
 #include "src/ui/popups/popup_nav_style.h"
 void popup_shell_control_fill(uint32_t,uint32_t,lv_color_t&c,lv_opa_t&o,bool*t){c=lv_color_white();o=40;if(t)*t=false;}
 void popup_shell_control_raised_fill(uint32_t,uint32_t,lv_color_t&c,lv_opa_t&o){c=lv_color_white();o=80;}
+${popupSurfaceHost(root)}
 #include "src/ui/popups/popup_first_frame.h"
 PopupFirstFrame g_sensor_first_frame;
 void hide_popup_shell(lv_obj_t*){} void cancel_popup_open(lv_obj_t*){}
@@ -87,6 +88,7 @@ constexpr size_t EDITABLE_PAYLOAD_MAX=24576;
 #include "src/core/memory/psram_allocator.h"
 ${read('src/types/value/value_control.h').match(/struct EditableValue \{[\s\S]*?\n};/)[0]}
 ${['label','finite_json','parse_editable_value','editable_display_value'].map(n=>fn(control,n)).join('\n')}
+namespace Device { constexpr int kGridGap = SCREEN_WIDTH == 480 ? 10 : 16; }  // the profile's grid gap (popup header rule)
 ${geometry}
 ${styles}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'disable_pressed_button_animation')}
@@ -331,7 +333,7 @@ int main(int argc,char**argv){
  lv_obj_send_event(c->up,LV_EVENT_PRESSED,nullptr);for(int i=0;i<2000;++i)lv_obj_send_event(c->up,LV_EVENT_LONG_PRESSED_REPEAT,nullptr);assert(c->draft==100);const auto held=networkManager.commands.size();lv_obj_send_event(c->up,LV_EVENT_RELEASED,nullptr);settle(c);assert(networkManager.commands.size()==held+1);
 
  load(c,"number","20.5",",\\"min\\":16,\\"max\\":30,\\"step\\":0.5,\\"mode\\":\\"auto\\",\\"unit\\":\\"°C\\"");
- assert(!c->number_roller_enabled&&lv_obj_has_flag(c->slider,LV_OBJ_FLAG_HIDDEN));assert(lv_obj_get_width(c->up)==lv_obj_get_width(c->number_box)/2);assert(lv_obj_get_style_text_font(lv_obj_get_child(c->up,0),LV_PART_MAIN)==popup_layout::font24());assert(!lv_obj_has_flag(c->up,LV_OBJ_FLAG_HIDDEN)&&!lv_obj_has_flag(c->down,LV_OBJ_FLAG_HIDDEN));assert(lv_obj_get_style_bg_opa(c->number_box,LV_PART_MAIN)==c->colors.opa);assert(lv_obj_get_style_border_width(c->number_box,LV_PART_MAIN)==0);assert(lv_obj_get_style_radius(c->number_box,LV_PART_MAIN)==climate_layout::kControlRadius);
+ assert(!c->number_roller_enabled&&lv_obj_has_flag(c->slider,LV_OBJ_FLAG_HIDDEN));assert(lv_obj_get_width(c->up)==lv_obj_get_width(c->number_box)/2);assert(lv_obj_get_style_text_font(lv_obj_get_child(c->up,0),LV_PART_MAIN)==popup_layout::font24());assert(!lv_obj_has_flag(c->up,LV_OBJ_FLAG_HIDDEN)&&!lv_obj_has_flag(c->down,LV_OBJ_FLAG_HIDDEN));assert(lv_obj_get_style_bg_opa(c->number_box,LV_PART_MAIN)==c->colors.opa);assert(lv_obj_get_style_border_width(c->number_box,LV_PART_MAIN)==0);assert(lv_obj_get_style_radius(c->number_box,LV_PART_MAIN)==ui_surface_style::radius(climate_layout::kControlRadius));
  ctx.editable_kind="number";layout_editable_history(&ctx);update_y_axis_layout(&ctx);
  hometiles_title::set(title,"Wolf Fhs280 T Min\\nEinstellen");popup_layout::alignHeader(card,title,header_icon);lv_obj_update_layout(card);
  lv_area_t temperature_area,history_area;lv_obj_get_coords(c->number_box,&temperature_area);lv_obj_get_coords(ctx.binary_history_title,&history_area);

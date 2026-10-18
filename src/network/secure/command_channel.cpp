@@ -9,10 +9,13 @@
 #include "src/core/security/secure_random.h"
 #include "src/core/security/x25519.h"
 #include "src/devices/device.h"
+#include "src/network/bridge/entity_search.h"
+#include "src/network/link/link_config.h"
 #include "src/network/mqtt/mqtt_topics.h"
 #include "src/network/network_manager.h"
 #include "src/ui/popups/camera/camera_popup.h"
 #include "src/video/local_camera/local_camera.h"
+#include "src/audio/speaker.h"
 
 namespace command_channel {
 
@@ -54,6 +57,8 @@ struct State {
   uint32_t last_hello_ms;
   uint8_t hello_attempts;
   bool hello_requested;
+  // The answer topic {base}/stat/secure is subscribed on this connection.
+  bool answer_subscribed;
   bool status_dirty;
   // One command waiting for the session: topic, NUL, payload.
   char* held;
@@ -92,6 +97,42 @@ struct Attempt {
 
 State* g_state = nullptr;
 Attempt* g_attempt = nullptr;
+// Shows the pairing view when the panel pairs by itself after link setup.
+void (*g_pairing_prompt)() = nullptr;
+// Pair on a panel without a direct link: discoverable until this millis()
+// value (0 = closed); see linkWindowOpen().
+constexpr uint32_t kLinkWindowMs = 120000;
+uint32_t g_link_window_until = 0;
+// Home Assistant sent its address: the link connects in pair mode, and the
+// view shows "asking" until the attempt starts (millis(), 0 = none).
+constexpr uint32_t kLinkSetupWaitMs = 60000;
+uint32_t g_link_setup_until = 0;
+
+void closeLinkWindow() {
+  if (!g_link_window_until) return;
+  g_link_window_until = 0;
+  networkManager.setPairingAdvertised(false);
+}
+
+bool linkSetupWaiting() {
+  if (!g_link_setup_until) return false;
+  if (static_cast<int32_t>(millis() - g_link_setup_until) >= 0) {
+    g_link_setup_until = 0;
+    return false;
+  }
+  return true;
+}
+
+// Expires the window on the loop task.
+bool linkWindowActive() {
+  if (!g_link_window_until) return false;
+  if (static_cast<int32_t>(millis() - g_link_window_until) >= 0) {
+    Serial.println("[SecureCmd] Pairing window closed without Home Assistant");
+    closeLinkWindow();
+    return false;
+  }
+  return true;
+}
 TaskHandle_t g_owner = nullptr;
 bool g_loaded = false;
 bool g_clear_status = false;
@@ -230,6 +271,13 @@ char* sealForBridge(const Header& header, const uint8_t* body, size_t body_lengt
 
 void sendHello() {
   if (!g_state || !networkManager.isMqttConnected()) return;
+  // The Bridge answers on {base}/stat/secure. Asked before that subscription
+  // went out (it queues behind every other subscribe of a new connection),
+  // the answer was lost and the session came only with the retry 10 s later.
+  if (!g_state->answer_subscribed || !networkManager.mqttControlIdle()) {
+    g_state->hello_requested = true;
+    return;
+  }
   const uint32_t now = millis();
   if (g_state->last_hello_ms != 0 &&
       static_cast<uint32_t>(now - g_state->last_hello_ms) < kHelloMinIntervalMs) {
@@ -330,6 +378,16 @@ bool sendUnpair() {
   return queued;
 }
 
+// Without its key the direct link is useless: the panel forgets the Bridge
+// and is a new panel again, without a restart; Pair makes it discoverable.
+// The worker sends queued messages before it leaves the link.
+void forgetLink(const char* why) {
+  if (!networkManager.linkConfigured()) return;
+  link_config::clear();
+  networkManager.leaveLink();
+  Serial.printf("[SecureCmd] Direct link removed (%s); the panel is new again\n", why);
+}
+
 bool turnOff(bool tell_bridge, bool* bridge_notified) {
   if (bridge_notified) *bridge_notified = false;
   if (!writeRecord(nullptr)) {
@@ -339,6 +397,8 @@ bool turnOff(bool tell_bridge, bool* bridge_notified) {
   const bool notified = tell_bridge && sendUnpair();
   if (bridge_notified) *bridge_notified = notified;
   releaseState();
+  networkManager.setLinkPairing(nullptr, nullptr);
+  forgetLink("pairing removed");
   g_clear_status = true;
   publishStatus();
   // Replace the signed retained announcement with an unsigned one.
@@ -370,6 +430,14 @@ void handleData(const Header& header, const uint8_t* body, size_t length) {
     heap_caps_free(text);
   } else if (strcmp(header.name, "local_camera") == 0) {
     local_camera::handleCommandPayload(body, length);
+  } else if (strcmp(header.name, "entities") == 0) {
+    entity_search::handleAnswer(body, length);
+  } else if (strcmp(header.name, "tiles") == 0) {
+    entity_search::handleDeclarationAck(body, length);
+  } else if (strcmp(header.name, "audio") == 0) {
+    speaker::handleCommandPayload(body, length);
+  } else if (strcmp(header.name, "assist") == 0) {
+    speaker::handleAssistCommandPayload(body, length, true);
   }
 }
 
@@ -412,11 +480,24 @@ bool publishPair(const char* type, const char* field, const uint8_t* bytes,
 
 // Ends a running attempt with a result for the Security view. The reason, if
 // any, tells the Bridge why (it is unauthenticated and only for display).
+// The attempt ended (paired or not): a direct link leaves pair mode, and the
+// panel does not pair again by itself after its next start.
+void linkPairingEnded() {
+  if (!networkManager.linkConfigured()) return;
+  networkManager.requestLinkPairing(false);
+  link_config::setPairRequested(false);
+}
+
 void endAttempt(PairingPhase phase, const char* reason) {
   if (!g_attempt) return;
   if (reason) publishPair("abort", "r", nullptr, 0, reason);
   g_attempt->phase = phase;
   wipeAttemptSecrets();
+  linkPairingEnded();
+  // Rejected, cancelled or timed out after Home Assistant sent its address:
+  // keeping the address without a key would make the next Pair try the link
+  // instead of announcing the panel, and a new panel would hang there.
+  if (!g_state) forgetLink("pairing ended without a key");
 }
 
 void completePairing() {
@@ -429,6 +510,9 @@ void completePairing() {
     return;
   }
   deriveKeys(g_attempt->key, g_state->keys);
+  // A direct link reconnects encrypted with the new key.
+  networkManager.setLinkPairing(g_attempt->key, g_state->keys.key_id);
+  linkPairingEnded();
   g_state->pairing = PairingState::Active;
   resetSession();
   g_state->status_dirty = true;
@@ -438,6 +522,7 @@ void completePairing() {
   wipeAttemptSecrets();
   if (networkManager.isMqttConnected()) {
     networkManager.mqttEnqueueSubscribe(topicFor(kBridgeLeaf).c_str());
+    g_state->answer_subscribed = true;
     publishStatus();
     // The retained announcement is signed from now on.
     networkManager.publishBridgeConfig();
@@ -619,6 +704,8 @@ void begin() {
   }
   ht_crypto::secureZero(&record, sizeof(record));
   deriveKeys(key, g_state->keys);
+  // The direct link needs K itself for its session keys.
+  networkManager.setLinkPairing(key, g_state->keys.key_id);
   ht_crypto::secureZero(key, sizeof(key));
   g_state->pairing = PairingState::Active;
   resetSession();
@@ -638,6 +725,19 @@ bool startPairing() {
   begin();
   if (g_state) return false;  // Unpair first.
   if (attemptRunning()) return true;
+  if (!networkManager.linkConfigured()) {
+    // No Bridge address yet: be discoverable for Home Assistant, which sends
+    // its address when the panel is added (POST /api/link). The panel then
+    // connects and pairs over the link (docs-dev/bridge-link.md, Setup).
+    // A finished attempt (kept for two minutes) would hide the window from
+    // pairingPhase(), and the view would fall back to the overview.
+    releaseAttempt();
+    const uint32_t until = millis() + kLinkWindowMs;
+    g_link_window_until = until ? until : 1;
+    networkManager.setPairingAdvertised(true);
+    Serial.println("[SecureCmd] Pair pressed: discoverable for Home Assistant for two minutes");
+    return true;
+  }
   releaseAttempt();
   const String& base = mqttTopics.deviceBase();
   if (base.length() == 0 || base.length() > kMaxBaseLength) {
@@ -666,8 +766,11 @@ bool startPairing() {
   }
   memcpy(g_attempt->base, base.c_str(), base.length() + 1);
   g_attempt->phase = PairingPhase::Asking;
+  g_link_setup_until = 0;
   const uint32_t now = millis();
   g_attempt->started_ms = now ? now : 1;
+  // A direct link connects in pair mode; the start goes out once it is up.
+  if (networkManager.linkConfigured()) networkManager.requestLinkPairing(true);
   if (networkManager.isMqttConnected()) {
     networkManager.mqttEnqueueSubscribe(pairTopic(kPairBridgeLeaf).c_str());
     g_attempt->start_sent = publishPair("start", "pk", g_attempt->pk_p,
@@ -678,7 +781,23 @@ bool startPairing() {
 }
 
 PairingPhase pairingPhase() {
-  return g_attempt ? g_attempt->phase : PairingPhase::Idle;
+  if (g_attempt) return g_attempt->phase;
+  // Between the Bridge address and the first pairing message.
+  if (linkSetupWaiting()) return PairingPhase::Asking;
+  return linkWindowActive() ? PairingPhase::Discoverable : PairingPhase::Idle;
+}
+
+void acceptLinkSetup(const char* host, uint16_t port) {
+  closeLinkWindow();
+  const uint32_t until = millis() + kLinkSetupWaitMs;
+  g_link_setup_until = until ? until : 1;
+  networkManager.switchToLink(host, port);
+  networkManager.requestLinkPairing(true);
+  Serial.println("[SecureCmd] Bridge address accepted; pairing over the direct link");
+}
+
+bool linkWindowOpen() {
+  return linkWindowActive();
 }
 
 bool pairingNumber(char out[kPairNumberDisplaySize]) {
@@ -706,7 +825,20 @@ void confirmPairing() {
 }
 
 void endPairing() {
-  if (!g_attempt) return;
+  if (g_link_window_until) {
+    Serial.println("[SecureCmd] Pairing window closed on the panel");
+    closeLinkWindow();
+  }
+  if (!g_attempt) {
+    // Cancelled between Home Assistant's address and the first pairing
+    // message: the link would still connect and pair by itself.
+    if (g_link_setup_until) {
+      g_link_setup_until = 0;
+      Serial.println("[SecureCmd] Pairing cancelled on the panel");
+      if (!g_state) forgetLink("setup cancelled");
+    }
+    return;
+  }
   if (attemptRunning()) {
     Serial.println("[SecureCmd] Pairing cancelled on the panel");
     endAttempt(PairingPhase::Failed, "cancel");
@@ -737,8 +869,19 @@ char* signAnnouncement(const char* topic, const char* payload, size_t length) {
   return out;
 }
 
+void setPairingPromptCallback(void (*callback)()) {
+  g_pairing_prompt = callback;
+}
+
+
 void onMqttConnected() {
   begin();
+  // The Bridge sent its address and the panel restarted: pair right away.
+  if (networkManager.linkPairMode() && !g_state && !attemptRunning() &&
+      link_config::current().pair_requested && startPairing()) {
+    Serial.println("[SecureCmd] Pairing with the Bridge started after link setup");
+    if (g_pairing_prompt) g_pairing_prompt();
+  }
   if (attemptRunning()) {
     networkManager.mqttEnqueueSubscribe(pairTopic(kPairBridgeLeaf).c_str());
   }
@@ -751,6 +894,7 @@ void onMqttConnected() {
     return;
   }
   networkManager.mqttEnqueueSubscribe(topicFor(kBridgeLeaf).c_str());
+  g_state->answer_subscribed = true;
   // The Bridge may have restarted; ask for a fresh session.
   resetSession();
   g_state->last_hello_ms = 0;
@@ -759,7 +903,19 @@ void onMqttConnected() {
 }
 
 void service() {
+  // The Bridge refused the key three times: its entry was deleted in Home
+  // Assistant. Become a new panel, so Pair sets it up again.
+  if (networkManager.consumeLinkForgotten()) {
+    Serial.println("[SecureCmd] The Bridge no longer knows this panel; it is new again");
+    if (g_state) {
+      turnOff(false, nullptr);
+    } else {
+      forgetLink("unknown to the Bridge");
+    }
+  }
+  linkWindowActive();
   servicePairing();
+  entity_search::service();
   if (!g_state) {
     // A full MQTT queue drops the clear (and logs it): retry every 5 s.
     static uint32_t last_clear_ms = 0;
@@ -777,7 +933,10 @@ void service() {
     dropHeld();
     Serial.println("[SecureCmd] Command dropped: no Bridge session");
   }
-  if (!networkManager.isMqttConnected()) return;
+  if (!networkManager.isMqttConnected()) {
+    g_state->answer_subscribed = false;  // the next connection subscribes again
+    return;
+  }
   if (g_state->status_dirty) publishStatus();
   if (g_state->has_session) return;
   const uint8_t attempts = g_state->hello_attempts;
@@ -864,7 +1023,9 @@ bool blocksPlaintext(const char* topic) {
   if (!topic || !g_state || g_state->pairing != PairingState::Active) return false;
   const char* camera_status = mqttTopics.topic(TopicKey::CAMERA_STAT);
   const bool blocked = (camera_status && strcmp(topic, camera_status) == 0) ||
-                       local_camera::isCommandTopic(topic);
+                       local_camera::isCommandTopic(topic) ||
+                       speaker::isCommandTopic(topic) ||
+                       speaker::isAssistCommandTopic(topic);
   if (blocked && logDue(&g_state->last_log_ms)) {
     Serial.printf("[SecureCmd] Unencrypted %s ignored while pairing is active\n", topic);
   }

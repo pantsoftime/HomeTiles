@@ -3,6 +3,7 @@
 
 #include <lvgl.h>
 #include "src/tiles/runtime/tile_renderer.h"
+#include "src/tiles/runtime/tile_press.h"
 
 static constexpr int32_t GAUGE_ARC_STEPS = 1000;
 
@@ -93,6 +94,7 @@ static inline void disable_pressed_recolor(lv_obj_t* obj) {
   if (!obj) return;
   lv_obj_set_style_recolor_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_PRESSED);
 }
+
 
 // Release the source and let the regular refresh draw the complete popup.
 // A nested refresh here redraws the old page before the new card can appear.

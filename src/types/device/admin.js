@@ -61,9 +61,11 @@
   function devicePreviewVisual(kind, d) {
     const words = typeof DEVICE_I18N === 'object' ? (DEVICE_I18N[kind] || {}) : {};
     const out = {label: '--', icon: kind === 'lock' ? 'lock' : (kind === 'alarm' ? 'shield' : 'fan-off'),
-      color: DEVICE_COLORS.grey, waiting: false};
+      color: panelRoleHex('icon-inactive', DEVICE_COLORS.grey), waiting: false};
     if (!d.valid) return out;
     const state = d.available ? d.state : 'unavailable';
+    // Unavailable: the light theme's one unavailable grey (unavailable_icon).
+    if (!d.available && typeof unavailableIconHex === 'function') out.color = unavailableIconHex(out.color);
     if (kind === 'lock') {
       out.label = words[state] || words.unknown || state;
       if (!d.available) return out;
@@ -94,7 +96,7 @@
       const look = looks[state];
       if (look) {
         out.icon = look[0];
-        out.color = DEVICE_COLORS[look[1]];
+        out.color = look[1] === 'grey' ? panelRoleHex('icon-inactive', DEVICE_COLORS.grey) : DEVICE_COLORS[look[1]];
         out.waiting = look[1] === 'orange' || state === 'triggered';
       }
       return out;
@@ -164,8 +166,8 @@
     const control = cssColorChannels(getComputedStyle(bar).backgroundColor);
     if (control) {
       const base = toneOklch(control);
-      bar.style.setProperty('--switch-thumb-off', toneHex(toneRgb(base.L + 0.06, base.C, base.h)));
-      bar.style.setProperty('--device-button', toneHex(toneRgb(base.L + 0.04, base.C, base.h)));
+      bar.style.setProperty('--switch-thumb-off', toneHex(toneRgb(base.L + toneStep(0.06), base.C, base.h)));
+      bar.style.setProperty('--device-button', toneHex(toneRgb(base.L + toneStep(0.04), base.C, base.h)));
     }
     bar.classList.toggle('is-unavailable', !d.valid || !d.available);
     bar.classList.remove('is-on', 'knob-accent');
@@ -245,17 +247,6 @@
     const entity = document.getElementById(tab + '_' + prefix + '_entity');
     const configured = data.sensor_entity || data[prefix + '_entity'] || '';
     if (entity) {
-      if (configured) {
-        entity.dataset.configuredValue = configured;
-        if (!Array.from(entity.options).some(option => option.value === configured)) {
-          const option = document.createElement('option');
-          option.value = configured;
-          option.textContent = configured;
-          entity.appendChild(option);
-        }
-      } else {
-        delete entity.dataset.configuredValue;
-      }
       entity.value = configured;
     }
     // State size like the Switch tile (Tile::sensor_value_font).
@@ -281,10 +272,7 @@
   function resetDeviceFields(tab, prefix) {
     resetIconColorFields(tab);
     const entity = document.getElementById(tab + '_' + prefix + '_entity');
-    if (entity) {
-      entity.value = '';
-      delete entity.dataset.configuredValue;
-    }
+    if (entity) entity.value = '';
     const font = document.getElementById(tab + '_' + prefix + '_value_font');
     if (font) font.value = '0';
     const popup = document.getElementById(tab + '_' + prefix + '_popup_open_mode');

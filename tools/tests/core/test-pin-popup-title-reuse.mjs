@@ -1,4 +1,4 @@
-import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
+import {radiusPolicyHost, surfaceStyleHost, popupSurfaceHost} from '../../lib/surface-style-host.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,9 +83,11 @@ int allocations = 0;
 void* heap_caps_malloc(size_t size, int) { ++allocations; return malloc(size); }
 void heap_caps_free(void* pointer) { if (pointer) { --allocations; free(pointer); } }
 ${surfaceStyleHost(root)}
+namespace Device { constexpr int kGridGap = SCREEN_WIDTH == 480 ? 10 : 16; }  // the profile's grid gap (popup header rule)
 ${stripIncludes(read('src/ui/popups/popup_layout.h'))}
 ${stripIncludes(read('src/ui/popups/popup_open.h'))}
 ${stripIncludes(read('src/ui/popups/popup_shell.h'))}
+${popupSurfaceHost(root)}
 ${stripIncludes(read('src/ui/popups/popup_open.cpp'))}
 ${stripIncludes(read('src/ui/shared/ui_pulse.h'))}
 ${stripIncludes(read('src/tiles/icons/mdi_bar_icons.h'))}
@@ -200,9 +202,9 @@ void check_title(const String& expected) {
   // like the Sensor headers), so only the logical title is compared.
 }
 int main() {
-  assert(!strcmp(i18n::strings("de").tile_radius,"Kachelradius"));
-  assert(!strcmp(i18n::strings("en").tile_radius,"Tile radius"));
-  assert(!strcmp(i18n::strings("fr").tile_radius,"Rayon des tuiles"));
+  assert(!strcmp(i18n::strings("de").panel_tab_global,"Global"));
+  assert(!strcmp(i18n::strings("en").panel_tab_global,"Global"));
+  assert(!strcmp(i18n::strings("fr").panel_tab_global,"Global"));
   lv_init();
   auto* display = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
   std::vector<uint32_t> band(SCREEN_WIDTH * 16);

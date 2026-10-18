@@ -56,7 +56,7 @@ for (const rel of writers) {
 // sufficient on its own (a stale pointer is non-null) but removing it would
 // make even a correct reset fragile.
 const renderer = read('src/tiles/runtime/tile_renderer.cpp');
-assert.match(renderer, /if \(subtitle_label\) \{\s*\n\s*lv_label_set_text\(subtitle_label,/,
+assert.match(renderer, /if \(subtitle_label\) \{\s*\n\s*(?:lv_label_set_text|set_text_if_changed)\(subtitle_label,/,
   'the subtitle write must stay guarded by a non-null check');
 
 console.log(`ok  ${writers.length} SensorTileWidgets writers reset the full record`);

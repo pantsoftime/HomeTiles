@@ -16,9 +16,7 @@ import {compileAndRun} from '../../lib/cpp-host.mjs';
 const read = file => readRepoFile(file).replace(/\r\n?/g, '\n');
 const iconSource = read('src/tiles/runtime/tile_icon_source.cpp');
 const fromIconCard = cppFunctionDefinitions(iconSource).find(f => f.name === 'from_icon_card');
-const brighten = cppFunctionDefinitions(read('src/tiles/runtime/tile_renderer_shared.h'))
-  .find(f => f.name === 'brighten_rgb_color');
-assert.ok(fromIconCard && brighten);
+assert.ok(fromIconCard);
 
 const harness = String.raw`
 #include "src/ui/shared/tone_color.h"
@@ -30,7 +28,6 @@ const harness = String.raw`
 
 static uint32_t g_global = 0x1A1A1A;
 static uint32_t tileDefaultBgColor() { return g_global; }
-${brighten.source}
 ${fromIconCard.source}
 
 int main() {
@@ -57,8 +54,8 @@ int main() {
       }
       // Off: the grey off icon never tints; tile (the card falls back to the
       // global color) and popup show the neutral step and the same off thumb.
-      const tone_color::Fill tile = tone_color::fill(global, tone_color::kOffIcon, false, glow);
-      const tone_color::Fill popup = tone_color::fill(global, tone_color::kOffIcon, false, glow);
+      const tone_color::Fill tile = tone_color::fill(global, tone_color::off_icon(), false, glow);
+      const tone_color::Fill popup = tone_color::fill(global, tone_color::off_icon(), false, glow);
       std::printf("off %06X %u %06X %06X %06X %06X\n", static_cast<unsigned>(global), static_cast<unsigned>(glow),
                   static_cast<unsigned>(tile.control_color), static_cast<unsigned>(popup.control_color),
                   static_cast<unsigned>(tone_color::switch_thumb_off(tile.control_color)),
@@ -89,20 +86,20 @@ if (output !== null) {
 
 // One set of functions on both sides.
 const tone = read('src/ui/shared/tone_color.h');
-assert.ok(tone.includes('inline constexpr uint32_t kOffIcon = 0xB0B0B0;') &&
+assert.ok(tone.includes('inline uint32_t off_icon() { return ui_theme::icon_off(); }') &&
   tone.includes('inline uint32_t switch_thumb_off(uint32_t track) { return lifted(track, track, false, kThumbStep); }'));
 const tileSwitch = read('src/types/switch/renderer.cpp');
-assert.ok(tileSwitch.includes('constexpr uint32_t kIconOff = tone_color::kOffIcon;') &&
-  tileSwitch.includes('view->thumb_off = tone_color::switch_thumb_off(base);') &&
-  tileSwitch.includes('symbol_color = lv_color_hex(kIconOff);'), 'Tile switch: off thumb and grey off symbol');
+assert.ok(tileSwitch.includes('view->thumb_off = tone_color::switch_thumb_off(base);') &&
+  tileSwitch.includes('symbol_color = lv_color_hex(tone_color::off_icon());'), 'Tile switch: off thumb and grey off symbol');
 const popup = read('src/ui/popups/light/light_popup.cpp');
 assert.ok(popup.includes('popup_nav_style::fill(popup_surface::card(ctx->card_bg), lv_color_hex(header_icon_rgb(ctx, icon_rgb)), color, opa);'),
   'Light popup controls use the shell control fill (the header circle color)');
-assert.equal((popup.match(/control_fill\(ctx, icon_rgb, track, track_opa\);\n\s*(?:const lv_color_t thumb_color =|lv_obj_set_style_bg_color\(ctx->val_slider, track, LV_PART_MAIN\);)/g) || []).length, 2,
+assert.equal((popup.match(/control_fill\(ctx, icon_rgb, track, track_opa\);\n\s*(?:const uint32_t accent = tone_color::light_accent\(icon_rgb\);\n\s*const lv_color_t thumb_color =|const lv_color_t thumb_color =|lv_obj_set_style_bg_color\(ctx->val_slider, track, LV_PART_MAIN\);)/g) || []).length, 2,
   'Switch and brightness track take the control fill');
 assert.ok(popup.includes(': lv_color_hex(tone_color::switch_thumb_off(lv_color_to_u32(track) & 0xFFFFFF));') &&
-  popup.includes('ctx->is_on ? brightness_dash_color(ctx) : lv_color_hex(tone_color::kOffIcon), 0);'),
-  'Light popup switch: off thumb a step above the track, grey off symbol, on symbol in the tile card color');
+  popup.includes('ctx->is_on ? lv_color_hex(tone_color::mark_on(accent, lv_color_to_u32(brightness_dash_color(ctx))))') &&
+  popup.includes(': lv_color_hex(tone_color::off_icon()),'),
+  'Light popup switch: off thumb a step above the track, grey off symbol, on symbol a mark on the accent');
 assert.ok(popup.includes('const lv_opa_t bg_opa = enabled && (active || pressed) ? fill_opa : static_cast<lv_opa_t>(LV_OPA_TRANSP);') &&
   popup.includes('popup_nav_style::no_press_filter(button, selector);'),
   'Selected and pressed mode buttons show the control fill without theme darkening');
@@ -146,10 +143,12 @@ for (const gone of ['kAccentTrackShare', 'accent_track_color', 'kSwitchThumbOffS
 const shell = read('src/ui/popups/popup_shell.cpp');
 assert.ok(shell.includes('? tone_color::g_from_icon_card(rgb, false, options.tile_tint)') &&
   !/disc_track|on_track|tile_from_icon/.test(shell), 'The header circle has no Light exception');
-assert.ok(iconSource.includes('if (icon_fill_marker(obj, marker)) return marker;') &&
+// The fill the tile shows now: "Ausfuellen" or its matching rule row's own.
+assert.ok(iconSource.includes('if (icon_fill_marker(obj, marker) || tile_icon_disc::has_rule_fill(obj, rule)) {') &&
+  iconSource.includes('return tile_icon_disc::shown_fill(obj);') &&
   iconSource.includes('tile_icon_disc::glow_of(disc), popup_shows_tile_color && from_icon > 0,\n                            from_icon);'),
   'The opening tile passes its From icon strength');
 assert.match(read('src/web/assets/admin.css'),
-  /\.tile-switch \.tile-switch-knob \{[^}]*background:var\(--switch-thumb-off, #555\);\s*color:#B0B0B0;/,
+  /\.tile-switch \.tile-switch-knob \{[^}]*background:var\(--switch-thumb-off, #555\);\s*color:var\(--pv-icon-off, #B0B0B0\);/,
   'Web preview: grey off symbol');
 console.log('Light popup circle, track, buttons and switch match the tile');

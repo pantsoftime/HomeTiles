@@ -27,6 +27,7 @@
 #include "esp_heap_caps.h"
 #include <lvgl_private.h>
 #include <math.h>
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -134,7 +135,7 @@ struct LightPopupContext {
   lv_obj_t* temp_value_label = nullptr;
   // Background of the tile that opened the popup. Card-colored cut-outs and
   // lighter neutral surfaces derive from it.
-  uint32_t card_bg = popup_surface::kDefaultCard;
+  uint32_t card_bg = popup_surface::default_card();
   uint16_t hue = 0;
   uint8_t sat = 0;
   uint8_t val = 100;
@@ -549,7 +550,7 @@ static bool is_visible_obj(lv_obj_t* obj) {
 }
 
 static uint32_t get_preview_icon_rgb(const LightPopupContext* ctx) {
-  if (!ctx || !ctx->available || !ctx->is_on) return tone_color::kOffIcon;
+  if (!ctx || !ctx->available || !ctx->is_on) return tone_color::off_icon();
   if (ctx->supports_temperature && ctx->use_color_temperature) {
     return lv_color_to_u32(color_from_temperature_kelvin(ctx->color_temp_kelvin)) & 0xFFFFFF;
   }
@@ -557,6 +558,13 @@ static uint32_t get_preview_icon_rgb(const LightPopupContext* ctx) {
     return color_from_hsv(ctx->hue, ctx->sat, 100);
   }
   return kDefaultColor;
+}
+
+// The header icon of a light that is on: exactly its power button's color
+// (tone_color::light_icon, white = the icon grey); off and unavailable keep
+// their greys.
+static uint32_t shown_icon_rgb(const LightPopupContext* ctx, uint32_t rgb) {
+  return ctx->available && ctx->is_on ? tone_color::light_icon(rgb) : rgb;
 }
 
 // The color the header icon shows, the one its circle is computed for.
@@ -602,20 +610,28 @@ static void follow_mode_button_fill(LightPopupContext* ctx, uint32_t icon_rgb, b
   }
 }
 
+// The power button's glyph: in the light theme always the text color (user
+// 2026-10-10: "einfach nur schwarz"); in the dark theme, while on, a mark on
+// the accent (dark on a light accent, else the card's cut-out or white).
+static lv_color_t power_glyph_color(const LightPopupContext* ctx, uint32_t accent, bool on) {
+  if (ui_theme::light() || !on) return lv_color_hex(ui_theme::text());
+  return lv_color_hex(tone_color::mark_on(accent, lv_color_to_u32(popup_surface::card(ctx->card_bg))));
+}
+
 static void update_header_and_power_visuals(LightPopupContext* ctx, uint32_t icon_rgb) {
   if (!ctx) return;
   const bool visual_on = ctx->available && ctx->is_on;
   if (ctx->icon_label) {
     lv_obj_set_style_text_color(
         ctx->icon_label,
-        lv_color_hex(
-            ctx->keep_icon_white && ctx->available ? 0xFFFFFF : icon_rgb),
+        lv_color_hex(shown_icon_rgb(ctx, ctx->keep_icon_white && ctx->available ? 0xFFFFFF : icon_rgb)),
         0);
   }
   if (ctx->power_button) {
     if (visual_on) {
-      // On: the light color; the theme's press darkening stays.
-      const lv_color_t power_color = lv_color_hex(icon_rgb);
+      // On: the light color (a white light in light grey on the light card,
+      // tone_color::light_accent); the theme's press darkening stays.
+      const lv_color_t power_color = lv_color_hex(tone_color::light_accent(icon_rgb));
       popup_nav_style::set_bg(ctx->power_button, power_color, LV_OPA_COVER, LV_PART_MAIN);
       popup_nav_style::set_bg(ctx->power_button, power_color, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
       lv_obj_remove_local_style_prop(ctx->power_button, LV_STYLE_COLOR_FILTER_OPA, LV_PART_MAIN | LV_STATE_PRESSED);
@@ -635,9 +651,7 @@ static void update_header_and_power_visuals(LightPopupContext* ctx, uint32_t ico
     lv_obj_set_style_border_opa(ctx->power_button, LV_OPA_TRANSP, LV_STATE_PRESSED);
   }
   if (ctx->power_button_icon) {
-    // While on, the glyph is a card-colored cut-out of the accent fill.
-    const lv_color_t glyph_color =
-        visual_on ? popup_surface::card(ctx->card_bg) : lv_color_white();
+    const lv_color_t glyph_color = power_glyph_color(ctx, tone_color::light_accent(icon_rgb), visual_on);
     lv_obj_set_style_text_color(ctx->power_button_icon, glyph_color, 0);
     lv_obj_set_style_text_color(ctx->power_button_icon, glyph_color, LV_STATE_PRESSED);
   }
@@ -652,13 +666,23 @@ static void update_live_accent_visuals(LightPopupContext* ctx,
     ctx->accent_ms = now;
   }
   if (ctx->icon_label && !ctx->keep_icon_white) {
-    lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(icon_rgb), 0);
+    // Exactly the power button's color (tone_color::light_icon).
+    lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(shown_icon_rgb(ctx, icon_rgb)), 0);
   }
   if (ctx->power_button && ctx->is_on) {
-    const lv_color_t power_color = lv_color_hex(icon_rgb);
+    const uint32_t accent = tone_color::light_accent(icon_rgb);
+    const lv_color_t power_color = lv_color_hex(accent);
     lv_obj_set_style_bg_color(ctx->power_button, power_color, 0);
     lv_obj_set_style_bg_color(
         ctx->power_button, power_color, LV_STATE_PRESSED);
+    // A dragged color can cross from a light to a dark accent.
+    if (ctx->power_button_icon) {
+      const lv_color_t glyph = power_glyph_color(ctx, accent, true);
+      if (!lv_color_eq(lv_obj_get_style_text_color(ctx->power_button_icon, LV_PART_MAIN), glyph)) {
+        lv_obj_set_style_text_color(ctx->power_button_icon, glyph, 0);
+        lv_obj_set_style_text_color(ctx->power_button_icon, glyph, LV_STATE_PRESSED);
+      }
+    }
   }
   follow_mode_button_fill(ctx, icon_rgb, true);
 }
@@ -668,7 +692,7 @@ static lv_color_t brightness_dash_color(const LightPopupContext* ctx);
 // The switch like the Switch tile's bar: the track in the control fill; on,
 // the thumb in the light color with the power symbol in the tile's card
 // color; off, the thumb one step above the track with the symbol in the grey
-// of an off icon (tone_color::switch_thumb_off, kOffIcon).
+// of an off icon (tone_color::switch_thumb_off, off_icon).
 static void update_switch_slider_visuals(LightPopupContext* ctx, uint32_t icon_rgb, bool invalidate) {
   if (!ctx || !ctx->val_slider || !ctx->val_cap) return;
 
@@ -677,8 +701,9 @@ static void update_switch_slider_visuals(LightPopupContext* ctx, uint32_t icon_r
   lv_color_t track;
   lv_opa_t track_opa;
   control_fill(ctx, icon_rgb, track, track_opa);
+  const uint32_t accent = tone_color::light_accent(icon_rgb);
   const lv_color_t thumb_color =
-      ctx->is_on ? lv_color_hex(icon_rgb)
+      ctx->is_on ? lv_color_hex(accent)
                  : lv_color_hex(tone_color::switch_thumb_off(lv_color_to_u32(track) & 0xFFFFFF));
 
   lv_obj_set_style_bg_color(ctx->val_slider, track, LV_PART_MAIN);
@@ -703,8 +728,11 @@ static void update_switch_slider_visuals(LightPopupContext* ctx, uint32_t icon_r
 
   if (ctx->val_switch_icon) {
     lv_obj_clear_flag(ctx->val_switch_icon, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_text_color(ctx->val_switch_icon,
-                                ctx->is_on ? brightness_dash_color(ctx) : lv_color_hex(tone_color::kOffIcon), 0);
+    lv_obj_set_style_text_color(
+        ctx->val_switch_icon,
+        ctx->is_on ? lv_color_hex(tone_color::mark_on(accent, lv_color_to_u32(brightness_dash_color(ctx))))
+                   : lv_color_hex(tone_color::off_icon()),
+        0);
     lv_label_set_text(ctx->val_switch_icon, getMdiChar(get_switch_slider_icon_name(ctx)).c_str());
     lv_obj_center(ctx->val_switch_icon);
   }
@@ -727,7 +755,7 @@ static void update_brightness_slider_visuals(LightPopupContext* ctx, uint32_t ic
   lv_obj_set_style_bg_color(ctx->val_slider, track, LV_PART_MAIN);
   lv_obj_set_style_bg_opa(ctx->val_slider, track_opa, LV_PART_MAIN);
   lv_obj_set_style_border_width(ctx->val_slider, 0, LV_PART_MAIN);
-  ctx->brightness_draw_color = icon_rgb;
+  ctx->brightness_draw_color = tone_color::light_accent(icon_rgb);
   if (ctx->val_fill) {
     lv_obj_add_flag(ctx->val_fill, LV_OBJ_FLAG_HIDDEN);
   }
@@ -893,8 +921,10 @@ static void on_brightness_slider_draw(lv_event_t* e) {
   lv_draw_rect_dsc_t dash_dsc;
   lv_draw_rect_dsc_init(&dash_dsc);
   dash_dsc.base.layer = layer;
-  // The notch is read at draw time, so a new card color needs no rebuild.
-  dash_dsc.bg_color = brightness_dash_color(ctx);
+  // The notch is read at draw time, so a new card color needs no rebuild; a
+  // mark on the fill (dark on a light fill, else the card's cut-out or white).
+  dash_dsc.bg_color =
+      lv_color_hex(tone_color::notch_on(ctx->brightness_draw_color, lv_color_to_u32(brightness_dash_color(ctx))));
   dash_dsc.bg_opa = LV_OPA_COVER;
   dash_dsc.border_opa = LV_OPA_TRANSP;
   dash_dsc.radius = LV_RADIUS_CIRCLE;
@@ -947,9 +977,18 @@ static void update_temperature_handle(LightPopupContext* ctx) {
   }
 
   lv_obj_clear_flag(ctx->temp_slider_handle, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_style_bg_color(ctx->temp_slider_handle,
-                            color_from_temperature_kelvin(ctx->color_temp_kelvin),
-                            0);
+  const lv_color_t handle_color = color_from_temperature_kelvin(ctx->color_temp_kelvin);
+  lv_obj_set_style_bg_color(ctx->temp_slider_handle, handle_color, 0);
+  // Its notch is a mark on it: dark on the light Kelvin colors in the light
+  // theme, the card's cut-out in the dark one (tone_color::mark_on).
+  if (ctx->temp_handle_dash) {
+    // The Kelvin knob's line: dark on the light knob (user 2026-10-10).
+    const lv_color_t notch = lv_color_hex(tone_color::mark_on(
+        lv_color_to_u32(handle_color) & 0xFFFFFF, lv_color_to_u32(popup_surface::card(ctx->card_bg))));
+    if (!lv_color_eq(lv_obj_get_style_bg_color(ctx->temp_handle_dash, LV_PART_MAIN), notch)) {
+      lv_obj_set_style_bg_color(ctx->temp_handle_dash, notch, 0);
+    }
+  }
 
   float ratio = get_color_temp_ratio(ctx->color_temp_kelvin,
                                      ctx->min_color_temp_kelvin,
@@ -1020,11 +1059,11 @@ static void style_control_button(lv_obj_t* button,
     const lv_color_t disabled_color = popup_surface::lighter(card, popup_surface::kDisabled);
     lv_obj_set_style_text_color(
         icon,
-        enabled ? lv_color_white() : disabled_color,
+        enabled ? lv_color_hex(ui_theme::text()) : disabled_color,
         0);
     lv_obj_set_style_text_color(
         icon,
-        enabled ? lv_color_white() : disabled_color,
+        enabled ? lv_color_hex(ui_theme::text()) : disabled_color,
         LV_STATE_PRESSED);
   }
 }
@@ -1502,9 +1541,11 @@ static lv_obj_t* create_color_field_panel(lv_obj_t* parent,
   lv_obj_set_size(cursor, kColorFieldCursorSize, kColorFieldCursorSize);
   lv_obj_set_style_radius(cursor, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_opa(cursor, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(cursor, lv_color_white(), 0);
+  // Exactly the dark theme's cursor in both themes (user 2026-10-10): a white
+  // ring around the picked color.
+  lv_obj_set_style_bg_color(cursor, lv_color_hex(ui_theme::kDark.icon), 0);
   lv_obj_set_style_border_width(cursor, 3, 0);
-  lv_obj_set_style_border_color(cursor, lv_color_white(), 0);
+  lv_obj_set_style_border_color(cursor, lv_color_hex(ui_theme::kDark.text), 0);
   lv_obj_set_style_outline_width(cursor, 1, 0);
   lv_obj_set_style_outline_color(cursor, lv_color_hex(0x111111), 0);
   lv_obj_set_style_shadow_width(cursor, 12, 0);
@@ -1608,7 +1649,7 @@ static lv_obj_t* create_vertical_slider_panel(lv_obj_t* parent,
     switch_icon = lv_label_create(cap);
     lv_obj_set_style_text_font(switch_icon, FONT_MDI_ICONS, 0);
     popup_layout::applyIconScale(switch_icon);
-    lv_obj_set_style_text_color(switch_icon, lv_color_white(), 0);
+    lv_obj_set_style_text_color(switch_icon, lv_color_hex(ui_theme::text()), 0);
     lv_label_set_text(switch_icon, "");
     lv_obj_center(switch_icon);
     lv_obj_add_flag(switch_icon, LV_OBJ_FLAG_HIDDEN);
@@ -1618,7 +1659,7 @@ static lv_obj_t* create_vertical_slider_panel(lv_obj_t* parent,
 
   lv_obj_t* value = lv_label_create(panel);
   lv_obj_set_style_text_font(value, popup_layout::font24(), 0);
-  lv_obj_set_style_text_color(value, lv_color_white(), 0);
+  lv_obj_set_style_text_color(value, lv_color_hex(ui_theme::text()), 0);
   lv_label_set_text(value, "");
   lv_obj_add_flag(value, LV_OBJ_FLAG_HIDDEN);
 
@@ -1704,7 +1745,7 @@ static lv_obj_t* create_temperature_panel(lv_obj_t* parent,
 
   lv_obj_t* value = lv_label_create(panel);
   lv_obj_set_style_text_font(value, popup_layout::font24(), 0);
-  lv_obj_set_style_text_color(value, lv_color_white(), 0);
+  lv_obj_set_style_text_color(value, lv_color_hex(ui_theme::text()), 0);
   lv_label_set_text(value, "");
   lv_obj_add_flag(value, LV_OBJ_FLAG_HIDDEN);
 
@@ -1748,8 +1789,8 @@ static lv_obj_t* create_control_icon_button(lv_obj_t* parent, const char* icon_n
   lv_obj_t* icon = lv_label_create(btn);
   lv_obj_set_style_text_font(icon, FONT_MDI_ICONS, 0);
   popup_layout::applyIconScale(icon);
-  lv_obj_set_style_text_color(icon, lv_color_white(), 0);
-  lv_obj_set_style_text_color(icon, lv_color_white(), LV_STATE_PRESSED);
+  lv_obj_set_style_text_color(icon, lv_color_hex(ui_theme::text()), 0);
+  lv_obj_set_style_text_color(icon, lv_color_hex(ui_theme::text()), LV_STATE_PRESSED);
   lv_label_set_text(icon, getMdiChar(icon_name).c_str());
   lv_obj_center(icon);
 
@@ -1785,6 +1826,7 @@ static void apply_card_color(LightPopupContext* ctx, uint32_t bg_color) {
 // While open, the popup follows its tile's current background (a rules tint
 // that changes with the entity state); tile_icon_source calls this.
 void light_popup_follow_tile_color(uint32_t bg_color) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   LightPopupContext* ctx = g_light_popup_ctx;
   if (!ctx || !ctx->card || lv_obj_has_flag(ctx->card, LV_OBJ_FLAG_HIDDEN)) return;
   const uint32_t color = popup_surface::card_or_default(bg_color);
@@ -1885,8 +1927,8 @@ static void apply_init_to_context(LightPopupContext* ctx, const LightPopupInit& 
     lv_label_set_text(ctx->icon_label, icon_char.c_str());
   }
   if (!apply_content) {
-    lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(
-        ctx->keep_icon_white && ctx->available ? 0xFFFFFF : get_preview_icon_rgb(ctx)), 0);
+    lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(shown_icon_rgb(ctx,
+        ctx->keep_icon_white && ctx->available ? 0xFFFFFF : get_preview_icon_rgb(ctx))), 0);
     // The reused buttons show this light's circle color in the first frame.
     follow_mode_button_fill(ctx, get_preview_icon_rgb(ctx));
     ctx->suppress_events = false;
@@ -2036,7 +2078,7 @@ static void apply_brightness_point(LightPopupContext* ctx, const lv_point_t& poi
   else maybe_live_publish_brightness(ctx);
 }
 
-// Diagnostics for the color wheel and the Kelvin slider: one line per drag
+// Diagnostics for the color wheel and the Kelvin/brightness sliders: one line per drag
 // when the finger lifts, with the handler time per step and LVGL's frames
 // (render time and dirty areas), so a stutter shows where the time goes.
 struct DragTiming {
@@ -2133,9 +2175,11 @@ static void on_brightness_track_event(lv_event_t* e) {
   }
 
   const lv_event_code_t code = lv_event_get_code(e);
+  const bool release = code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST;
   if (code == LV_EVENT_PRESSED) {
     begin_slider_gesture(ctx);
-  } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    start_drag_timing(ctx->card);
+  } else if (release) {
     ctx->user_dragging = false;
   } else if (code != LV_EVENT_PRESSING) {
     return;
@@ -2143,8 +2187,9 @@ static void on_brightness_track_event(lv_event_t* e) {
 
   lv_indev_t* indev = lv_indev_get_act();
   if (!indev) {
-    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    if (release) {
       commit_brightness(ctx);
+      finish_drag_timing("Brightness");
     }
     return;
   }
@@ -2152,7 +2197,13 @@ static void on_brightness_track_event(lv_event_t* e) {
   lv_point_t point;
   lv_indev_get_point(indev, &point);
   note_slider_movement(ctx, point);
-  apply_brightness_point(ctx, point, code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST);
+  const uint32_t step_us = micros();
+  apply_brightness_point(ctx, point, release);
+  if (!release) {
+    note_drag_step(step_us);
+  } else {
+    finish_drag_timing("Brightness");
+  }
 }
 
 static void apply_temperature_point(LightPopupContext* ctx, const lv_point_t& point, bool commit) {
@@ -2402,6 +2453,7 @@ static void prepare_light_popup_open(const LightPopupInit& init) {
 }
 
 void show_light_popup(const LightPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   hide_pin_popup();
   hide_camera_popup();
   if (!init.entity_id.length()) return;
@@ -2460,7 +2512,7 @@ void show_light_popup(const LightPopupInit& init) {
   lv_obj_set_height(ctx->top_value_label, kTopValueHeight);
   lv_obj_set_style_text_align(ctx->top_value_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(ctx->top_value_label, popup_layout::font40(), 0);
-  lv_obj_set_style_text_color(ctx->top_value_label, lv_color_white(), 0);
+  lv_obj_set_style_text_color(ctx->top_value_label, lv_color_hex(ui_theme::text()), 0);
   lv_obj_set_style_translate_y(ctx->top_value_label, popup_layout::kLargeValueTextOffsetY, 0);
   lv_obj_set_style_pad_bottom(ctx->top_value_label, kTopValueBottomPad, 0);
   lv_label_set_text(ctx->top_value_label, "");
@@ -2560,6 +2612,7 @@ void show_light_popup(const LightPopupInit& init) {
 // State updates never recolor the card: the popup keeps the background of
 // the tile it was opened from, so init.bg_color is ignored here.
 void update_light_popup(const LightPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (!g_light_popup_ctx || !g_light_popup_ctx->overlay || !g_light_popup_ctx->card) return;
   if (!g_light_popup_ctx->entity_id.length()) return;
   if (!g_light_popup_ctx->entity_id.equalsIgnoreCase(init.entity_id)) return;
@@ -2590,6 +2643,7 @@ void update_light_popup(const LightPopupInit& init) {
 }
 
 void preload_light_popup() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (g_light_popup_ctx && g_light_popup_ctx->overlay && g_light_popup_ctx->card) return;
   LightPopupInit init;
   init.entity_id = "__preload__";

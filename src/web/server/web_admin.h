@@ -50,7 +50,12 @@ public:
   void handleSaveBridge();
   void handleBridgeRefresh();
   void handleStatus();
+  // GET /api/language: the panel's language, so an open page notices a change
+  // made on the display and reloads (issue #73).
+  void handleLanguage();
   void handleRestart();
+  // POST /api/link: the Bridge's address for the direct link (docs-dev/bridge-link.md).
+  void handleLinkSetup();
   void handleGetTiles();
   void handleSaveTiles();
   void handleReorderTiles();
@@ -58,34 +63,43 @@ public:
   void handleGetFolderTab();
   void handleSaveFolderAccess();
   void handleDeleteFolder();
+  void handleGetLayouts();
+  void handleSaveLayouts();
+  void handleSwitchLayout();
+  void handleSavePages();
   void handleGetSensorValues();
   void handleGetEntityOptions();
+  void handleGetMdiIcons();
+  void handleStartEntitySearch();
+  void handleGetEntitySearch();
   void handleGetScreensaver();
   void handleSaveScreensaver();
   void handleGetHardwareIo();
   void handleSaveHardwareIo();
   void handleSaveTileBorders();
-  void handleSaveIconDiscs();
-  void handleSaveIconGlow();
-  void handleSaveDefaultTileColor();
-  void handleTileRadius();
+  void handleSaveIconDiscs();  // FORK
+  void handleSaveHeadGear();
+  void handleSaveHeadSwitch();
+  void handleSaveHomeHead();
+  void handleGestures();
+  void handleSaveTheme();
   void handleLocalCamera();
   void handleGetScreensaverWallpaper();
   void handleGetSdImages();
-  void handleGetSdIcons();
   void handleCreateScreenshot();
   void handleDownloadScreenshot();
   void handlePrepareOtaUpload();
   void handleOtaUpdate();
   void handleOtaRawUpdate();
+  void handleIconFileDownload();
+  void handleIconFileUpload();
+  void handleIconFileUploadDone();
   void handleOtaUploadDone();
   void handleStartOtaInstall();
   void handleGetOtaStatus();
   void handleGithubUpdateCheck();
   void handleGithubUpdateInstall();
   void handleGetGithubUpdateStatus();
-  void handleUploadIcon();
-  void handleUploadIconDone();
   void handleFileManagerList();
   void handleFileManagerDownload();
   void handleFileManagerDelete();

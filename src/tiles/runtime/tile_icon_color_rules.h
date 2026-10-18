@@ -2,6 +2,7 @@
 
 #include "src/tiles/config/tile_icon_colors.h"
 #include "src/tiles/runtime/tile_icon_disc.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace tile_icon_color_rules {
 
@@ -12,6 +13,26 @@ namespace tile_icon_color_rules {
 // states (`known` false) always use `fallback`. The color goes through
 // tile_icon_disc::set_icon_color(), so the disc glow follows; unchanged colors
 // are skipped and nothing is allocated.
+// A state line's own "Fuellen" as the card keeps it (tile_icon_disc rule_fill).
+inline uint8_t rule_fill_of(tile_icon_colors::RowFill fill) {
+  return fill == tile_icon_colors::RowFill::On ? tile_icon_disc::kRuleFillOn
+         : fill == tile_icon_colors::RowFill::Off ? tile_icon_disc::kRuleFillOff
+                                                  : tile_icon_disc::kRuleFillNone;
+}
+
+// The matching state line's own "Fuellen" (tile_icon_colors::state_fill)
+// goes to the tile card; the icon color hook then fills or clears the card
+// (tile_icon_source on_icon_color). Rules on another entity set it in
+// tile_icon_source::refresh_card.
+inline bool note_fill(lv_obj_t* card, const char* record, bool known, const char* state, const char* display) {
+  if (!card || !record) return false;
+  if (tile_icon_colors::source_of(record).mode != tile_icon_colors::SourceMode::None &&
+      !tile_icon_colors::own_state_colors_icon(record)) {
+    return false;
+  }
+  return tile_icon_disc::set_rule_fill(card, rule_fill_of(tile_icon_colors::state_fill(record, known, state, display)));
+}
+
 inline void apply(lv_obj_t* icon, const char* record, bool known,
                   const char* state, const char* display, lv_color_t fallback) {
   if (!icon) return;
@@ -19,8 +40,10 @@ inline void apply(lv_obj_t* icon, const char* record, bool known,
   // icon to the fixed color here; the rule layer forces its own color.
   const lv_color_t color = lv_color_hex(tile_icon_colors::state_icon_color(
       record, known, state, display, lv_color_to_u32(fallback) & 0xFFFFFF));
+  // A changed row fill shows even when the color stays (two rows, one color).
+  const bool fill_changed = note_fill(tile_surface::card_of(icon), record, known, state, display);
   lv_color_t forced;
-  if (!tile_icon_disc::forced_color(icon, forced) &&
+  if (!fill_changed && !tile_icon_disc::forced_color(icon, forced) &&
       lv_color_eq(lv_obj_get_style_text_color(icon, LV_PART_MAIN), color)) {
     return;
   }
@@ -31,7 +54,7 @@ inline void apply(lv_obj_t* icon, const char* record, bool known,
 // the icon takes the tile's fixed icon color, else stays white. Called once
 // when the tile is built; the disc reads the color when its options apply.
 inline void apply_fixed(lv_obj_t* icon, const char* record) {
-  apply(icon, record, true, "", nullptr, lv_color_white());
+  apply(icon, record, true, "", nullptr, lv_color_hex(ui_theme::text()));
 }
 
 }  // namespace tile_icon_color_rules

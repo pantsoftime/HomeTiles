@@ -17,11 +17,11 @@ assert.match(rules, /\.tab-content\.tile-tab\.active \{ display:flex; flex-direc
   'the tile tab lays out preview, parking and footer as a column');
 assert.match(rules, /\.tile-grid-scroll,\s*\.tab-content\.tile-tab\.active \.settings-hidden-parking \{ flex:0 0 auto; \}/,
   'preview and parking keep their size');
-assert.match(rules, /\.folder-footer \{\s*flex:1 1 auto;\s*min-height:90px;\s*overflow-y:auto;/,
-  'the Global settings footer scrolls and keeps a usable height');
-// The Tile settings panel takes the row height; no script caps it inline (a
-// cap from the window height ran 2 px past the row and scrolled the tab).
-assert.match(rules, /\.tab-content\.tile-tab\.active \.tile-settings \{ max-height:100%; \}/);
+assert.doesNotMatch(rules, /\.folder-footer/, 'no page has a footer under the grid');
+// The Tile settings panel takes the row height, also for a short type
+// (test-tile-settings-full-height.mjs); no script caps it inline (a cap from
+// the window height ran 2 px past the row and scrolled the tab).
+assert.match(rules, /\.tab-content\.tile-tab\.active \.tile-settings \{ align-self:stretch; max-height:100%; \}/);
 assert.match(readRepoFile('src/web/admin/navigation/tabs.js'),
   /function updateTileSettingsMaxHeight\(\) \{\s*document\.querySelectorAll\('\.tile-settings'\)\.forEach\(panel => \{ panel\.style\.maxHeight = ''; \}\);\s*\}/);
 // The parking row follows the grid width, so its hint wraps instead of
@@ -36,12 +36,15 @@ const tab = cppFunctionDefinitions(html).find((f) => f.name === 'appendTileTabHT
 assert.ok(tab, 'appendTileTabHTML');
 assert.match(tab.source, /<div class=\\"settings-parking-texts\\"><div id=\\"settingsHiddenHint\\"[\s\S]{0,260}html \+= "<\/div><p class=\\"hint\\">";\s*html \+= tr\.admin_tile_hint;/,
   'the tile editing hint sits beside the Settings parking');
-// A folder shows the hint and Delete Folder where Home keeps its parking
-// slot; no footer carries them.
-assert.match(tab.source, /\} else if \(!screensaver_mode\) \{[\s\S]{0,400}settings-hidden-parking folder-side[\s\S]{0,200}html \+= tr\.admin_tile_hint;[\s\S]{0,200}btn-delete-folder[\s\S]{0,200}tr\.admin_delete_folder_tab;/,
-  'folders show the hint and Delete Folder beside or below the grid');
+// A folder shows Delete Folder where Home keeps its parking slot, without
+// the editing hint (user 2026-10-12: the long text annoyed).
+assert.match(tab.source, /\} else if \(!screensaver_mode\) \{[\s\S]{0,400}settings-hidden-parking folder-side\\"><div class=\\"settings-parking-texts\\">";\s*html \+= "<button type=\\"button\\" class=\\"btn btn-danger btn-delete-folder/,
+  'folders show Delete Folder beside or below the grid, no hint');
+// The other: the settings panel's "Tile" tab without a selected tile
+// (test-settings-panel-tabs.mjs).
 assert.equal((tab.source.match(/tr\.admin_tile_hint/g) || []).length, 2,
-  'the hint appears once for Home and once for folders, never in a footer');
+  'the hint appears beside the classic Settings slot and in the panel only');
+assert.ok(tab.source.includes('html += "</button></div><p class=\\"hint panel-tile-hint\\">";\n  html += tr.admin_tile_hint;'));
 assert.equal((tab.source.match(/btn-delete-folder/g) || []).length, 1, 'one Delete Folder button');
 
 // Real layout on the smallest grid (S3 480x480, 4x4 cells of 116 px): the

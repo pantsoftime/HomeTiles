@@ -1,7 +1,9 @@
 #include "src/types/scene/web_handler.h"
 
 void apply_scene_fields_from_request(WebServer& server, Tile& tile) {
-  tile.scene_alias = server.hasArg("scene_alias") ? server.arg("scene_alias") : "";
+  // The picker's value: a scene, script or button id, or the Bridge alias of
+  // a tile from before (sceneTarget).
+  setSceneTarget(tile, server.hasArg("scene_alias") ? server.arg("scene_alias") : String());
   tile.sensor_decimals = 0xFF;
   tile.sensor_value_font = 0;
   tile.sensor_display_mode = 0;

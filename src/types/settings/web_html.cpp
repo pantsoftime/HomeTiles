@@ -2,6 +2,7 @@
 
 #include "src/core/config/config_manager.h"
 #include "src/core/i18n/i18n.h"
+#include "src/tiles/config/grid_layout.h"
 #include "src/web/server/web_admin_utils.h"
 #include "src/web/server/auth/web_admin_auth.h"
 
@@ -32,10 +33,19 @@ void append_settings_access_fields_html(String& html, const String& tab_id) {
   if (cfg.settings_tile_hidden) html += " checked";
   html += "><span>" + String(tr.settings_hide_tile) + "</span></label>";
 
-  html += "<label class=\"folder-pin-toggle\"><input type=\"checkbox\" id=\"" +
-          prefix + "settings_swipe_enabled\"";
+  // The swipe is set in the gesture menu (Global tab, swipe_gestures.h); the
+  // access saves carry its current state from these hidden fields.
+  html += "<input type=\"checkbox\" hidden id=\"" + prefix + "settings_swipe_enabled\"";
   if (cfg.settings_swipe_enabled) html += " checked";
-  html += "><span>" + String(tr.settings_swipe_enable) + "</span></label>";
+  html += "><input type=\"hidden\" id=\"" + prefix + "settings_reveal_edge\" value=\"" +
+          String(cfg.settings_reveal_edge) + "\">";
+  // With a bar layout: the gear in Home's head (grid_layout.h), saved at once.
+  if (grid_layout::head_bar()) {
+    html += "<label class=\"folder-pin-toggle\"><input type=\"checkbox\" class=\"settings-head-gear\" id=\"" +
+            prefix + "settings_head_gear\" onchange=\"saveHeadGear(this.checked)\"";
+    if (cfg.head_gear) html += " checked";
+    html += "><span>" + String(tr.settings_head_gear) + "</span></label>";
+  }
   html += "</div>";
 
   html += "<div class=\"settings-access-columns\">";
@@ -64,20 +74,7 @@ void append_settings_access_fields_html(String& html, const String& tab_id) {
                                           : tr.settings_pin_not_configured) +
           "</div></div>";
 
-  html += "<div id=\"" + prefix +
-          "settings_reveal_edge_fields\" class=\"settings-access-field settings-edge-fields\">";
-  html += "<label for=\"" + prefix + "settings_reveal_edge\">" +
-          String(tr.settings_reveal_edge) + "</label><select id=\"" + prefix +
-          "settings_reveal_edge\">";
-  const char* edge_labels[] = {tr.edge_left, tr.edge_right, tr.edge_top,
-                               tr.edge_bottom};
-  for (uint8_t edge = 0; edge < 4; ++edge) {
-    html += "<option value=\"" + String(edge) + "\"";
-    if (cfg.settings_reveal_edge == edge) html += " selected";
-    html += ">" + String(edge_labels[edge]) + "</option>";
-  }
-  html += "</select><div class=\"settings-note\">" +
-          String(tr.settings_swipe_note) + "</div></div></div>";
+  html += "</div>";
 
   html += "<div class=\"settings-note settings-factory-pin\"><strong>" +
           String(tr.factory_pin_label) + ": " + String(pin_access::kRecoveryPin) +

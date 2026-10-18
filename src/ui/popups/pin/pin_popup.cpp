@@ -1,9 +1,11 @@
 #include "src/ui/popups/popup_shell.h"
+#include "src/ui/popups/popup_surface.h"
 #include "src/ui/popups/popup_open.h"
 #include "src/ui/popups/pin/pin_popup.h"
 #include "src/ui/popups/pin/pin_keypad_geometry.h"
 
 #include "src/core/config/config_manager.h"
+#include "src/ui/shared/ui_theme.h"
 #include "src/core/i18n/i18n.h"
 #include "src/core/config/pin_access.h"
 #include "src/tiles/icons/mdi_icons.h"
@@ -29,7 +31,8 @@ namespace {
 
 using namespace pin_keypad;
 
-constexpr uint32_t kErrorColor = 0xFF6B6B;
+// The error text; the light theme takes its dark tone (settings_style::error_color).
+inline uint32_t error_color() { return ui_theme::light() ? 0xD03F45 : 0xFF6B6B; }
 constexpr uint32_t kAutoCloseMs = 60000;
 constexpr int kKeyCount = 12;
 constexpr int kBackspaceKey = 9;
@@ -91,6 +94,7 @@ const lv_font_t* digit_font(int key_h) {
 void update_value(PinPopupContext* ctx);
 
 void auto_close_timer_cb(lv_timer_t* timer) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   PinPopupContext* ctx = static_cast<PinPopupContext*>(
       lv_timer_get_user_data(timer));
   if (!ctx || ctx != g_ctx) {
@@ -134,9 +138,19 @@ void update_value(PinPopupContext* ctx) {
   const char* error = ctx->error.length() ? ctx->error.c_str() : tr.pin_popup_incorrect;
   lv_label_set_text(ctx->prompt_label, ctx->show_error ? error : prompt);
   lv_obj_set_style_text_color(ctx->prompt_label,
-                              ctx->show_error ? lv_color_hex(kErrorColor) : lv_color_white(), 0);
+                              ctx->show_error ? lv_color_hex(error_color()) : lv_color_hex(ui_theme::text()), 0);
   const size_t circles = ctx->length > pin_access::kUserPinMinDigits ? ctx->length : pin_access::kUserPinMinDigits;
+  // The dots take the open surface's roles like the prompt (preloaded with
+  // the theme's, dark on a filled tile's card otherwise).
+  const lv_color_t ring = lv_color_hex(ui_theme::text());
+  const lv_color_t inside = lv_color_hex(ui_theme::icon());
   for (size_t i = 0; i < pin_access::kInputMaxDigits; ++i) {
+    if (!lv_color_eq(lv_obj_get_style_border_color(ctx->dots[i], LV_PART_MAIN), ring)) {
+      lv_obj_set_style_border_color(ctx->dots[i], ring, 0);
+    }
+    if (!lv_color_eq(lv_obj_get_style_bg_color(ctx->dots[i], LV_PART_MAIN), inside)) {
+      lv_obj_set_style_bg_color(ctx->dots[i], inside, 0);
+    }
     lv_obj_set_flag(ctx->dots[i], LV_OBJ_FLAG_HIDDEN, i >= circles);
     lv_obj_set_style_bg_opa(ctx->dots[i], i < ctx->length ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
   }
@@ -161,8 +175,8 @@ void style_keypad(PinPopupContext* ctx) {
     lv_obj_t* key = ctx->key_buttons[i];
     if (!key) continue;
     if (i == kConfirmKey) {
-      popup_nav_style::set_bg(key, lv_color_white(), LV_OPA_COVER, LV_PART_MAIN);
-      popup_nav_style::set_bg(key, lv_color_hex(0xD8D8D8), LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+      popup_nav_style::set_bg(key, lv_color_hex(ui_theme::icon()), LV_OPA_COVER, LV_PART_MAIN);
+      popup_nav_style::set_bg(key, lv_color_hex(ui_theme::text_soft()), LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
       popup_nav_style::no_press_filter(key, LV_PART_MAIN | LV_STATE_PRESSED);
       lv_obj_t* label = lv_obj_get_child(key, 0);
       if (label && !lv_color_eq(lv_obj_get_style_text_color(label, LV_PART_MAIN), card)) {
@@ -197,12 +211,13 @@ lv_obj_t* create_key(lv_obj_t* parent, const char* text, const lv_font_t* font,
   lv_obj_t* label = lv_label_create(button);
   lv_obj_set_style_text_font(label, font, 0);
   popup_layout::applyIconScale(label);
-  lv_obj_set_style_text_color(label, lv_color_white(), 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(ui_theme::text()), 0);
   lv_label_set_text(label, text);
   lv_obj_center(label);
   lv_obj_add_event_cb(
       button,
       [](lv_event_t* event) {
+        const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
         if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
         PinKeyData* key = static_cast<PinKeyData*>(
             lv_event_get_user_data(event));
@@ -267,6 +282,7 @@ lv_obj_t* create_key(lv_obj_t* parent, const char* text, const lv_font_t* font,
 }
 
 void on_close(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
   PinPopupContext* ctx = static_cast<PinPopupContext*>(
       lv_event_get_user_data(event));
@@ -278,6 +294,7 @@ void on_close(lv_event_t* event) {
 }
 
 void on_delete(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(event) != LV_EVENT_DELETE) return;
   PinPopupContext* ctx = static_cast<PinPopupContext*>(
       lv_event_get_user_data(event));
@@ -324,9 +341,9 @@ void build_keypad(PinPopupContext* ctx) {
     lv_obj_remove_style_all(dot);
     lv_obj_set_size(dot, g.dot, g.dot);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_color(dot, lv_color_white(), 0);
+    lv_obj_set_style_border_color(dot, lv_color_hex(ui_theme::text()), 0);
     lv_obj_set_style_border_width(dot, g.dot / 9 > 2 ? g.dot / 9 : 2, 0);
     lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
     ctx->dots[i] = dot;
@@ -393,6 +410,7 @@ void apply_header(PinPopupContext* ctx, const PinPopupInit& init) {
 }  // namespace
 
 void show_pin_popup(const PinPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   hide_device_popup();
   hide_light_popup();
   hide_climate_popup();
@@ -460,6 +478,7 @@ void show_pin_popup(const PinPopupInit& init) {
 }
 
 void preload_pin_popup() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (g_ctx && g_ctx->overlay && g_ctx->card) return;
   const auto& tr = i18n::strings(configManager.getConfig().language);
   PinPopupInit init;
@@ -487,6 +506,7 @@ void hide_pin_popup() {
 }
 
 void resume_pin_popup_after_failed_success() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!g_ctx || !g_ctx->card || !g_ctx->overlay ||
       !g_ctx->waiting_for_success_completion) {
     return;
@@ -499,6 +519,7 @@ void resume_pin_popup_after_failed_success() {
 }
 
 void pin_popup_set_error(const char* text, bool show) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!g_ctx || !g_ctx->card || !text) return;
   g_ctx->error = text;
   g_ctx->show_error = show;
@@ -510,6 +531,7 @@ bool is_pin_popup_for(const void* context) {
 }
 
 void pin_popup_set_state(const String& icon_name, uint32_t icon_color, const String& state) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!g_ctx || !g_ctx->card || !g_ctx->icon_label || !g_ctx->state_label) return;
   lv_label_set_text(g_ctx->icon_label, popup_icon_glyph(icon_name).c_str());
   lv_obj_set_style_text_color(g_ctx->icon_label, lv_color_hex(icon_color), 0);
@@ -519,6 +541,7 @@ void pin_popup_set_state(const String& icon_name, uint32_t icon_color, const Str
 }
 
 void pin_popup_pulse_icon(bool on) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (g_ctx && g_ctx->card) popup_shell_pulse_icon(g_ctx->card, on);
 }
 

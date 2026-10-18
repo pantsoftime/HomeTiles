@@ -3,11 +3,19 @@ function maybeFillTitleFromWeather(tab) {
     maybeFillTitleFromEntity(tab, '_weather_entity');
   }
 
+  const WEATHER_SENSOR_FIELDS = Object.freeze(['weather_temperature_sensor', 'weather_humidity_sensor']);
+
   function loadWeatherFields(tab, data) {
     loadIconColorFields(tab, data);
     const prefix = tab;
     const el = document.getElementById(prefix + '_weather_entity');
     if (el) el.value = data.sensor_entity || data.weather_entity || '';
+    // Optional temperature/humidity sensors (entity pickers, which show a
+    // configured entity also while it is missing from the list).
+    for (const field of WEATHER_SENSOR_FIELDS) {
+      const input = document.getElementById(prefix + '_' + field);
+      if (input) input.value = String(data[field] || '');
+    }
     const popupModeEl = document.getElementById(prefix + '_weather_popup_open_mode');
     if (popupModeEl) popupModeEl.value = (data.popup_open_mode !== undefined) ? String(data.popup_open_mode) : '1';
     const colored = document.getElementById(prefix + '_weather_colored_icons');
@@ -19,6 +27,9 @@ function maybeFillTitleFromWeather(tab) {
     saveIconColorFields(tab, formData);
     const prefix = tab;
     formData.append('weather_entity', document.getElementById(prefix + '_weather_entity')?.value || '');
+    for (const field of WEATHER_SENSOR_FIELDS) {
+      formData.append(field, document.getElementById(prefix + '_' + field)?.value || '');
+    }
     formData.append('popup_open_mode', document.getElementById(prefix + '_weather_popup_open_mode')?.value || '1');
     const colored = document.getElementById(prefix + '_weather_colored_icons');
     if (colored) formData.append('weather_colored_icons', colored.checked ? '1' : '0');
@@ -29,6 +40,10 @@ function maybeFillTitleFromWeather(tab) {
     const prefix = tab;
     const el = document.getElementById(prefix + '_weather_entity');
     if (el) el.value = '';
+    for (const field of WEATHER_SENSOR_FIELDS) {
+      const input = document.getElementById(prefix + '_' + field);
+      if (input) input.value = '';
+    }
     const popupModeEl = document.getElementById(prefix + '_weather_popup_open_mode');
     if (popupModeEl) popupModeEl.value = '1';
     const colored = document.getElementById(prefix + '_weather_colored_icons');
@@ -132,6 +147,43 @@ function maybeFillTitleFromWeather(tab) {
     };
   }
 
+  // temperature_units.h: 'C', 'F', 'K', or '' for an empty or unknown unit.
+  function temperatureUnitOf(text) {
+    const unit = String(text || '').trim();
+    if (unit === '℃') return 'C';
+    if (unit === '℉') return 'F';
+    const letter = unit.replace(/^°/, '').trim();
+    if (letter === 'C' || letter === 'c') return 'C';
+    if (letter === 'F' || letter === 'f') return 'F';
+    return letter === 'K' ? 'K' : '';
+  }
+
+  // A value from one temperature unit in another; unchanged when either is
+  // unknown (temperature_units.h convert).
+  function convertTemperature(value, from, to) {
+    if (value === null || !from || !to || from === to) return value;
+    const celsius = from === 'F' ? (value - 32) * 5 / 9 : from === 'K' ? value - 273.15 : value;
+    return to === 'F' ? celsius * 9 / 5 + 32 : to === 'K' ? celsius + 273.15 : celsius;
+  }
+
+  // Mirrors weather_sensors.h: a configured temperature sensor replaces the
+  // weather entity's current temperature, in the weather entity's unit (a
+  // sensor in another unit is converted), a humidity sensor adds a humidity
+  // value; without a numeric sensor state the value shows "--". The forecast
+  // stays the weather entity's.
+  function applyWeatherSensorOverrides(state, temperatureEntity, humidityEntity, values, units) {
+    if (!state) return state;
+    if (temperatureEntity) {
+      state.temperature = convertTemperature(weatherPreviewNumber(values?.[temperatureEntity] ?? ''),
+        temperatureUnitOf(units?.[temperatureEntity]), temperatureUnitOf(state.unit));
+    }
+    if (humidityEntity) {
+      const humidity = weatherPreviewNumber(values?.[humidityEntity] ?? '');
+      state.humidity = humidity === null ? '--' : formatLocalizedNumber(humidity, 0, true) + ' %';
+    }
+    return state;
+  }
+
   function weatherPreviewTemp(value) {
     return formatLocalizedNumber(value, 1, true);
   }
@@ -146,19 +198,16 @@ function maybeFillTitleFromWeather(tab) {
         WEATHER_ICON_LAYER_PATHS[index] + '</g>').join('') + '</svg>';
   }
 
-  // weather_forecast_count(): days per whole width; a half step shows as many
-  // days as fit at the density of the next whole width.
-  function weatherForecastCount(spanW, cardW, nextW) {
-    const whole = Math.floor(Math.max(0, spanW));
-    const count = span => {
-      const w = Math.floor(Math.max(0, span));
-      return [0, 1, 2, 4, 5, 6, 8][Math.min(w, 6)] ?? 8;
-    };
-    const fixed = count(spanW);
-    if (spanW < 1 || spanW === whole || nextW <= 0) return fixed;
-    const next = count(spanW + 0.5);
-    const fits = Math.trunc(cardW * next / nextW);
-    return fits <= fixed ? fixed : Math.min(fits, next);
+  // weather_forecast_gap()/weather_forecast_count() (widgets.h): as many days
+  // as fit the card's real width with even room between and around their
+  // widest text (textW, measured by the device in its language).
+  function weatherForecastGap(textW) {
+    return Math.trunc(textW * 85 / 100);
+  }
+  function weatherForecastCount(cardW, textW) {
+    const gap = weatherForecastGap(textW);
+    const days = textW + gap > 0 ? Math.trunc((cardW - gap) / (textW + gap)) : 1;
+    return Math.max(1, Math.min(8, days));
   }
 
   // tile_geometry::extent in display pixels.
@@ -188,7 +237,8 @@ function maybeFillTitleFromWeather(tab) {
   function applyWeatherPreview(el, state, tile, iconName, forcedColor) {
     if (!el || typeof WEATHER_TILE_LAYOUT === 'undefined') return;
     const L = WEATHER_TILE_LAYOUT;
-    const rootStyle = getComputedStyle(document.documentElement);
+    // The tile's own grid sizes (inherited variables), not the page's.
+    const rootStyle = getComputedStyle(el.isConnected ? el : document.documentElement);
     const scale = parseFloat(rootStyle.getPropertyValue('--radius-preview-scale')) || 0.5;
     const colored = Number(tile?.sensor_display_mode) !== 1;
     const now = new Date();
@@ -218,12 +268,19 @@ function maybeFillTitleFromWeather(tab) {
 
     // Display pixels of the card and the preview's (border box) size.
     const col = Number(tile?.col) || 0;
+    const row = Number(tile?.row) || 0;
     const spanW = Math.max(1, Number(tile?.span_w) || 1);
     const spanH = Math.max(1, Number(tile?.span_h) || 1);
-    const cardW = weatherExtent(col, spanW, L.cellW, L.gap);
     const cellW = parseFloat(rootStyle.getPropertyValue('--preview-cell-w'));
     const cellH = parseFloat(rootStyle.getPropertyValue('--preview-cell-h'));
     const previewGap = parseFloat(rootStyle.getPropertyValue('--preview-gap')) || 0;
+    // The tile's own grid in display pixels: the layout window shows other
+    // layouts' cells than this boot's (WEATHER_TILE_LAYOUT).
+    const gridCellW = cellW > 0 ? Math.round(cellW / scale) : L.cellW;
+    const gridCellH = cellH > 0 ? Math.round(cellH / scale) : L.cellH;
+    const gridGap = previewGap > 0 ? Math.round(previewGap / scale) : L.gap;
+    const cardW = weatherExtent(col, spanW, gridCellW, gridGap);
+    const cardH = weatherExtent(row, spanH, gridCellH, gridGap);
     // The tile's size like the grid gives it (.fractional-tile), never
     // measured: a re-rendered tile at a half position is placed only after
     // it is filled.
@@ -255,32 +312,35 @@ function maybeFillTitleFromWeather(tab) {
     // Condition | temperature.
     const valueFont = font(L.value);
     const hasTemp = !!state && state.temperature !== null;
-    const tempText = hasTemp ? weatherPreviewTemp(state.temperature) + (state.unit ? ' ' + state.unit : '') : '--';
+    let tempText = hasTemp ? weatherPreviewTemp(state.temperature) + (state.unit ? ' ' + state.unit : '') : '--';
+    if (state?.humidity) tempText += ' \u00B7 ' + state.humidity;
     const conditionText = state ? weatherConditionLabel(state.condition) : '--';
-    let showCondition = spanW > 1 && conditionText !== '--';
+    // The card's real size decides (widgets.h): the condition whenever it
+    // fits, below the narrow width only completely; the forecast row from
+    // the device's two-row height.
+    let showCondition = conditionText !== '--';
     let room = 0;
     if (showCondition) {
       const gap = L.valueGap * scale;
       room = width - 2 * L.padH * scale - measure(tempText, valueFont) - measure('|', valueFont) - 2 * gap;
       const conditionWidth = measure(conditionText, valueFont);
-      if (spanW < 2 ? conditionWidth > room : room < L.minConditionRoom * scale) showCondition = false;
+      if (cardW < L.conditionNarrowW ? conditionWidth > room : room < L.minConditionRoom * scale) showCondition = false;
     }
-    const showForecast = Math.floor(Number(tile?.span_h) || 1) >= 2;
-    const rowCenter = showForecast ? (L.cellH / 2 + L.valueDy) * scale : height / 2 + L.valueDy * scale;
+    const showForecast = cardH >= L.forecastMinH;
+    const rowCenter = showForecast ? (gridCellH / 2 + L.valueDy) * scale : height / 2 + L.valueDy * scale;
     const textSpan = (cls, text, f, extra = '') => '<span class="' + cls + '" style="' + fontCss(f) +
       'top:' + f.shift.toFixed(2) + 'px;' + extra + '">' + escapeHtml(text) + '</span>';
     let html = '<div class="weather-preview-row" style="top:' + (rowCenter - valueFont.line / 2 - 3).toFixed(2) +
       'px;height:' + valueFont.line.toFixed(2) + 'px;gap:' + px(L.valueGap) + '">';
     if (showCondition) {
       html += textSpan('weather-preview-condition', conditionText, valueFont, 'max-width:' + Math.max(0, room).toFixed(2) + 'px;');
-      if (hasTemp) html += textSpan('weather-preview-separator', '|', valueFont);
+      if (tempText !== '--') html += textSpan('weather-preview-separator', '|', valueFont);
     }
     html += textSpan('weather-preview-temp', tempText, valueFont) + '</div>';
 
     // Forecast columns, spread evenly over the card, the row anchored to the
     // card's bottom like on the device.
-    const count = showForecast
-      ? weatherForecastCount(spanW, cardW, weatherExtent(col, spanW + 0.5, L.cellW, L.gap)) : 0;
+    const count = showForecast ? weatherForecastCount(cardW, L.forecastTextW) : 0;
     if (count > 0) {
       const today = weatherLocalToday(now);
       const slots = Array.from({length: count}, () => null);
@@ -314,11 +374,13 @@ function maybeFillTitleFromWeather(tab) {
         if (index >= 0) slots[index] = slot;
       }
 
-      const colW = L.colW * scale;
-      // In display pixels with the device's integer division, so the columns
-      // do not drift apart from the device's.
-      const spacing = Math.trunc((Math.round(width / scale) - count * L.colW) / (count + 1)) * scale;
-      const rowTop = height - (L.cellH + L.headroom - L.yOffset) * scale;
+      // Even room around the days' widest text, each column centred on its
+      // day (renderer.cpp), in display pixels with the device's integer
+      // division so the columns do not drift apart from the device's.
+      const textW = L.forecastTextW;
+      const spacing = Math.trunc((cardW - count * textW) / (count + 1));
+      const columnLeft = i => (spacing + Math.trunc(textW / 2) + i * (textW + spacing) - Math.trunc(L.colW / 2)) * scale;
+      const rowTop = height - (gridCellH + L.headroom - L.yOffset) * scale;
       const contentTop = rowTop + L.padV * scale;
       const contentW = (L.colW - 2 * L.padH) * scale;
       const dayFont = font(L.day);
@@ -328,7 +390,7 @@ function maybeFillTitleFromWeather(tab) {
       const baseDay = weatherIsoParts(base);
       for (let i = 0; i < count; ++i) {
         const slot = slots[i];
-        const left = spacing + i * (colW + spacing) + L.padH * scale;
+        const left = columnLeft(i) + L.padH * scale;
         const displayDate = slot?.dateLocal || (baseDay !== null ? weatherIsoDate(baseDay + i * 86400000) : '');
         let dayText = slot?.day || '';
         if ((i === 0 && (slot || displayDate)) || displayDate === today) dayText = WEATHER_I18N.today;
@@ -337,7 +399,10 @@ function maybeFillTitleFromWeather(tab) {
         if (!state) dayText = '';
         html += '<div class="weather-preview-day" style="' + at(left, contentTop + L.dayTop * scale + dayFont.shift) +
           'width:' + contentW.toFixed(2) + 'px;' + fontCss(dayFont) +
-          'color:' + (slot || !state ? '#FFFFFF' : '#7F8BAA') + '">' + escapeHtml(dayText || '--') + '</div>';
+          // The text role through CSS: a tile on its own surface (the dark
+          // design) carries its role values, also when a live edit draws the
+          // days outside that tile's surface (they turned black, 2026-10-10).
+          'color:' + (slot || !state ? 'var(--pv-text, #FFFFFF)' : '#7F8BAA') + '">' + escapeHtml(dayText || '--') + '</div>';
         if (!slot) continue;
         if (slot.icon) {
           const svg = colored ? weatherIconSvg(slot.icon, false) : '';

@@ -125,16 +125,18 @@
   function climatePreviewColor(state) {
     const action = String(state?.action || '').toLowerCase();
     const mode = String(state?.mode || '').toLowerCase();
-    // Unknown is inactive like unavailable (climate_visuals: 0x9E9E9E).
-    if (state?.available === false || mode === 'unavailable' || mode === 'unknown') {
-      return '#9e9e9e';
+    // Unavailable: the light theme's faint grey (climate_visual_color);
+    // unknown and the dark theme the inactive grey (climate_visuals).
+    if (state?.available === false || mode === 'unavailable') {
+      return panelLight() ? panelRoleHex('icon-unavailable', '#bdbdbd') : panelRoleHex('icon-rest', '#9e9e9e');
     }
+    if (mode === 'unknown') return panelRoleHex('icon-rest', '#9e9e9e');
     if (action === 'heating' || action === 'preheating') return '#ff8a3d';
     if (action === 'cooling') return '#4fc3f7';
     if (action === 'drying') return '#ffd54f';
     if (action === 'fan') return '#4db6ac';
     if (action === 'defrosting') return '#81d4fa';
-    if (mode === 'off' || action === 'idle' || action === 'off') return '#9e9e9e';
+    if (mode === 'off' || action === 'idle' || action === 'off') return panelRoleHex('icon-rest', '#9e9e9e');
     if (!action && mode === 'heat') return '#ff8a3d';
     if (!action && mode === 'cool') return '#4fc3f7';
     if (!action && mode === 'dry') return '#ffd54f';

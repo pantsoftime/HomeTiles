@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readAdminBundle } from './lib/admin-bundle.mjs';
-import { formatAdminDelivery } from './lib/admin-delivery.mjs';
+import { formatAdminDelivery, formatCssDelivery } from './lib/admin-delivery.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
@@ -86,7 +86,7 @@ writeOrCheck('src/web/assets/admin.js', readAdminBundle(repoRoot).source);
 const generated = await Promise.all(assets.map(async asset => {
   const source = normalizedSource(asset.source);
   const sourceBytes = Buffer.from(source, 'utf8');
-  const delivery = asset.extension === 'js' ? await formatAdminDelivery(source) : source;
+  const delivery = asset.extension === 'js' ? await formatAdminDelivery(source) : formatCssDelivery(source);
   const deliveryBytes = Buffer.from(delivery, 'utf8');
   // Hash the decoded HTTP response, so a formatter update cannot reuse an
   // immutable asset URL for different delivered bytes. ETags identify gzip.
@@ -105,7 +105,7 @@ const metaLines = [
   '',
   'namespace web_admin_assets_generated {',
   '// SourceSize and the path hash describe decoded HTTP response bytes.',
-  '// The readable Admin JS bundle is formatted only during host generation.',
+  '// The readable Admin JS and CSS are formatted only during host generation.',
   ''
 ];
 

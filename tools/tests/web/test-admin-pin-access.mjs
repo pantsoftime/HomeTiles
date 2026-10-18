@@ -31,7 +31,6 @@ for (const marker of [
   'settings-access-toggles',
   'settings-access-columns',
   'settings-pin-fields',
-  'settings-edge-fields',
   'settings_pin_enabled',
   'data-pin-configured=\\"',
   'settings_pin',
@@ -49,10 +48,15 @@ for (const marker of [
 
 const togglesPosition = settingsHtml.indexOf('settings-access-toggles');
 const pinFieldsPosition = settingsHtml.indexOf('settings-pin-fields');
-const edgeFieldsPosition = settingsHtml.indexOf('settings-edge-fields');
-if (togglesPosition < 0 || pinFieldsPosition < togglesPosition ||
-    edgeFieldsPosition < pinFieldsPosition) {
-  throw new Error('Settings access controls must render as top toggles, then PIN and edge');
+if (togglesPosition < 0 || pinFieldsPosition < togglesPosition) {
+  throw new Error('Settings access controls must render as top toggles, then PIN');
+}
+// The swipe is set in the gesture menu (swipe_gestures.h, Global tab): the
+// tile keeps hidden fields so access saves carry the current swipe.
+if (settingsHtml.includes('settings-edge-fields') || settingsHtml.includes('tr.settings_reveal_edge') ||
+    !settingsHtml.includes('<input type=\\"checkbox\\" hidden id=\\"" + prefix + "settings_swipe_enabled\\"') ||
+    !settingsHtml.includes('<input type=\\"hidden\\" id=\\"" + prefix + "settings_reveal_edge\\" value=\\"')) {
+  throw new Error('The Settings tile keeps its swipe only in hidden fields');
 }
 
 for (const forbidden of [
@@ -182,7 +186,7 @@ for (const marker of [
   "input.value = String(data?.folder_pin || '')",
   "const storedPin = enabled ? String(result.folder_pin || '') : '';",
   "const showPinEditor = isFolderTile && toggle?.checked === true;",
-  "fields.classList.toggle('is-hidden', !isFolderTile)",
+  "fields.classList.toggle('is-hidden', !isFolderTile || isPage)",
   "targetSelect?.value ?? tile?.navigate_target",
   'delete exported.folder_pin_enabled;',
   'delete exported.folder_pin;',
@@ -388,15 +392,11 @@ if (adminCss.includes('height:44px;\n      min-width:0;\n      margin:0;')) {
 }
 
 for (const marker of [
-  'const char* admin_access_control;',
   'const char* settings_home_full;',
   'const char* folder_pin_enable;',
   'const char* pin_popup_incorrect;',
 ]) requireMarker(i18nHeader, marker, 'Central PIN translations');
 for (const marker of [
-  '"Zugriffsschutz"',
-  '"Access control"',
-  '"Contrôle d’accès"',
   '"Falsche PIN"',
   '"Incorrect PIN"',
   '"Code PIN incorrect"',

@@ -21,6 +21,7 @@
 #include "src/ui/shared/command_pacer.h"
 #include "src/ui/shared/tone_color.h"
 #include "src/ui/shared/ui_pulse.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -167,7 +168,7 @@ void draw_glyph(lv_layer_t* layer, const lv_area_t& area, const char* name, lv_c
 
 uint32_t accent_rgb(const View* view) {
   if (view->icon) return tile_icon_disc::icon_color(view->icon);
-  return device_visual::kGrey;
+  return device_visual::grey();
 }
 
 uint32_t button_rgb(uint32_t base) { return tone_color::lifted(base, base, false, 0.04f); }
@@ -179,6 +180,9 @@ void bar_draw_cb(lv_event_t* e) {
   View* view = static_cast<View*>(lv_event_get_user_data(e));
   lv_layer_t* layer = lv_event_get_layer(e);
   if (!view || !view->bar || !layer || !view->available || view->kind == BarKind::None) return;
+  // Drawn later than the tile's updates: its symbols take the card's surface
+  // (white on a filled tile of the light theme, tile_surface).
+  const ui_theme::SurfaceScope surface = tile_surface::scope(view->card);
   lv_area_t area;
   lv_obj_get_coords(view->bar, &area);
   const int32_t width = lv_area_get_width(&area);
@@ -206,7 +210,7 @@ void bar_draw_cb(lv_event_t* e) {
           view->thumb_off = tone_color::switch_thumb_off(base);
         }
         thumb_color = lv_color_hex(view->thumb_off);
-        symbol = lv_color_hex(tone_color::kOffIcon);
+        symbol = lv_color_hex(tone_color::off_icon());
       }
       level_bar::draw_rect(layer, thumb, thumb_color, radius);
       draw_glyph(layer, thumb, view->thumb_icon, symbol, view->bar_pulse ? view->pulse_opa : LV_OPA_COVER,
@@ -224,7 +228,7 @@ void bar_draw_cb(lv_event_t* e) {
         level_bar::draw_rect(layer, button,
                              lv_color_hex(i == view->pressed_part ? pressed_button_rgb(base) : button_rgb(base)),
                              radius);
-        draw_glyph(layer, button, view->button_icons[i < 2 ? i : 1], lv_color_white(), LV_OPA_COVER,
+        draw_glyph(layer, button, view->button_icons[i < 2 ? i : 1], lv_color_hex(ui_theme::text()), LV_OPA_COVER,
                    view->bar_base);
       }
       return;
@@ -243,7 +247,7 @@ void bar_draw_cb(lv_event_t* e) {
         }
         const int8_t mode = view->slots[i];
         const char* icon = mode < 0 ? "shield-off" : device_control::alarm_mode(static_cast<size_t>(mode)).icon;
-        draw_glyph(layer, slot, icon, lit ? card : lv_color_white(), LV_OPA_COVER, view->bar_base);
+        draw_glyph(layer, slot, icon, lit ? card : lv_color_hex(ui_theme::text()), LV_OPA_COVER, view->bar_base);
       }
       return;
     }
@@ -510,6 +514,8 @@ void bar_model(View* view, const Detail& d, const device_visual::Visual& v) {
 
 void show(View* view) {
   if (!view) return;
+  // State colors follow the tile's surface (tile_surface, tile_icon_disc.h).
+  const ui_theme::SurfaceScope surface = tile_surface::scope(view->card);
   const Detail d = device_control::detail(view->entity);
   device_visual::Visual v = device_visual::visual(view->type, d);
   const char* target = device_control::pending_target(view->entity);
@@ -519,7 +525,7 @@ void show(View* view) {
     if (held == 0) {
       v.label = i18n::strings(device_visual::language()).light_off;
       v.icon = "fan-off";
-      v.color = device_visual::kGrey;
+      v.color = device_visual::grey();
     } else {
       v.label = device_visual::fan_level_text(device_detail::fan_speed_count(d), held);
       v.icon = "fan";
@@ -748,7 +754,7 @@ lv_obj_t* render_device_tile(lv_obj_t* parent, int col, int row, const Tile& til
   lv_obj_set_style_bg_color(card, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
-  const uint32_t pressed_color = brighten_rgb_color(color, 0x10);
+  const uint32_t pressed_color = tone_color::pressed_card(color);
   lv_obj_set_style_bg_color(card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
@@ -777,7 +783,7 @@ lv_obj_t* render_device_tile(lv_obj_t* parent, int col, int row, const Tile& til
 
   if (view->icon_visible && FONT_MDI_ICONS) {
     view->icon = lv_label_create(card);
-    set_label_style(view->icon, lv_color_hex(device_visual::kGrey), FONT_MDI_ICONS);
+    set_label_style(view->icon, lv_color_hex(device_visual::grey()), FONT_MDI_ICONS);
     const String glyph = getMdiChar(view->icon_name.length() ? view->icon_name : String(
         view->type == TILE_LOCK ? "lock" : view->type == TILE_ALARM ? "shield" : "fan-off"));
     lv_label_set_text(view->icon, glyph.c_str());

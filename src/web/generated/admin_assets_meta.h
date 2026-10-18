@@ -5,34 +5,34 @@
 
 namespace web_admin_assets_generated {
 // SourceSize and the path hash describe decoded HTTP response bytes.
-// The readable Admin JS bundle is formatted only during host generation.
+// The readable Admin JS and CSS are formatted only during host generation.
 
 inline constexpr char kAdminCssPath[] =
-    "/assets/admin.41b870d5ad71.css";
+    "/assets/admin.bf4a4a74b3e9.css";
 inline constexpr char kAdminCssEtag[] =
-    "\"b314bff3afe539cec721f5157464b29613b8f535b3f354fa49075c7f87f863e9\"";
+    "\"9a607fb10fdab390382632c10b505c7c348b8ab73cba6eefb8b109ac4b4ce175\"";
 inline constexpr char kAdminCssContentType[] =
     "text/css; charset=utf-8";
-inline constexpr size_t kAdminCssSourceSize = 127670;
-inline constexpr size_t kAdminCssGzipSize = 25125;
+inline constexpr size_t kAdminCssSourceSize = 133216;
+inline constexpr size_t kAdminCssGzipSize = 23025;
 
 inline constexpr char kAdminJsPath[] =
-    "/assets/admin.eeb0f6407626.js";
+    "/assets/admin.27fa71f05391.js";
 inline constexpr char kAdminJsEtag[] =
-    "\"10bbeaf558f570ec8adbb0ac749427c4c66303e391190f825f49e474c668f745\"";
+    "\"c2e635273f7b761c039cfe91c1d1615fc179df0c0c52ef18ebc599f86ae12490\"";
 inline constexpr char kAdminJsContentType[] =
     "application/javascript; charset=utf-8";
-inline constexpr size_t kAdminJsSourceSize = 525232;
-inline constexpr size_t kAdminJsGzipSize = 119486;
+inline constexpr size_t kAdminJsSourceSize = 688249;
+inline constexpr size_t kAdminJsGzipSize = 161236;
 
 inline constexpr char kAdminAuthJsPath[] =
-    "/assets/auth.a4e17d575dea.js";
+    "/assets/auth.30f8c27a905b.js";
 inline constexpr char kAdminAuthJsEtag[] =
-    "\"deccc7264222e5726cb5a8dbac36f66322bddcbd4c4441350671df305ab08c8e\"";
+    "\"bb38357b164dc09159d74b9b248589d15420f54b2936d46422d650b5a22dc092\"";
 inline constexpr char kAdminAuthJsContentType[] =
     "application/javascript; charset=utf-8";
-inline constexpr size_t kAdminAuthJsSourceSize = 10800;
-inline constexpr size_t kAdminAuthJsGzipSize = 4066;
+inline constexpr size_t kAdminAuthJsSourceSize = 10991;
+inline constexpr size_t kAdminAuthJsGzipSize = 4104;
 
 }  // namespace web_admin_assets_generated
 

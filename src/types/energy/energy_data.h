@@ -34,7 +34,18 @@ bool energy_find_entry(const String& id, const char* period, EnergyEntryData& ou
 // IDs need not exist as normal HA entities and can therefore be absent from
 // the general HaBridgeConfig unit index.
 String energy_find_cached_unit(const String& id);
-// Append all IDs from previously received Energy responses. The WebUI can
-// then offer its sources even when a bridge configuration response temporarily
-// omits the Energy block.
+// The automatic icon of an Energy source: the Bridge configuration's, else its
+// category's from the received Energy responses. The configuration names only
+// the categories released under Energy Dashboard; the responses name every
+// source the panel asked for.
+String energy_source_icon(const String& id);
+// Its name: the Bridge configuration's, else the received Energy responses'.
+String energy_source_name(const String& id);
+// The sources of the panel's own Energy tiles (every folder and the
+// screensaver). The Web Admin's own energy list: the released categories
+// and these, never every source a response named (user 2026-10-15: without
+// a Web Admin password the picker offered all of them).
+void energy_append_tile_entity_ids(std::vector<String>& ids);
+// Append all IDs from previously received Energy responses: the previews'
+// values of every source (a source just picked shows its value at once).
 void energy_append_cached_entity_ids(std::vector<String>& ids);

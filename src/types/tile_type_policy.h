@@ -13,11 +13,12 @@ static constexpr bool tileTypeIsDeviceControl(int type) {
 }
 
 // Persistence, runtime state, and editor policies are deliberately separate.
-// For example, Camera stores an entity but does not consume cached tile state.
+// For example, Camera stores an entity but does not consume cached tile state,
+// and a Scene tile stores the scene, script or button it runs (sceneTarget).
 static constexpr bool entityTileStoresSensorEntity(TileType type) {
   return type == TILE_SENSOR || type == TILE_SWITCH || type == TILE_WEATHER ||
          type == TILE_ENERGY || type == TILE_MEDIA || type == TILE_CLIMATE ||
-         type == TILE_CAMERA || type == TILE_COVER ||
+         type == TILE_CAMERA || type == TILE_COVER || type == TILE_SCENE ||
          tileTypeIsEditableValue(type) || type == TILE_BINARY_SENSOR ||
          tileTypeIsDeviceControl(type);
 }

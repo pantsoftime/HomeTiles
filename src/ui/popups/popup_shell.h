@@ -1,6 +1,7 @@
 #pragma once
 
 #include <lvgl.h>
+#include "src/ui/shared/ui_theme.h"
 
 struct PopupShellParts {
   lv_obj_t* overlay;
@@ -13,7 +14,7 @@ struct PopupShellParts {
 // Build a cached content owner with the standard Light geometry. Header
 // objects retain each type's state; show_popup_shell presents the shared header.
 PopupShellParts create_popup_body(lv_event_cb_t close_handler, void* context,
-                                 uint32_t color = 0x2A2A2A);
+                                 uint32_t color = ui_theme::popup_card());
 
 // The UI owns one visible frame/header. Type-specific resident cards supply
 // only their cached content and keep their existing event/state ownership.
@@ -28,6 +29,8 @@ void sync_popup_shell();
 // True from show_popup_shell() until the popup is hidden again. Every tile
 // popup and the PIN pad open through the shell.
 bool popup_shell_active();
+// The open popup's body (its card), nullptr without one.
+lv_obj_t* popup_shell_body();
 // Sets the active popup body's background; the frame copies it on the next
 // sync. Used when an open popup follows its tile's color.
 void popup_shell_follow_tile_color(uint32_t color);
@@ -73,6 +76,17 @@ void popup_shell_pulse_icon(lv_obj_t* body, bool on);
 // one. Another popup removes it.
 void popup_shell_icon_lock(lv_obj_t* body, bool on);
 
-// Register an existing background tree, once after construction. Opaque popup
-// pixels can skip its covered draw calls without hiding or rebuilding widgets.
-void register_popup_background(lv_obj_t* root);
+// The theme changed (UIManager::processThemeChange): hides the shown popup and
+// deletes every popup body and the shell. Each popup's own delete handler
+// frees its context; the preloads and the next opening build them again in
+// the new colors.
+void popup_shell_delete_popups();
+
+// A popup that takes its tile's color shows it with the open surface
+// (popup_surface::g_open_surface): its fixed texts and icons, colored when it
+// was built, take that surface's roles (and back on the next opening).
+void popup_follow_surface(lv_obj_t* root);
+// The surface `root`'s content was last shown with (kThemeSurface before its
+// first show): a hidden popup that refreshes draws with it, so the next show
+// recolors it like the rest of its content.
+int8_t popup_drawn_surface(lv_obj_t* root);

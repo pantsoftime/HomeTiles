@@ -5,10 +5,21 @@
 
 // MQTT callback functions.
 void mqttCallback(char* topic, uint8_t* payload, unsigned int length);
+// A message the Bridge streamed over the link (above the normal message
+// size): only image topics ("/image/" in the topic) are taken. It joins the
+// same inbound queue without a copy; takes ownership of `data` (PSRAM,
+// heap_caps_free) in every case. Network worker only.
+void mqttStreamCallback(const char* topic, uint8_t* data, size_t length);
 // Drains inbound MQTT messages that mqttCallback() queued (see mqtt_handlers.cpp
 // header comment) and runs the real per-topic processing on the caller's task.
 // Call from the main loop(). max_msgs=0 drains everything currently queued.
 void mqtt_process_inbound_queue(uint8_t max_msgs = 0);
+// True once after mqttCallback() had to drop a state message (queue full or
+// no memory); the loop then asks the Bridge for a refresh.
+bool mqttTakeInboundDropped();
+// True while received messages wait for the loop or one arrived within
+// `quiet_ms`: a long loop block now would overflow the inbound queue.
+bool mqttInboundBusy(uint32_t quiet_ms = 0);
 // Consumes the post-connect pending flag of the MQTT worker and brings the
 // application layer up: subscribes, discovery, settings, snapshot. Must run on
 // the loop task because of flash, LVGL and I2C access; call once per loop
@@ -25,6 +36,11 @@ void mqttPublishMediaMute(const char* entity_id, bool muted);
 // fps 0 asks for camera_geometry::kFps.
 void mqttPublishCameraCommand(const char* entity_id, const char* command,
                               uint8_t fps = 0);
+// Camera full screen (#65): frames in the panel's own size and orientation
+// (turned clockwise by turn_cw), the picture whole with black bars.
+void mqttPublishCameraFullScreenOpen(const char* entity_id, uint8_t fps,
+                                     uint16_t width, uint16_t height,
+                                     uint16_t turn_cw);
 void mqttPublishClimateTemperature(const char* entity_id,
                                    float temperature,
                                    bool use_range = false,
@@ -63,6 +79,15 @@ void mqttPublishDeviceSettings();
 void mqttServiceLocalSensors();
 void mqttReloadDynamicSlots(bool subscribe_all = false);
 void mqttRequestDynamicSlotsReload(uint32_t quiet_ms = 3000);
+// The screensaver's camera still in the screen's size, placed by `fit` and
+// sent every `every` seconds, subscribed only while the screensaver shows it
+// (link only; empty or null = none). Kept across reconnects.
+void mqttSetLivePicture(const char* entity_id, uint8_t fit, uint8_t every);
+// The Camera tiles' pictures (types/camera/picture.h): `count` entities with
+// their route suffixes ("image/<w>x<h>..."), the whole set the tiles show
+// now. New ones are subscribed, dropped ones unsubscribed (link only); kept
+// across reconnects.
+void mqttSetTilePictures(const String* entities, const String* suffixes, size_t count);
 void mqttServiceDynamicSlotsReload();
 // Boot scan for setup(): is there a media tile in the stored configuration? The
 // result sets the initial size of the MQTT receive buffer, because cover

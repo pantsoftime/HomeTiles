@@ -122,18 +122,18 @@
       ? tiles[currentTileIndex] : null;
     const typeValue = document.getElementById(tab + '_tile_type')?.value ?? tile?.type ?? 0;
     const isMedia = Number(typeValue) === MEDIA_TILE_TYPE;
-    const minW = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS) : 1;
+    const minW = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, placeCols(tab)) : 1;
     const unit = 0.5;
     const snap = clampHalf;
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY, unit);
     if (!rawCell) return null;
-    const minH = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_ROWS) : (supportsHalfSize(typeValue) ? 0.5 : 1);
+    const minH = isMedia ? Math.min(MEDIA_TILE_MIN_SPAN, placeRows(tab)) : (supportsHalfSize(typeValue) ? 0.5 : 1);
     const maxW = isMedia
-      ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS - layout.col)
-      : GRID_COLS - layout.col;
+      ? Math.min(MEDIA_TILE_MAX_SPAN, placeCols(tab) - layout.col)
+      : placeCols(tab) - layout.col;
     const maxH = isMedia
-      ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_ROWS - layout.row)
-      : GRID_ROWS - layout.row;
+      ? Math.min(MEDIA_TILE_MAX_SPAN, placeRows(tab) - layout.row)
+      : placeRows(tab) - layout.row;
     if (String(direction || '').includes('s')) {
       spanH = snap(rawCell.row - layout.row + unit, minH, maxH, layout.span_h);
     }
@@ -269,12 +269,12 @@
     const placeholder = ensureDragPlaceholder(tab);
     if (!sourceLayout || !placeholder) return;
 
-    const targetCol = clampHalf(col, 0, GRID_COLS - 0.5, sourceLayout.col);
-    const targetRow = clampHalf(row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
-    const fits = (targetCol + sourceLayout.span_w <= GRID_COLS) &&
-                 (targetRow + sourceLayout.span_h <= GRID_ROWS);
-    const spanW = Math.max(1, Math.min(sourceLayout.span_w, GRID_COLS - targetCol));
-    const spanH = Math.max(0.5, Math.min(sourceLayout.span_h, GRID_ROWS - targetRow));
+    const targetCol = clampHalf(col, 0, placeCols(tab) - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(row, firstAllowedGridRow(tab), placeRows(tab) - 0.5, sourceLayout.row);
+    const fits = (targetCol + sourceLayout.span_w <= placeCols(tab)) &&
+                 (targetRow + sourceLayout.span_h <= placeRows(tab));
+    const spanW = Math.max(1, Math.min(sourceLayout.span_w, placeCols(tab) - targetCol));
+    const spanH = Math.max(0.5, Math.min(sourceLayout.span_h, placeRows(tab) - targetRow));
 
     placeholder.classList.toggle('invalid', !fits);
     placeholder.classList.add('show');
@@ -283,14 +283,16 @@
 
   function handleGridDragMove(tab, e) {
     if (!dragSource || dragSource.tab !== tab) return;
+    // Over one of Home's page fields or its Settings field (page-fields.js).
+    if (typeof pageFieldDrag === 'function' && pageFieldDrag(tab, e, false)) return;
     const cell = getGridCellFromPointer(tab, e.clientX, e.clientY);
     if (!cell) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     const sourceLayout = getDragSourceLayout();
     if (!sourceLayout) return;
-    const targetCol = clampHalf(cell.col, 0, GRID_COLS - 0.5, sourceLayout.col);
-    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
+    const targetCol = clampHalf(cell.col, 0, placeCols(tab) - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), placeRows(tab) - 0.5, sourceLayout.row);
     updateDragPlaceholder(tab, targetCol, targetRow);
 
     if (dragSource.kind === 'hidden-settings') {
@@ -303,6 +305,12 @@
       const valid = canPlaceHiddenSettingsLayout(tab, candidate);
       ensureDragPlaceholder(tab)?.classList.toggle('invalid', !valid);
       dragSource.hiddenTarget = valid ? candidate : null;
+      return;
+    }
+    // A page taken out of its field (page-fields.js) onto Home's screen.
+    if (dragSource.kind === 'page-slot') {
+      const candidate = {col: targetCol, row: targetRow, span_w: sourceLayout.span_w, span_h: sourceLayout.span_h};
+      ensureDragPlaceholder(tab)?.classList.toggle('invalid', !canPlacePageTile(candidate));
       return;
     }
 
@@ -331,6 +339,7 @@
 
   function handleGridDrop(tab, e) {
     if (!dragSource || dragSource.tab !== tab) return;
+    if (typeof pageFieldDrag === 'function' && pageFieldDrag(tab, e, true)) return;
     const sourceLayout = getDragSourceLayout();
     const cell = getGridCellFromPointer(tab, e.clientX, e.clientY);
     clearDragPlaceholder();
@@ -338,10 +347,10 @@
 
     e.preventDefault();
     e.stopPropagation();
-    const targetCol = clampHalf(cell.col, 0, GRID_COLS - 0.5, sourceLayout.col);
-    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), GRID_ROWS - 0.5, sourceLayout.row);
-    const fits = (targetCol + sourceLayout.span_w <= GRID_COLS) &&
-                 (targetRow + sourceLayout.span_h <= GRID_ROWS);
+    const targetCol = clampHalf(cell.col, 0, placeCols(tab) - 0.5, sourceLayout.col);
+    const targetRow = clampHalf(cell.row, firstAllowedGridRow(tab), placeRows(tab) - 0.5, sourceLayout.row);
+    const fits = (targetCol + sourceLayout.span_w <= placeCols(tab)) &&
+                 (targetRow + sourceLayout.span_h <= placeRows(tab));
 
     if (dragSource.kind === 'hidden-settings') {
       const candidate = {
@@ -356,6 +365,15 @@
       }
       dragSource.dropCommitted = true;
       restoreHiddenSettingsTile(candidate.col, candidate.row);
+      return;
+    }
+    if (dragSource.kind === 'page-slot') {
+      const candidate = {col: targetCol, row: targetRow, span_w: sourceLayout.span_w, span_h: sourceLayout.span_h};
+      if (!fits || !canPlacePageTile(candidate)) {
+        showNotification(t('tileDoesNotFit'), false);
+        return;
+      }
+      dropPageOnGrid(candidate);
       return;
     }
 
@@ -401,7 +419,7 @@
     for (let i = 0; i < tiles.length; i++) {
       const tile = tiles[i];
       const layout = previewResult.layouts[i];
-      if (!tile || Number(tile.type || 0) === 0 || !layout) continue;
+      if (!tileTakesRoom(tile) || !layout) continue;
       const changed = tile.col !== layout.col || tile.row !== layout.row;
       tile.col = layout.col;
       tile.row = layout.row;
@@ -474,6 +492,23 @@
       selectTile(index, tab);
     });
   }
+
+  // Chrome keeps :hover where a drag started until the pointer moves again:
+  // the tile or free slot that lands there after the drop showed its dashed
+  // hover ring at the dragged tile's old place (user 2026-10-13). The rings
+  // wait for the pointer's next real move or press (admin.css).
+  document.addEventListener('dragend', event => {
+    const x = event.clientX, y = event.clientY;
+    document.body.classList.add('tile-hover-stale');
+    const settle = next => {
+      if (next.type === 'pointermove' && Math.abs(next.clientX - x) < 3 && Math.abs(next.clientY - y) < 3) return;
+      document.body.classList.remove('tile-hover-stale');
+      document.removeEventListener('pointermove', settle, true);
+      document.removeEventListener('pointerdown', settle, true);
+    };
+    document.addEventListener('pointermove', settle, true);
+    document.addEventListener('pointerdown', settle, true);
+  }, true);
 
   function enableTileDrag(tab) {
     const grid = getTileGrid(tab);
@@ -672,9 +707,11 @@
     // The slot is one more drop cell of the Settings tile and works like a
     // grid cell (user 2026-10-02): with the pointer over it the teal
     // placeholder shows in the slot and the grid's placeholder and reflow
-    // preview go back; a parked tile dropped on it stays parked.
-    const draggingSettings = () => acceptsGridSettings() ||
-      (dragSource?.kind === 'hidden-settings' && dragSource.tab === 'folder0');
+    // preview go back; a parked tile dropped on it stays parked. In a head
+    // bar layout it is a field of Home's grid, which takes its drops
+    // (page-fields.js pageFieldDrag).
+    const draggingSettings = () => slot.dataset.inGrid !== '1' && (acceptsGridSettings() ||
+      (dragSource?.kind === 'hidden-settings' && dragSource.tab === 'folder0'));
     slot.addEventListener('dragover', event => {
       if (!draggingSettings()) return;
       event.preventDefault();
@@ -712,8 +749,8 @@
       if (currentTileTab !== 'folder0' || currentTileIndex !== HIDDEN_SETTINGS_TILE_INDEX) {
         selectHiddenSettingsTile();
       }
-      const spanW = clampHalf(hiddenTile.dataset.spanW, 1, GRID_COLS, 1);
-      const spanH = clampHalf(hiddenTile.dataset.spanH, 0.5, GRID_ROWS, 1);
+      const spanW = clampHalf(hiddenTile.dataset.spanW, 1, placeCols(), 1);
+      const spanH = clampHalf(hiddenTile.dataset.spanH, 0.5, placeRows(), 1);
       // The slot shows one cell: the grabbed half of it anchors the drop like
       // a grid tile, and the drag image stays where the pointer took it.
       const rect = hiddenTile.getBoundingClientRect();
@@ -762,7 +799,8 @@
       const handle = e.target.closest('.tile-resize-handle');
       if (!handle) return;
       const tile = handle.closest('.tile');
-      if (!tile || tile.classList.contains('empty')) return;
+      // A page's tile is one cell: no resizing (page-fields.js).
+      if (!tile || tile.classList.contains('empty') || tile.classList.contains('page-field-tile')) return;
       beginTileResize(tab, tile, handle.dataset.resizeDir || 'se', e);
     });
   }
@@ -792,6 +830,11 @@
     const localSnapshot = captureTilePositionSnapshot(tab);
     applyLocalTileReorder(tab, previewResult);
     clearDragPlaceholder();
+    // The layout window keeps the editor's places to itself (layout-window.js).
+    if (typeof layoutWindowOpen === 'function' && layoutWindowOpen()) {
+      clearDeferredSensorRefresh();
+      return;
+    }
     fetch('/api/tiles/reorder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -830,7 +873,8 @@
     let selectedCol = Number.MAX_SAFE_INTEGER;
     document.querySelectorAll('#tab-tiles-' + tab + ' .tile').forEach(tile => {
       const index = parseInt(tile.dataset.index, 10);
-      if (isNaN(index) || Number(tile.dataset.type || 0) === 0) return;
+      if (isNaN(index) || Number(tile.dataset.type || 0) === 0 ||
+          tile.classList.contains('tile-unplaced') || tile.classList.contains('page-field-tile')) return;
       const row = Number(tile.dataset.row);
       const col = Number(tile.dataset.col);
       const safeRow = isNaN(row) ? Number.MAX_SAFE_INTEGER : row;

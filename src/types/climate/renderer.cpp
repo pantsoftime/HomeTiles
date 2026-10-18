@@ -16,8 +16,10 @@
 #include "src/tiles/runtime/tile_icon_source.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/types/climate/layout.h"
 #include "src/ui/popups/climate/climate_popup.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -1152,7 +1154,7 @@ lv_obj_t* create_climate_slot(
     disable_pressed_button_animation(button);
 
     lv_obj_t* label = lv_label_create(button);
-    set_label_style(label, lv_color_white(),
+    set_label_style(label, lv_color_hex(ui_theme::text()),
                     tile_layout::content_font_24());
     lv_label_set_text(label, direction < 0 ? "-" : "+");
     lv_obj_center(label);
@@ -1173,7 +1175,7 @@ lv_obj_t* create_climate_slot(
   create_adjust_button(-1);
 
   lv_obj_t* value = lv_label_create(root);
-  set_label_style(value, lv_color_white(),
+  set_label_style(value, lv_color_hex(ui_theme::text()),
                   tile_layout::content_font_24());
   lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_long_mode(value, LV_LABEL_LONG_CLIP);
@@ -1183,7 +1185,7 @@ lv_obj_t* create_climate_slot(
   create_adjust_button(1);
 
   lv_obj_t* caption = lv_label_create(root);
-  set_label_style(caption, lv_color_white(), FONT_TITLE);
+  set_label_style(caption, lv_color_hex(ui_theme::text()), FONT_TITLE);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_long_mode(caption, LV_LABEL_LONG_DOT);
   lv_label_set_text(caption, "");
@@ -1384,7 +1386,7 @@ void refresh_climate_tile_content(
     if (value) {
       const String text = climate_slot_text(kind, state);
       lv_label_set_text(value, text.c_str());
-      lv_obj_set_style_text_color(value, lv_color_white(), 0);
+      lv_obj_set_style_text_color(value, lv_color_hex(ui_theme::text()), 0);
       lv_obj_set_style_text_font(
           value,
           adjustable
@@ -1422,7 +1424,7 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(color), LV_PART_MAIN);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN);
   lv_obj_set_style_bg_color(
-      card, lv_color_hex(brighten_rgb_color(color, 0x10)),
+      card, lv_color_hex(tone_color::pressed_card(color)),
       LV_PART_MAIN | LV_STATE_PRESSED);
   ui_surface_style::apply_radius(card, tile_layout::scale_480(22), 0);
   lv_obj_set_style_border_width(card, 0, 0);
@@ -1445,7 +1447,7 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
   if (!icon_char.length()) icon_char = getMdiChar("thermostat");
   if (!icon_disabled && FONT_MDI_ICONS) {
     icon_label = lv_label_create(card);
-    set_label_style(icon_label, lv_color_white(), FONT_MDI_ICONS);
+    set_label_style(icon_label, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
     lv_label_set_text(icon_label, icon_char.c_str());
     lv_obj_align(
         icon_label, LV_ALIGN_TOP_LEFT,
@@ -1478,7 +1480,7 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
   } else {
     if (tile.title.length()) {
       title = lv_label_create(card);
-      set_label_style(title, lv_color_white(),
+      set_label_style(title, lv_color_hex(ui_theme::text()),
                       tile_layout::header_title_font());
       lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
       lv_obj_set_width(title, LV_PCT(70));
@@ -1514,7 +1516,7 @@ lv_obj_t* render_climate_tile(lv_obj_t* parent,
         tile.key_macro.length() > 0 && tile.span_w == 1 && tile.span_h == 1;
     if (!compact) {
       lv_obj_t* value = lv_label_create(card);
-      set_label_style(value, lv_color_white(), FONT_VALUE);
+      set_label_style(value, lv_color_hex(ui_theme::text()), FONT_VALUE);
       lv_obj_set_width(value, LV_PCT(100));
       lv_obj_set_style_text_align(
           value, LV_TEXT_ALIGN_CENTER, 0);

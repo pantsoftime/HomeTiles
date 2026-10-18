@@ -1,4 +1,5 @@
 #include "src/ui/popups/popup_shell.h"
+#include "src/ui/popups/popup_surface.h"
 #include "src/ui/popups/popup_nav_style.h"
 #include "src/ui/popups/popup_open.h"
 #include "src/ui/popups/camera/camera_popup.h"
@@ -31,6 +32,7 @@
 #include "src/ui/popups/popup_first_frame.h"
 #include "src/ui/popups/popup_body.h"
 #include "src/ui/popups/popup_graph_readout.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -110,7 +112,7 @@ struct EnergyPopupContext : EnergyChartView {
   String unit;
   String period = "day";
   uint8_t decimals = 1;
-  uint32_t bg_color = 0x2A2A2A;
+  uint32_t bg_color = ui_theme::popup_card();
   // Bar readout in the old value row; texts are static label buffers, so
   // dragging allocates nothing. It opens on the newest bar, stays where the
   // finger leaves it and follows the newest bar while it shows that bar.
@@ -189,9 +191,9 @@ int time_axis_height() {
 void style_period_button(EnergyPopupContext* ctx, lv_obj_t* btn, lv_obj_t* label, bool active) {
   if (!ctx || !btn || !label) return;
   const lv_color_t popup =
-      ctx->card ? lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN) : lv_color_hex(0x2A2A2A);
+      ctx->card ? lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN) : lv_color_hex(ui_theme::popup_card());
   const lv_color_t icon =
-      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_white();
+      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_hex(ui_theme::text());
   lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
   lv_obj_set_style_text_font(label, popup_layout::font24(), LV_STATE_PRESSED);
   popup_nav_style::style_toggle(btn, label, popup, icon, active);
@@ -234,6 +236,7 @@ void update_period_buttons(EnergyPopupContext* ctx) {
 // While open, the popup follows its tile's current background (a rules tint
 // that changes with the entity state); tile_icon_source calls this.
 void energy_popup_follow_tile_color(uint32_t color) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   EnergyPopupContext* ctx = g_energy_popup_ctx;
   if (!ctx || !ctx->card || lv_obj_has_flag(ctx->card, LV_OBJ_FLAG_HIDDEN) || ctx->bg_color == color) return;
   ctx->bg_color = color;
@@ -519,6 +522,7 @@ void invalidate_energy_cursor(EnergyPopupContext* ctx) {
 }
 
 void on_energy_cursor_ext_draw(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   auto* size = static_cast<int32_t*>(lv_event_get_param(event));
   if (size && *size < kReadoutMarkerOverhang) *size = kReadoutMarkerOverhang;
 }
@@ -528,6 +532,7 @@ void on_energy_cursor_ext_draw(lv_event_t* event) {
 // dot to chart_wrap. The marker needs no object that moves while dragging and
 // never overlaps a bar: the line ends at the read bar's top edge.
 void on_energy_cursor_draw(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   auto* ctx = static_cast<EnergyPopupContext*>(lv_event_get_user_data(event));
   lv_layer_t* layer = lv_event_get_layer(event);
   if (!ctx || !layer || ctx->readout_slot < 0) return;
@@ -538,7 +543,7 @@ void on_energy_cursor_draw(lv_event_t* event) {
   lv_draw_rect_dsc_t mark;
   lv_draw_rect_dsc_init(&mark);
   mark.base.layer = layer;
-  mark.bg_color = lv_color_white();
+  mark.bg_color = lv_color_hex(ui_theme::text());
   mark.bg_opa = LV_OPA_COVER;
   mark.radius = 0;
   const int line_x = x - kReadoutLineWidth / 2;
@@ -662,12 +667,14 @@ void apply_energy_readout(EnergyPopupContext* ctx, const lv_point_t& point) {
 }
 
 void on_energy_readout_apply(void* owner, lv_obj_t*, const lv_point_t& point) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   auto* ctx = static_cast<EnergyPopupContext*>(owner);
   if (ctx) apply_energy_readout(ctx, point);
 }
 
 // Release keeps the read bar; it follows new data while it is the newest bar.
 void on_energy_readout_end(void* owner, bool keep) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   auto* ctx = static_cast<EnergyPopupContext*>(owner);
   if (!ctx) return;
   if (keep && ctx->readout_slot >= 0) {
@@ -1025,7 +1032,7 @@ void apply_init_to_context(EnergyPopupContext* ctx, const EnergyPopupInit& init,
   ctx->title = init.title;
   ctx->unit = init.unit;
   ctx->decimals = init.decimals > 6 ? 6 : init.decimals;
-  ctx->bg_color = init.bg_color ? init.bg_color : 0x2A2A2A;
+  ctx->bg_color = init.bg_color ? init.bg_color : ui_theme::popup_card();
   ctx->period = "day";
   show_period_view(ctx);
 
@@ -1064,6 +1071,7 @@ void apply_init_to_context(EnergyPopupContext* ctx, const EnergyPopupInit& init,
 }
 
 void on_close_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   lv_event_code_t code = lv_event_get_code(e);
   if (code != LV_EVENT_CLICKED && code != LV_EVENT_RELEASED) return;
   EnergyPopupContext* ctx = static_cast<EnergyPopupContext*>(lv_event_get_user_data(e));
@@ -1079,11 +1087,13 @@ void on_close_click(lv_event_t* e) {
 }
 
 void on_overlay_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   (void)e;
 }
 
 void on_overlay_delete(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_DELETE) return;
   EnergyPopupContext* ctx = static_cast<EnergyPopupContext*>(lv_event_get_user_data(e));
   if (!ctx) return;
@@ -1099,6 +1109,7 @@ void on_overlay_delete(lv_event_t* e) {
 }
 
 void on_period_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   EnergyPopupContext* ctx = static_cast<EnergyPopupContext*>(lv_event_get_user_data(e));
   lv_obj_t* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
@@ -1145,7 +1156,7 @@ lv_obj_t* make_button_label(lv_obj_t* parent, const char* text, lv_obj_t** out_l
   lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
   lv_obj_t* label = lv_label_create(btn);
-  set_label_style(label, lv_color_white(), popup_layout::font24());
+  set_label_style(label, lv_color_hex(ui_theme::text()), popup_layout::font24());
   lv_label_set_text(label, text);
   lv_obj_center(label);
   if (out_label) *out_label = label;
@@ -1172,7 +1183,7 @@ void build_chart_view(EnergyPopupContext* ctx, lv_obj_t* body_box) {
   lv_obj_set_style_pad_right(chart, 0, 0);
   lv_obj_set_style_pad_top(chart, 0, 0);
   lv_obj_set_style_pad_bottom(chart, 0, 0);
-  lv_obj_set_style_bg_color(chart, lv_color_white(), LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(chart, lv_color_hex(ui_theme::icon()), LV_PART_ITEMS);
   lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, LV_PART_ITEMS);
   lv_obj_set_style_radius(chart, 0, LV_PART_ITEMS);
   lv_obj_set_style_line_width(chart, 0, LV_PART_ITEMS);
@@ -1183,11 +1194,11 @@ void build_chart_view(EnergyPopupContext* ctx, lv_obj_t* body_box) {
   lv_chart_set_type(chart, LV_CHART_TYPE_BAR);
   lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
   lv_chart_set_point_count(chart, kDaySlotCount);
-  ctx->series = lv_chart_add_series(chart, lv_color_white(), LV_CHART_AXIS_PRIMARY_Y);
+  ctx->series = lv_chart_add_series(chart, lv_color_hex(ui_theme::text()), LV_CHART_AXIS_PRIMARY_Y);
 
   auto make_axis_label = [&](void) -> lv_obj_t* {
     lv_obj_t* label = lv_label_create(chart_wrap);
-    set_label_style(label, lv_color_white(), popup_layout::font20());
+    set_label_style(label, lv_color_hex(ui_theme::text()), popup_layout::font20());
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(label, "");
     lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
@@ -1201,7 +1212,7 @@ void build_chart_view(EnergyPopupContext* ctx, lv_obj_t* body_box) {
     lv_obj_t* line = lv_obj_create(chart_wrap);
     lv_obj_remove_style_all(line);
     lv_obj_set_size(line, popup_layout::scale480(10), 1);
-    lv_obj_set_style_bg_color(line, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(line, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(line, opa, 0);
     lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(line, LV_OBJ_FLAG_CLICKABLE);
@@ -1220,7 +1231,7 @@ void build_chart_view(EnergyPopupContext* ctx, lv_obj_t* body_box) {
     lv_obj_t* bar = lv_obj_create(chart_wrap);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, popup_layout::scale480(4), 0);
-    lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(bar, 0, 0);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -1240,7 +1251,7 @@ void build_chart_view(EnergyPopupContext* ctx, lv_obj_t* body_box) {
   for (uint8_t i = 0; i < ENERGY_VALUES_MAX; ++i) {
     lv_obj_t* label = lv_label_create(x_axis);
     ctx->x_labels[i] = label;
-    set_label_style(label, lv_color_white(), popup_layout::font20());
+    set_label_style(label, lv_color_hex(ui_theme::text()), popup_layout::font20());
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(label, LV_SIZE_CONTENT);
     lv_label_set_text(label, "");
@@ -1254,7 +1265,7 @@ void build_chart_view(EnergyPopupContext* ctx, lv_obj_t* body_box) {
 }
 
 void build_popup_ui(EnergyPopupContext* ctx, const EnergyPopupInit& init) {
-  const auto parts = create_popup_body(on_close_click, ctx, init.bg_color ? init.bg_color : 0x2A2A2A);
+  const auto parts = create_popup_body(on_close_click, ctx, init.bg_color ? init.bg_color : ui_theme::popup_card());
   ctx->overlay = parts.overlay;
   ctx->card = parts.card;
   ctx->title_label = parts.title;
@@ -1373,6 +1384,7 @@ static void finish_energy_popup_open() {
 }
 
 void show_energy_popup(const EnergyPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   hide_pin_popup();
   hide_camera_popup();
   hide_climate_popup();
@@ -1413,6 +1425,7 @@ void show_energy_popup(const EnergyPopupInit& init) {
 }
 
 void preload_energy_popup() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (g_energy_popup_ctx && g_energy_popup_ctx->overlay && g_energy_popup_ctx->card) return;
 
   EnergyPopupInit init;
@@ -1455,6 +1468,7 @@ void queue_energy_popup_refresh(const char* period) {
 }
 
 void process_energy_popup_queue() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!g_energy_popup_ctx || !g_energy_popup_ctx->card) {
     g_pending_refresh = PendingPopupRefresh{};
     return;

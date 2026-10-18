@@ -26,8 +26,12 @@ for (const marker of [
   'return tone_color::fill(circle_card, rgb, tinted, ui_surface_style::icon_glow_percent());',
   '(!options.off && (!options.follows_global || ui_surface_style::icon_discs_shown()));',
   'const lv_opa_t opa = shown ? fill.disc_opa : static_cast<lv_opa_t>(LV_OPA_TRANSP);',
-  'lv_color_hex(tone_color::readable_icon(rgb));',
-  'ui_surface_style::apply_popup_border(shell.frame, lv_color_white(),',
+  // The icon as its popup gives it (a light's: tone_color::light_icon).
+  // On the opening tile's circle exactly the tile's icon (popup_tile_circle).
+  'uint32_t shown_icon = tone_color::readable_icon(rgb);',
+  'tile_icon_source::popup_tile_circle(rgb, tile_circle, tile_circle_opa, shown_icon)',
+  'const lv_color_t readable = lv_color_hex(shown_icon);',
+  'ui_surface_style::apply_popup_border(shell.frame, lv_color_hex(ui_theme::text()),',
   'static_cast<lv_opa_t>(popup_layout::kPopupBorderOpa));',
 ]) assert.ok(tint.includes(marker), `header tint: ${marker}`);
 // A newly shown popup takes the options its tile passed (or the default).
@@ -35,8 +39,8 @@ assert.match(shell, /if \(shell\.active != binding \|\| g_next_disc\.from_tile\)
 // Every opener passes its tile's disc: popup_background() and, for Climate,
 // Light and Cover (global background), forget_popup_source(card).
 const source = read('src/tiles/runtime/tile_icon_source.cpp');
-assert.match(source, /void forget_popup_source\(lv_obj_t\* obj\) \{\s*remember_popup_source\(nullptr\);\s*pass_popup_disc\(obj, false\);/);
-assert.match(source, /uint32_t popup_background\(lv_obj_t\* obj, uint32_t fallback\) \{\s*remember_popup_source\(obj\);\s*pass_popup_disc\(obj, true\);/);
+assert.match(source, /void forget_popup_source\(lv_obj_t\* obj\) \{[^}]*?popup_surface::g_open_surface = ui_theme::kThemeSurface;\s*remember_popup_source\(nullptr\);\s*pass_popup_disc\(obj, false\);/);
+assert.match(source, /uint32_t popup_background\(lv_obj_t\* obj, uint32_t fallback\) \{\s*set_open_popup_surface\(obj\);\s*remember_popup_source\(obj\);\s*pass_popup_disc\(obj, true\);/);
 // A popup that shows the tile color "From icon" computes the circle for its
 // own card; every other one gets the tile's From icon strength, so its circle
 // is the tile's (Climate, Light and Cover keep the global card).

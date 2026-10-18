@@ -10,9 +10,11 @@
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/types/energy/energy_data.h"
 #include "src/tiles/config/tile_icon_colors.h"
 #include "src/ui/popups/energy/energy_popup.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -78,7 +80,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(card_color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-  uint32_t pressed_color = brighten_rgb_color(card_color, 0x10);
+  uint32_t pressed_color = tone_color::pressed_card(card_color);
   lv_obj_set_style_bg_color(card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_color(card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_PRESSED);
@@ -99,14 +101,14 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   bool icon_disabled = isMdiIconDisabled(icon_name);
   icon_name = normalizeMdiIconName(icon_name);
   if (!icon_disabled && !icon_name.length() && tile.sensor_entity.length()) {
-    icon_name = normalizeMdiIconName(haBridgeConfig.findEntityIcon(tile.sensor_entity));
+    icon_name = normalizeMdiIconName(energy_source_icon(tile.sensor_entity));
   }
   if (icon_name.length() > 0 && FONT_MDI_ICONS != nullptr) {
     String iconChar = getMdiChar(icon_name);
     if (iconChar.length() > 0) {
       icon_lbl = lv_label_create(card);
       if (icon_lbl) {
-        set_label_style(icon_lbl, lv_color_white(), FONT_MDI_ICONS);
+        set_label_style(icon_lbl, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
         lv_label_set_text(icon_lbl, iconChar.c_str());
         lv_obj_align(icon_lbl, LV_ALIGN_TOP_LEFT,
                      tile_layout::scale_480(-8),
@@ -124,7 +126,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   if (title_text.length() > 0) {
     title_label = lv_label_create(card);
     if (title_label) {
-      set_label_style(title_label, lv_color_hex(0xFFFFFF),
+      set_label_style(title_label, lv_color_hex(ui_theme::text()),
                       tile_layout::header_title_font());
       lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
       lv_obj_set_width(title_label, LV_PCT(70));
@@ -140,7 +142,7 @@ lv_obj_t* render_energy_tile(lv_obj_t* parent,
   if (!value_label) {
     return card;
   }
-  set_label_style(value_label, lv_color_white(), get_energy_value_font(tile));
+  set_label_style(value_label, lv_color_hex(ui_theme::text()), get_energy_value_font(tile));
   lv_label_set_long_mode(value_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(value_label, LV_PCT(100));
   lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_CENTER, 0);

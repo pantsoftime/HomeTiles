@@ -1,10 +1,11 @@
-// Media tiles offer icon color and tile color "From cover": the most
-// prominent saturated hue of the album cover (media/cover_color.h), stored as
-// the record line "cover [icon] [tile=NN]" on Media tiles only. The icon takes
-// the color like a forced rule color, the tile the tint like "From icon"
-// (readable, tile_tint.h), both below an active rule; grey, white and black
-// covers keep the tile neutral. Every other tile type and every existing
-// record keeps its path unchanged.
+// Media tiles offer the icon color "From cover": the most prominent saturated
+// hue of the album cover (media/cover_color.h), stored as the record line
+// "cover [icon] [tile=NN]" on Media tiles only. The icon takes the color like
+// a forced rule color, below an active rule; grey, white and black covers
+// give no color. The cover never tints the tile itself: "Fill" follows the
+// icon (user 2026-10-11), and a former "tile=NN" colors the icon and fills
+// the tile (tile_icon_colors::cover_colors_icon, fills). Every other tile
+// type and every existing record keeps its path unchanged.
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 
@@ -122,7 +123,7 @@ if (output !== null) {
 }
 
 // Device integration: every cover change reports its color; only Media
-// cards with "From cover" follow it, below an active rule.
+// icons with "From cover" follow it, below an active rule.
 const renderer = read('src/tiles/runtime/tile_renderer.cpp');
 const visible = cppFunctionDefinitions(renderer).find(f => f.name === 'set_media_cover_visible').source;
 assert.match(visible, /report_media_cover_color\(widgets, visible\);\n  return changed;/);
@@ -136,26 +137,27 @@ const refresh = cppFunctionDefinitions(source).find(f => f.name === 'tile_icon_s
   cppFunctionDefinitions(source).find(f => f.name === 'refresh_card').source;
 assert.match(refresh, /tile\.type == TILE_MEDIA \? tile_icon_colors::cover_of\(tile\.icon_colors\.c_str\(\)\) : tile_icon_colors::Cover\{\}/,
   'only Media reads "From cover"');
-assert.match(refresh, /if \(colored && layer\.icon\) \{\s*tile_icon_disc::force_icon_color\(icon, lv_color_hex\(rgb\)\);\s*\} else if \(cover\.icon\) \{/,
+assert.match(refresh, /const bool cover_icon = tile_icon_colors::cover_colors_icon\(cover\);/);
+assert.match(refresh, /if \(rule_icon\) \{\s*tile_icon_disc::force_icon_color\(icon, lv_color_hex\(rgb\)\);\s*\} else if \(cover_icon\) \{/,
   'an active rule colors the icon first');
-assert.match(refresh, /const uint8_t cover_tint = cover\.tile && !choice\.percent \? cover\.tile : 0;/,
-  'From icon and an active rule tint first');
-assert.match(refresh, /if \(tile\.type == TILE_MEDIA\) set_cover_permissions\(card, cover\.icon && !\(colored && layer\.icon\), cover_tint\);/);
-assert.match(refresh, /if \(!cover_tint\) apply_tint_choice\(card, choice\);/);
+assert.match(refresh, /if \(tile\.type == TILE_MEDIA\) set_cover_permissions\(card, cover_icon && !rule_icon\);\s*show_fill\(card, find_disc\(card\)\);\s*if \(tile\.type == TILE_MEDIA\) apply_cover\(card\);/,
+  'the fill follows the icon, the cover colors only the icon');
+assert.ok(read('src/tiles/config/tile_icon_colors.h').includes('inline bool cover_colors_icon(const Cover& cover) { return cover.icon || cover.tile > 0; }'));
 const apply = cppFunctionDefinitions(source).find(f => f.name === 'apply_cover').source;
-assert.match(apply, /const bool known = cover_color\(card, rgb\) && tile_tint::has_hue\(rgb\);/);
-assert.match(apply, /if \(known\) set_tile_tint\(card, rgb, tile\);\s*else clear_tile_tint\(card\);/,
-  'the tint is tile_tint::background (readable), else the card color');
+assert.match(apply, /if \(!cover_icon\(card\)\) return;\s*uint32_t rgb = 0;\s*const bool known = cover_color\(card, rgb\) && tile_tint::has_hue\(rgb\);/);
+assert.match(apply, /if \(known\) tile_icon_disc::force_icon_color\(icon, lv_color_hex\(rgb\)\);\s*else tile_icon_disc::release_icon_color\(icon\);/);
+assert.doesNotMatch(source, /cover_tile\(|cover_tints\(|set_tile_tint\(card, rgb, tile\)/, 'The cover never tints the tile');
 assert.match(read('src/tiles/config/tile_config.h'), /true, tileTypeRulesUseOwnEntity\(type\), type == TILE_MEDIA\);/);
 
-// Web Admin: Media offers "From cover" as tile color and as icon color.
+// Web Admin: Media offers "From cover" as icon color only.
 const html = read('src/web/server/render/tile_icon_colors_html.cpp');
 assert.match(html, /append_button\(html, "", "icon-color-mode", "data-mode", "cover", tr\.tile_color_mode_from_cover\);/);
-assert.ok(html.includes('_tile_icon_cover" hidden>') && html.includes('_tile_cover_fill" hidden>'));
-assert.match(read('src/web/server/render/web_admin_html.cpp'), /\{"cover", tr\.tile_color_mode_from_cover\}/);
-const grid = read('src/web/admin/tiles/grid-preview.js');
-assert.match(grid, /if \(button\.dataset\.tileColorMode === 'cover'\) button\.classList\.toggle\('hidden', !coverOffered\);/);
-assert.match(grid, /const coverOffered = String\(typeValue\) === '15';/);
+assert.ok(html.includes('_tile_icon_cover" hidden>') && !html.includes('_tile_cover_fill'));
+assert.doesNotMatch(read('src/web/server/render/web_admin_html.cpp'), /\{"cover", tr\.tile_color_mode_from_cover\}/);
+// The preview: the cover colors the icon (a former tile=NN too), the fill
+// follows the icon.
+const media = read('src/types/media/admin.js');
+assert.ok(media.includes('if ((cover.icon || cover.tile > 0) && !ruleIcon) {') && !media.includes('setTileTintBackground('));
 const i18n = read('src/core/i18n/i18n.cpp');
 for (const label of ['"Aus Cover"', '"From cover"', '"De la pochette"']) assert.ok(i18n.includes(label), label);
 

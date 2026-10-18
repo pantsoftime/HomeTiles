@@ -4,6 +4,8 @@
   function showNotification(message, success = true) {
     const notification = document.getElementById('notification');
     if (!notification) return;
+    // The layout window keeps the editor's saves to itself (layout-window.js).
+    if (success && typeof layoutWindowOpen === 'function' && layoutWindowOpen()) return;
     // A single shared timer. Every call used to schedule its own, so the timeout
     // of an earlier message hid the next one long before its three seconds were
     // up - easy to hit because autosave reports on every field change.
@@ -31,21 +33,29 @@
   function resetAllTypeFields(tab) {
     const metas = Object.values(TILE_TYPE_REGISTRY || {});
     metas.forEach(meta => callTypeHandler(meta, 'reset', tab));
-    resetIconDiscFields(tab);
   }
 
+  // A folder that still contains tiles keeps its type: the whole type list
+  // is greyed out (user 2026-10-12: choosing Empty deleted a whole folder
+  // with its tiles at once); it goes only by the Delete button after a
+  // question. applySpecialTileUiState keeps the lock.
   function applyFolderTypeLock(tab, locked) {
     const sel = document.getElementById(tab + '_tile_type');
-    if (sel) {
-      for (const opt of sel.options) {
-        // Keeping the folder and emptying or deleting it stay allowed; every
-        // other type is locked while the folder still contains tiles.
-        opt.disabled = locked && opt.value !== '4' && opt.value !== '0';
-      }
+    if (!sel) return;
+    sel.dataset.folderLocked = locked ? '1' : '';
+    sel.disabled = locked || !!getTileTypeMeta(sel.value).locked;
+    // Why it is grey, on hover (user 2026-10-12): on the field and its box,
+    // since a disabled field gets no pointer of its own in every browser.
+    const tip = locked ? t('folderTypeLocked') : '';
+    for (const el of [sel, sel.parentElement]) {
+      if (!el) continue;
+      if (tip) el.title = tip;
+      else el.removeAttribute('title');
     }
-    const hint = document.getElementById(tab + '_tile_type_hint');
-    if (hint) hint.classList.toggle('hidden', !locked);
   }
+
+  // Folders whose deletion was confirmed (tab:index): their save says so.
+  const confirmedFolderDeletes = new Set();
 
   function resetTile(tab) {
     if (currentTileIndex === -1) return;
@@ -53,6 +63,13 @@
     if (isLockedTileType(tileType)) {
       showNotification(t('tileCannotDelete'), false);
       return;
+    }
+    // A folder with tiles in it: the question names it, its tiles go too.
+    const stored = getTilesData(tab)?.[currentTileIndex];
+    if (Number(stored?.type) === 4 && stored.folder_empty === false) {
+      const name = stored.title || t('folderPrefix').trim();
+      if (!confirm(tf('deleteFolderConfirm', { name }))) return;
+      confirmedFolderDeletes.add(tab + ':' + currentTileIndex);
     }
     const prefix = tab;
     document.getElementById(prefix + '_tile_type').value = '0';
@@ -156,6 +173,9 @@
     formData.append('span_w', layout.span_w);
     formData.append('span_h', layout.span_h);
     formData.append('type', snapshot.type || '0');
+    if ((snapshot.type || '0') === '0' && confirmedFolderDeletes.delete(tab + ':' + tileIndex)) {
+      formData.append('delete_folder', '1');
+    }
     formData.append('title', snapshot.title || '');
     formData.append('icon_name', snapshot.icon || '');
     if (snapshotBgColorIsDefault(snapshot)) {
@@ -169,6 +189,11 @@
       formData.append(key, value);
     }
     applySnapshotToTileData(tab, tileIndex, snapshot);
+    // The layout window keeps the editor's places to itself (layout-window.js).
+    if (typeof layoutWindowOpen === 'function' && layoutWindowOpen()) {
+      clearDraft(tab, tileIndex);
+      return;
+    }
     const requestId = ++saveRequestSeq;
     const draftRev = Number(snapshot._rev || 0);
     markLatestSaveRequest(tab, tileIndex, requestId);
@@ -179,6 +204,12 @@
         if (!isLatestSaveRequest(tab, tileIndex, requestId)) return;
         if (data.success) {
           if (!silent) showNotification(t('tileSaved'));
+          // A new tile's stable ID from the panel: its places are kept by it
+          // (the layout window looked a new folder's up without it).
+          if (data.view_id !== undefined && tilesData[tab] && tilesData[tab][tileIndex] &&
+              Number(tilesData[tab][tileIndex].type || 0) !== 0) {
+            tilesData[tab][tileIndex].view_id = Number(data.view_id) || 0;
+          }
           const currentDraft = drafts[tab] && drafts[tab][tileIndex];
           if (currentDraft && currentDraft._dirty && Number(currentDraft._rev || 0) !== draftRev) {
             queueSaveAfterFlight(tab, tileIndex, true);
@@ -191,6 +222,11 @@
               ? data.navigate_target
               : (snapshot.navigate_target || '0'));
             snapshot.navigate_target = resolvedNavTarget;
+            // The tile knows its folder at once (user 2026-10-12: a new folder
+            // went into a page slot only after a few clicks; an autosave
+            // draws nothing again).
+            const tileEl = document.getElementById(tab + '-tile-' + tileIndex);
+            if (tileEl) tileEl.dataset.navigateTarget = resolvedNavTarget;
             if (tilesData[tab] && tilesData[tab][tileIndex]) {
               tilesData[tab][tileIndex].navigate_target = parseInt(resolvedNavTarget, 10) || 0;
               tilesData[tab][tileIndex].folder_pin_enabled =

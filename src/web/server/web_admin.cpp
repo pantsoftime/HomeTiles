@@ -161,7 +161,13 @@ bool WebAdminServer::start() {
               guarded(withStorageHold([this]() { this->handleSaveBridge(); })));
     server.on("/restart", HTTP_POST,
               guarded([this]() { this->handleRestart(); }));
+    // No password check: the handler accepts the Bridge address only within
+    // two minutes after Pair was pressed on the panel itself.
+    server.on("/api/link", HTTP_POST,
+              withStorageHold([this]() { this->handleLinkSetup(); }));
     server.on("/api/status", guarded([this]() { this->handleStatus(); }));
+    server.on("/api/language", HTTP_GET,
+              guarded([this]() { this->handleLanguage(); }));
     server.on("/api/tiles", HTTP_GET,
               guarded([this]() { this->handleGetTiles(); }));
     server.on("/api/tiles", HTTP_POST,
@@ -176,10 +182,24 @@ bool WebAdminServer::start() {
               guarded(withStorageHold([this]() { this->handleSaveFolderAccess(); })));
     server.on("/api/folders/delete", HTTP_POST,
               guarded(withStorageHold([this]() { this->handleDeleteFolder(); })));
+    server.on("/api/layouts", HTTP_GET,
+              guarded([this]() { this->handleGetLayouts(); }));
+    server.on("/api/layouts", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSaveLayouts(); })));
+    server.on("/api/layouts/active", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSwitchLayout(); })));
+    server.on("/api/pages", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSavePages(); })));
     server.on("/api/sensor_values", HTTP_GET,
               guarded([this]() { this->handleGetSensorValues(); }));
     server.on("/api/entity_options", HTTP_GET,
               guarded([this]() { this->handleGetEntityOptions(); }));
+    server.on("/api/mdi_icons", HTTP_GET,
+              guarded([this]() { this->handleGetMdiIcons(); }));
+    server.on("/api/entity_search", HTTP_POST,
+              guarded([this]() { this->handleStartEntitySearch(); }));
+    server.on("/api/entity_search", HTTP_GET,
+              guarded([this]() { this->handleGetEntitySearch(); }));
     server.on("/api/screensaver", HTTP_GET,
               guarded([this]() { this->handleGetScreensaver(); }));
     server.on("/api/screensaver", HTTP_POST,
@@ -188,21 +208,23 @@ bool WebAdminServer::start() {
               guarded([this]() { this->handleGetHardwareIo(); }));
     server.on("/api/hardware-io", HTTP_POST,
               guarded(withStorageHold([this]() { this->handleSaveHardwareIo(); })));
-    server.on("/api/display/tile-radius", HTTP_GET,
-              guarded([this]() { handleTileRadius(); }));
-    server.on("/api/display/tile-radius", HTTP_POST, guarded([this]() {
-      // The live preview (preview=1) only changes the style; saving writes NVS.
-      local_camera::ScopedStorageHold hold(server.arg("preview") != "1");
-      handleTileRadius();
-    }));
-    server.on("/api/display/tile-borders", HTTP_POST,
-              guarded(withStorageHold([this]() { this->handleSaveTileBorders(); })));
+    // FORK: icon circles on/off (upstream v0.9 removed the option).
     server.on("/api/display/icon-discs", HTTP_POST,
               guarded(withStorageHold([this]() { this->handleSaveIconDiscs(); })));
-    server.on("/api/display/icon-glow", HTTP_POST,
-              guarded(withStorageHold([this]() { this->handleSaveIconGlow(); })));
-    server.on("/api/display/tile-color", HTTP_POST,
-              guarded(withStorageHold([this]() { this->handleSaveDefaultTileColor(); })));
+    server.on("/api/display/tile-borders", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSaveTileBorders(); })));
+    server.on("/api/display/gestures", HTTP_GET,
+              guarded([this]() { this->handleGestures(); }));
+    server.on("/api/display/gestures", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleGestures(); })));
+    server.on("/api/display/head-gear", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSaveHeadGear(); })));
+    server.on("/api/display/head", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSaveHeadSwitch(); })));
+    server.on("/api/display/home-head", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSaveHomeHead(); })));
+    server.on("/api/display/theme", HTTP_POST,
+              guarded(withStorageHold([this]() { this->handleSaveTheme(); })));
     server.on("/api/local-camera", HTTP_GET,
               guarded([this]() { this->handleLocalCamera(); }));
     server.on("/api/local-camera", HTTP_POST,
@@ -211,8 +233,6 @@ bool WebAdminServer::start() {
               guarded([this]() { this->handleGetScreensaverWallpaper(); }));
     server.on("/api/sd_images", HTTP_GET,
               guarded([this]() { this->handleGetSdImages(); }));
-    server.on("/api/sd_icons", HTTP_GET,
-              guarded([this]() { this->handleGetSdIcons(); }));
     server.on("/api/screenshot", HTTP_POST,
               guarded([this]() { this->handleCreateScreenshot(); }));
     server.on("/api/screenshot/download", HTTP_GET,
@@ -227,6 +247,13 @@ bool WebAdminServer::start() {
         "/api/ota/upload/raw", HTTP_POST,
         guardedUploadDone([this]() { this->handleOtaUploadDone(); }),
         guardedRaw([this]() { this->handleOtaRawUpdate(); }));
+    // The System page's Icons card: download now, or an uploaded file.
+    server.on("/api/icons/download", HTTP_POST,
+              guarded([this]() { this->handleIconFileDownload(); }));
+    server.on(
+        "/api/icons/upload", HTTP_POST,
+        guardedUploadDone([this]() { this->handleIconFileUploadDone(); }),
+        guardedRaw([this]() { this->handleIconFileUpload(); }));
     server.on("/api/ota/install", HTTP_POST,
               guarded([this]() { this->handleStartOtaInstall(); }));
     server.on("/api/ota/status", HTTP_GET,
@@ -237,10 +264,6 @@ bool WebAdminServer::start() {
               guarded([this]() { this->handleGithubUpdateInstall(); }));
     server.on("/api/ota/github/status", HTTP_GET,
               guarded([this]() { this->handleGetGithubUpdateStatus(); }));
-    server.on(
-        "/api/upload_icon", HTTP_POST,
-        guardedUploadDone([this]() { this->handleUploadIconDone(); }),
-        guardedUpload([this]() { this->handleUploadIcon(); }));
     server.on("/api/files/list", HTTP_GET,
               guarded([this]() { this->handleFileManagerList(); }));
     server.on("/api/files/download", HTTP_GET,

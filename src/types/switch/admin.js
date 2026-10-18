@@ -30,9 +30,11 @@ function maybeFillTitleFromSwitch(tab) {
   // The segmented choices of the Switch fields (like Tile color). The hidden
   // select of each keeps the value; a button sets it and fires its change
   // event, so the existing preview, draft and autosave bindings run.
-  // The Climate tile's Layout uses the same segmented choice.
+  // The Climate tile's Layout and the Camera tile's choices use the same
+  // segmented choice.
   const SWITCH_CHOICE_FIELDS = ['switch_style', 'switch_value_font', 'switch_popup_open_mode', 'climate_view',
-    'cover_value_font', 'lock_value_font', 'alarm_value_font', 'fan_value_font'];
+    'cover_value_font', 'lock_value_font', 'alarm_value_font', 'fan_value_font', 'camera_display', 'camera_fit',
+    'camera_head', 'camera_tap'];
 
   function syncSwitchChoices(tab) {
     for (const field of SWITCH_CHOICE_FIELDS) {
@@ -339,22 +341,30 @@ function maybeFillTitleFromSwitch(tab) {
 
   function applySwitchPreviewState(tileElem, state, entity) {
     if (!tileElem) return;
-    applySwitchPreviewColors(tileElem, state);
-    // The disc and the control fill follow the state color like the device.
-    applyIconDiscTint(tileElem);
-    applySwitchPreviewBar(tileElem, state, entity);
+    // On the tile's own surface: the editor applies the state after the meta
+    // fetch, when its surface scope has ended (user 2026-10-11: a filled
+    // Relay showed the light theme's icon and knob after a click).
+    withSurface(surfaceTheme(tileElem.dataset.surface || ''), () => {
+      applySwitchPreviewColors(tileElem, state);
+      // The disc and the control fill follow the state color like the device.
+      applyIconDiscTint(tileElem);
+      applySwitchPreviewBar(tileElem, state, entity);
+    });
   }
 
   function applySwitchPreviewColors(tileElem, state) {
     const iconEl = tileElem.querySelector('.tile-icon');
     if (!iconEl) return;
     if (state.available === false) {
-      iconEl.style.color = SWITCH_ICON_OFF;
+      // Unavailable: fainter than off in the light theme (icon_unavailable).
+      iconEl.style.color = panelRoleHex('icon-unavailable', SWITCH_ICON_OFF);
       return;
     }
     if (!state.hasState && !state.hasColor) return;
     const isOn = state.hasState ? state.isOn : state.hasColor;
-    iconEl.style.color = isOn ? (state.hasColor ? state.color : SWITCH_ICON_ON) : SWITCH_ICON_OFF;
+    const onColor = state.hasColor ? state.color : SWITCH_ICON_ON;
+    iconEl.style.color = isOn ? (typeof toneLightShown === 'function' ? toneLightShown(onColor) : onColor)
+      : panelRoleHex('icon-off', SWITCH_ICON_OFF);
   }
 
   // show_state_text(): the same words as the device, from the central
@@ -391,13 +401,24 @@ function maybeFillTitleFromSwitch(tab) {
     // Accent = the color the icon shows, card = the tile, thumb off = one
     // OKLCH step above the control fill (tone_color::lifted).
     const iconEl = tileElem.querySelector('.tile-icon');
-    const accent = iconEl ? getComputedStyle(iconEl).color : (state.hasColor ? state.color : SWITCH_ICON_ON);
-    bar.style.setProperty('--switch-accent', accent);
-    bar.style.setProperty('--switch-card', getComputedStyle(tileElem).backgroundColor);
+    // The light theme: the light's own color, a white light in light grey
+    // (accent_color, tone_color::light_accent); marks on it by its lightness.
+    withSurface(surfaceTheme(tileElem.dataset.surface || ''), () => {
+      const givenHex = iconEl?.dataset.toneGiven || '';
+      const shown = iconEl ? cssColorChannels(getComputedStyle(iconEl).color) : null;
+      const given = /^#[0-9a-f]{6}$/i.test(givenHex) ? [1, 3, 5].map(i => parseInt(givenHex.slice(i, i + 2), 16)) : shown;
+      const accentRgb = panelLight() && given ? toneLightAccent(given) : shown;
+      const accent = accentRgb ? toneHex(accentRgb) : (state.hasColor ? state.color : SWITCH_ICON_ON);
+      const card = cssColorChannels(getComputedStyle(tileElem).backgroundColor) || [26, 26, 26];
+      bar.style.setProperty('--switch-accent', accent);
+      bar.style.setProperty('--switch-card', toneHex(card));
+      bar.style.setProperty('--switch-mark', toneHex(accentRgb ? toneMarkOn(accentRgb, card) : card));
+      bar.style.setProperty('--switch-notch', toneHex(accentRgb ? toneNotchOn(accentRgb, card) : card));
+    });
     const control = cssColorChannels(getComputedStyle(bar).backgroundColor);
     if (control) {
       const base = toneOklch(control);
-      bar.style.setProperty('--switch-thumb-off', toneHex(toneRgb(base.L + 0.06, base.C, base.h)));
+      bar.style.setProperty('--switch-thumb-off', toneHex(toneRgb(base.L + toneStep(0.06), base.C, base.h)));
     }
     const symbol = bar.querySelector('.tile-switch-symbol');
     if (symbol) symbol.className = 'mdi ' + (on ? 'mdi-power' : 'mdi-circle-outline') + ' tile-switch-symbol';

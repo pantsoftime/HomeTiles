@@ -14,6 +14,7 @@
 #include "src/ui/popups/camera/camera_popup.h"
 #include "src/ui/screensaver/image_screensaver.h"
 #include "src/video/camera_geometry.h"
+#include "src/video/camera_transport.h"
 #include "src/ui/tabs/settings/tab_settings.h"
 #include "src/types/energy/energy_data.h"
 #include "src/tiles/config/tile_config.h"
@@ -27,8 +28,11 @@
 #include "src/core/hardware/board_hal.h"
 #include "src/core/display/lvgl_tick_service.h"
 #include "src/io/hardware_io.h"
+#include "src/network/bridge/entity_search.h"
+#include "src/network/bridge/bridge_images.h"
 #include "src/web/server/web_admin.h"
 #include "src/video/local_camera/local_camera.h"
+#include "src/audio/speaker.h"
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -86,6 +90,30 @@ struct PendingHistoryRequest {
 
 static PendingHistoryRequest g_pending_history[kHistoryPendingSlots];
 
+// The graph popup asks again on every range switch and every opening. An
+// answer stays valid as long as its own steps, at least a minute: a day in
+// 5-minute steps for 5 minutes, a week in hour steps for an hour (user
+// 2026-10-14: 7 days came at once within a minute, then slowly again, each
+// time a new Recorder query of a busy sensor). Replayed instead of another
+// query; the popup's head shows the current value. Payloads in PSRAM.
+struct HistoryReplayEntry {
+  String entity_id;
+  uint16_t hours = 0;
+  uint16_t period_minutes = 0;
+  uint16_t points = 0;
+  uint32_t stored_ms = 0;
+  char* payload = nullptr;
+  size_t length = 0;
+};
+static constexpr uint8_t kHistoryReplaySlots = 8;
+static constexpr uint32_t kHistoryReplayMinAgeMs = 60UL * 1000UL;
+static uint32_t history_replay_max_age_ms(uint16_t period_minutes) {
+  const uint32_t step = static_cast<uint32_t>(period_minutes) * 60UL * 1000UL;
+  return step > kHistoryReplayMinAgeMs ? step : kHistoryReplayMinAgeMs;
+}
+static constexpr size_t kHistoryReplayMaxBytes = 8UL * 1024UL;
+static HistoryReplayEntry g_history_replay[kHistoryReplaySlots];
+
 struct PendingDiscreteHistoryRequest {
   String entity_id;
   String kind;
@@ -97,6 +125,17 @@ struct PendingDiscreteHistoryRequest {
 static PendingDiscreteHistoryRequest g_pending_discrete_history;
 
 static String buildHaStatestreamTopic(const String& entity_id, const char* suffix);
+
+// Set by the MQTT worker when it drops an inbound message, read by the loop.
+static volatile bool g_inbound_dropped = false;
+// millis() of the last message the MQTT worker received.
+static volatile uint32_t g_last_inbound_ms = 0;
+
+bool mqttTakeInboundDropped() {
+  if (!g_inbound_dropped) return false;
+  g_inbound_dropped = false;
+  return true;
+}
 
 static void update_all_grids(const char* entity_id, const char* payload) {
   if (!entity_id || !payload) return;
@@ -374,6 +413,70 @@ static bool extract_json_uint16_field(const char* json, const char* key,
   if (!end || end == value || parsed > 0xFFFFUL) return false;
   out = static_cast<uint16_t>(parsed);
   return true;
+}
+
+static const PendingHistoryRequest* find_pending_history_request(const char* entity_id) {
+  if (!entity_id || !*entity_id) return nullptr;
+  for (uint8_t i = 0; i < kHistoryPendingSlots; ++i) {
+    if (g_pending_history[i].active &&
+        g_pending_history[i].entity_id.equalsIgnoreCase(entity_id)) {
+      return &g_pending_history[i];
+    }
+  }
+  return nullptr;
+}
+
+static void store_history_replay(const PendingHistoryRequest& request,
+                                 const char* payload, size_t length) {
+  if (!payload || length == 0 || length > kHistoryReplayMaxBytes) return;
+  HistoryReplayEntry* slot = nullptr;
+  for (auto& entry : g_history_replay) {
+    if (entry.payload && entry.entity_id.equalsIgnoreCase(request.entity_id) &&
+        entry.hours == request.hours &&
+        entry.period_minutes == request.period_minutes &&
+        entry.points == request.points) {
+      slot = &entry;
+      break;
+    }
+  }
+  if (!slot) {
+    for (auto& entry : g_history_replay) {
+      if (!entry.payload) { slot = &entry; break; }
+      if (!slot || entry.stored_ms < slot->stored_ms) slot = &entry;
+    }
+  }
+  char* copy = static_cast<char*>(
+      heap_caps_malloc(length + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!copy) return;
+  memcpy(copy, payload, length);
+  copy[length] = '\0';
+  if (slot->payload) heap_caps_free(slot->payload);
+  slot->entity_id = request.entity_id;
+  slot->hours = request.hours;
+  slot->period_minutes = request.period_minutes;
+  slot->points = request.points;
+  slot->stored_ms = millis();
+  slot->payload = copy;
+  slot->length = length;
+}
+
+static bool replay_history_response(const char* entity_id, uint16_t hours,
+                                    uint16_t period_minutes, uint16_t points) {
+  const uint32_t now = millis();
+  for (auto& entry : g_history_replay) {
+    if (!entry.payload || !entry.entity_id.equalsIgnoreCase(entity_id) ||
+        entry.hours != hours || entry.period_minutes != period_minutes ||
+        entry.points != points) {
+      continue;
+    }
+    if (now - entry.stored_ms >= history_replay_max_age_ms(entry.period_minutes)) return false;
+    Serial.printf("[History] Reusing answer for %s (%lu s old)\n", entity_id,
+                  static_cast<unsigned long>((now - entry.stored_ms) / 1000));
+    queue_sensor_popup_history(nullptr, entry.payload, entry.length);
+    queue_tile_graph_history(nullptr, entry.payload, entry.length);
+    return true;
+  }
+  return false;
 }
 
 static void clear_pending_history_request(const char* entity_id) {
@@ -781,7 +884,7 @@ static void sync_external_temp_entity(bool publish_mqtt) {
 #if TAB5_HAS_ONEWIRE_DS18X20
   static bool reported_pin = false;
   if (!reported_pin && g_external_pin != 0xFF) {
-    Serial.printf("[OneWire] MQTT publish to %s (GPIO %u)\n",
+    Serial.printf("[OneWire] Publish to %s (GPIO %u)\n",
                   topic.c_str(),
                   static_cast<unsigned>(g_external_pin));
     reported_pin = true;
@@ -918,9 +1021,9 @@ static void handleSceneCommand(const char* payload, size_t) {
   Serial.printf("Scene command received: %s\n", payload);
 }
 
-static void handleHaWohnTemp(const char* payload, size_t) {
-  float v = atof(payload);
-  Serial.printf("HA living area temperature: %s -> %.2f C\n", payload, v);
+static void handleHaWohnTemp(const char*, size_t) {
+  // Legacy fixed topic: nothing reads this value any more. It only printed
+  // every state into the log.
 }
 
 static bool parseBoolPayload(const char* payload, bool* out) {
@@ -1320,6 +1423,54 @@ static String buildHaStatestreamTopic(const String& entity_id, const char* suffi
   return topic;
 }
 
+// The screensaver's live camera picture topic (mqttSetLivePicture).
+static String g_live_picture_topic;
+
+void mqttSetLivePicture(const char* entity_id, uint8_t fit, uint8_t every) {
+  String topic;
+  if (entity_id && *entity_id) {
+    topic = buildHaStatestreamTopic(String(entity_id), bridge_images::screenSuffix(fit, every));
+  }
+  if (topic == g_live_picture_topic) return;
+  if (networkManager.isMqttConnected() && networkManager.linkConfigured()) {
+    if (g_live_picture_topic.length()) {
+      networkManager.mqttEnqueueUnsubscribe(g_live_picture_topic.c_str());
+    }
+    if (topic.length()) networkManager.mqttEnqueueSubscribe(topic.c_str());
+  }
+  Serial.printf("[Images] Live picture: %s\n", topic.length() ? topic.c_str() : "none");
+  g_live_picture_topic = topic;
+}
+
+// The Camera tiles' picture topics (mqttSetTilePictures).
+static std::vector<String> g_tile_picture_topics;
+
+void mqttSetTilePictures(const String* entities, const String* suffixes, size_t count) {
+  std::vector<String> topics;
+  topics.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    const String topic = buildHaStatestreamTopic(entities[i], suffixes[i].c_str());
+    if (std::find(topics.begin(), topics.end(), topic) == topics.end()) topics.push_back(topic);
+  }
+  if (topics == g_tile_picture_topics) return;
+  if (networkManager.isMqttConnected() && networkManager.linkConfigured()) {
+    // The screensaver's live topic stays when a tile drops the same one.
+    for (const String& old : g_tile_picture_topics) {
+      if (old != g_live_picture_topic && std::find(topics.begin(), topics.end(), old) == topics.end()) {
+        networkManager.mqttEnqueueUnsubscribe(old.c_str());
+      }
+    }
+    for (const String& topic : topics) {
+      if (std::find(g_tile_picture_topics.begin(), g_tile_picture_topics.end(), topic) ==
+          g_tile_picture_topics.end()) {
+        networkManager.mqttEnqueueSubscribe(topic.c_str());
+      }
+    }
+  }
+  Serial.printf("[Images] Tile pictures: %u\n", static_cast<unsigned>(topics.size()));
+  g_tile_picture_topics.swap(topics);
+}
+
 static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
   routes.clear();
 
@@ -1392,6 +1543,14 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
       const FolderEntitySlotView& slot = slots[i];
       // Rules on another entity (tile_icon_colors.h).
       if (slot.rule_entity[0]) add_route(String(slot.rule_entity), -1, "state");
+      // Weather temperature/humidity sensors, one entity per line.
+      for (const char* extra = slot.extra_entities; *extra;) {
+        const char* end = strchr(extra, '\n');
+        const size_t length = end ? static_cast<size_t>(end - extra) : strlen(extra);
+        if (length) add_route(String(extra).substring(0, length), -1, "state");
+        if (!end) break;
+        extra = end + 1;
+      }
       if (tileTypeSubscribesDynamicState(slot.type) &&
           slot.entity[0]) {
         // Lock, Alarm panel and Fan read the additive detail state.
@@ -1410,6 +1569,10 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
           // normal state subscription as well for retained full payloads and
           // compatibility with older bridge versions.
           add_route(String(slot.entity), -1, "state_fast");
+          // Over the link the Bridge sends the cover as its own picture.
+          if (networkManager.linkConfigured()) {
+            add_route(String(slot.entity), -1, bridge_images::coverSuffix());
+          }
         }
       }
     }
@@ -1452,12 +1615,28 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
     if (tile.type == TILE_MEDIA) {
       has_media_tiles = true;
       add_route(tile.sensor_entity, -1, "state_fast");
+      if (networkManager.linkConfigured()) {
+        add_route(tile.sensor_entity, -1, bridge_images::coverSuffix());
+      }
     }
+  }
+
+  // The screensaver's picture of an image entity stays subscribed, ready when
+  // the screensaver opens; a camera's still only while it shows it
+  // (mqttSetLivePicture), since the Bridge loads a new one every 10 s.
+  const ScreensaverConfigData& screensaver = screensaverConfig.get();
+  if (networkManager.linkConfigured() && screensaver.use_wallpapers &&
+      screensaver_uses_ha_picture(screensaver) &&
+      screensaver.picture_entity.startsWith("image.")) {
+    add_route(screensaver.picture_entity, -1, bridge_images::screenSuffix(screensaver.picture_fit, 0));
   }
 
   // Media states with embedded covers need about 19 KB, exceeding the
   // 16 KB base receive buffer; the worker adjusts its size.
   networkManager.setMqttMediaBufferNeeded(has_media_tiles);
+  // The tiles or the Bridge's lists changed: tell the Bridge which tile
+  // entities it does not release itself (network/bridge/entity_search.h).
+  entity_search::scheduleTilesReport();
 }
 
 // Scan at boot before networkManager.init(). If stored configuration
@@ -1589,12 +1768,12 @@ static char* mqttScratchBuffer(char*& slot, size_t bytes, const char* name) {
     where = "internal";
   }
   if (!slot) {
-    Serial.printf("[MQTT] Scratch buffer alloc failed: %s %u bytes\n",
+    Serial.printf("[%s] Scratch buffer alloc failed: %s %u bytes\n", networkManager.bridgeLogName(),
                   name ? name : "?",
                   static_cast<unsigned>(bytes));
     return nullptr;
   }
-  Serial.printf("[MQTT] Scratch buffer %s: %u bytes in %s\n",
+  Serial.printf("[%s] Scratch buffer %s: %u bytes in %s\n", networkManager.bridgeLogName(),
                 name ? name : "?",
                 static_cast<unsigned>(bytes),
                 where);
@@ -1625,9 +1804,18 @@ static char* mqttConfigBuffer() {
 // ---------------------------------------------------------------------------
 struct MqttInboundMsg {
   char* topic;       // -> into the same backing allocation
-  uint8_t* payload;  // -> into the same backing allocation
+  uint8_t* payload;  // -> into the same backing allocation, or `external`
   unsigned int length;
+  // A streamed message's own payload block (mqttStreamCallback), freed with
+  // the message; nullptr for every other message.
+  uint8_t* external;
 };
+
+static void mqttFreeInbound(MqttInboundMsg* msg) {
+  if (!msg) return;
+  if (msg->external) heap_caps_free(msg->external);
+  heap_caps_free(msg);
+}
 
 // A complete retained reconnect includes 46 dynamic topics plus Bridge
 // and Settings messages. A 16-entry queue filled during the measured
@@ -1644,10 +1832,16 @@ static QueueHandle_t mqttInboundQueue() {
   if (!g_mqtt_inbound_queue) {
     g_mqtt_inbound_queue = xQueueCreate(kMqttInboundQueueDepth, sizeof(MqttInboundMsg*));
     if (!g_mqtt_inbound_queue) {
-      Serial.println("[MQTT] Could not create inbound queue");
+      Serial.printf("[%s] Could not create inbound queue\n", networkManager.bridgeLogName());
     }
   }
   return g_mqtt_inbound_queue;
+}
+
+bool mqttInboundBusy(uint32_t quiet_ms) {
+  if (g_mqtt_inbound_queue && uxQueueMessagesWaiting(g_mqtt_inbound_queue) > 0) return true;
+  const uint32_t last = g_last_inbound_ms;
+  return quiet_ms != 0 && last != 0 && millis() - last < quiet_ms;
 }
 
 // One allocation per message, laid out as [MqttInboundMsg][topic\0][payload].
@@ -1690,6 +1884,7 @@ static MqttInboundMsg* mqttAllocInbound(const char* topic,
   msg->topic = reinterpret_cast<char*>(block + sizeof(MqttInboundMsg));
   msg->payload = reinterpret_cast<uint8_t*>(msg->topic + topic_len + 1);
   msg->length = length;
+  msg->external = nullptr;
   if (topic_len) memcpy(msg->topic, topic, topic_len);
   msg->topic[topic_len] = '\0';
   if (length) memcpy(msg->payload, payload, length);
@@ -1714,11 +1909,19 @@ void mqtt_process_inbound_queue(uint8_t max_msgs) {
         deferred->length);
     processMqttMessage(
         deferred->topic, deferred->payload, deferred->length);
-    heap_caps_free(deferred);
+    mqttFreeInbound(deferred);
     ++processed;
   }
 
   if (!q) return;
+  // A drain that holds the loop this long is logged with its slowest message
+  // (V2 b301 boot: the loop stood still for 0.7 s twice after the Bridge link
+  // came up). Logging only.
+  constexpr uint32_t kSlowDrainMs = 300;
+  const uint32_t drain_started = millis();
+  uint32_t slowest_ms = 0;
+  uint32_t drained = 0;  // processed is 8 bits and wraps in an unlimited drain
+  char slowest_topic[96] = "";
   MqttInboundMsg* msg = nullptr;
   while ((max_msgs == 0 || processed < max_msgs) && xQueueReceive(q, &msg, 0) == pdTRUE) {
     if (msg) {
@@ -1726,7 +1929,7 @@ void mqtt_process_inbound_queue(uint8_t max_msgs) {
       if (camera_busy && apply_topic &&
           strcmp(msg->topic, apply_topic) == 0) {
         if (g_deferred_bridge_apply) {
-          heap_caps_free(g_deferred_bridge_apply);
+          mqttFreeInbound(g_deferred_bridge_apply);
         }
         g_deferred_bridge_apply = msg;
         Serial.printf(
@@ -1736,10 +1939,23 @@ void mqtt_process_inbound_queue(uint8_t max_msgs) {
         ++processed;
         continue;
       }
+      const uint32_t message_started = millis();
       processMqttMessage(msg->topic, msg->payload, msg->length);
-      heap_caps_free(msg);
+      const uint32_t message_ms = millis() - message_started;
+      if (message_ms > slowest_ms) {
+        slowest_ms = message_ms;
+        strlcpy(slowest_topic, msg->topic, sizeof(slowest_topic));
+      }
+      mqttFreeInbound(msg);
       ++processed;
+      ++drained;
     }
+  }
+  const uint32_t drain_ms = millis() - drain_started;
+  if (drain_ms >= kSlowDrainMs) {
+    Serial.printf("[Inbound] Drained %u messages in %u ms; slowest %u ms: %s\n",
+                  static_cast<unsigned>(drained), static_cast<unsigned>(drain_ms),
+                  static_cast<unsigned>(slowest_ms), slowest_topic);
   }
 }
 
@@ -1751,11 +1967,12 @@ void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
   // processing -- which now runs later, on the loop drainer.
   uint32_t entry_since_tick = millis() - g_lvgl_tick_last_ms;
   if (entry_since_tick >= 50) {
-    Serial.printf("[Bridge] mqttCallback entry: %ums since last LVGL tick service\n",
+    Serial.printf("[Bridge] Message callback entry: %ums since last LVGL tick service\n",
                   (unsigned)entry_since_tick);
   }
 
   QueueHandle_t q = mqttInboundQueue();
+  g_last_inbound_ms = millis();
   bool invalid = false;
   const size_t packet_capacity = networkManager.getMqttBufferSize();
   MqttInboundMsg* msg =
@@ -1775,7 +1992,8 @@ void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
     return;
   }
   if (!msg) {
-    Serial.printf("[MQTT] Inbound allocation/queue unavailable; dropped '%s'\n",
+    g_inbound_dropped = true;
+    Serial.printf("[%s] Inbound allocation/queue unavailable; dropped '%s'\n", networkManager.bridgeLogName(),
                   topic ? topic : "?");
     return;
   }
@@ -1784,14 +2002,47 @@ void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
   // task. Briefly wait for a full queue to drain, then drop. Rate-limit
   // drop logs because display sleep drains only about every 150 ms.
   if (xQueueSend(q, &msg, pdMS_TO_TICKS(50)) != pdTRUE) {
-    heap_caps_free(msg);
+    mqttFreeInbound(msg);
+    g_inbound_dropped = true;
     static uint32_t last_drop_log_ms = 0;
     const uint32_t drop_now_ms = millis();
     if (last_drop_log_ms == 0 || (uint32_t)(drop_now_ms - last_drop_log_ms) >= 5000) {
       last_drop_log_ms = drop_now_ms;
-      Serial.printf("[MQTT] Inbound queue full -> message dropped (latest: %s)\n",
+      Serial.printf("[%s] Inbound queue full -> message dropped (latest: %s)\n", networkManager.bridgeLogName(),
                     topic ? topic : "?");
     }
+  }
+}
+
+// A streamed message from the Bridge (link only, above the normal message
+// size). Only image topics may be this large: every other handler was built
+// for messages within the MQTT buffer. The payload keeps its own block.
+void mqttStreamCallback(const char* topic, uint8_t* data, size_t length) {
+  QueueHandle_t q = mqttInboundQueue();
+  const size_t topic_len = topic ? strnlen(topic, 256) : 0;
+  if (!q || !data || topic_len == 0 || topic_len >= 256 || !strstr(topic, "/image/")) {
+    Serial.printf("[%s] Streamed message dropped (%u bytes): %s\n", networkManager.bridgeLogName(),
+                  static_cast<unsigned>(length), topic ? topic : "?");
+    if (data) heap_caps_free(data);
+    return;
+  }
+  uint8_t* block = static_cast<uint8_t*>(
+      heap_caps_malloc(sizeof(MqttInboundMsg) + topic_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!block) {
+    heap_caps_free(data);
+    Serial.printf("[%s] Inbound allocation unavailable; dropped '%s'\n", networkManager.bridgeLogName(), topic);
+    return;
+  }
+  MqttInboundMsg* msg = reinterpret_cast<MqttInboundMsg*>(block);
+  msg->topic = reinterpret_cast<char*>(block + sizeof(MqttInboundMsg));
+  memcpy(msg->topic, topic, topic_len + 1);
+  msg->payload = data;
+  msg->length = static_cast<unsigned int>(length);
+  msg->external = data;
+  g_last_inbound_ms = millis();
+  if (xQueueSend(q, &msg, pdMS_TO_TICKS(50)) != pdTRUE) {
+    mqttFreeInbound(msg);
+    Serial.printf("[%s] Inbound queue full -> streamed message dropped: %s\n", networkManager.bridgeLogName(), topic);
   }
 }
 
@@ -1803,6 +2054,8 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
   // copies of stream-token topics, never reach the plain handlers below.
   if (command_channel::handleMqttMessage(topic, payload, length)) return;
   if (command_channel::blocksPlaintext(topic)) return;
+  // Pictures from the Bridge (link only) never reach the state handlers.
+  if (bridge_images::handleMqttMessage(topic, payload, length)) return;
 
   // Local relays use a small direct topic path, avoiding JSON parsing
   // while normal Bridge and camera messages retain the established router.
@@ -1812,6 +2065,9 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
   // Built-in camera snapshot requests only validate and wake the camera
   // worker here; capture and upload never run on the loop task.
   if (local_camera::handleMqttMessage(topic, payload, length)) return;
+  // Speaker and Assist commands only validate and hand a clip or a capture
+  // session to the audio worker.
+  if (speaker::handleMqttMessage(topic, payload, length)) return;
   if (editable_handle_ack(topic, reinterpret_cast<const char*>(payload), length)) return;
   const char* apply_topic = networkManager.getBridgeApplyTopic();
   if (apply_topic && strcmp(topic, apply_topic) == 0) {
@@ -1852,7 +2108,7 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
         // bridge/apply, so replying here creates an apply/announce feedback loop.
         // Refresh dynamic topics after a quiet window and coalesce repeated reloads.
         mqttRequestDynamicSlotsReload();
-        Serial.println("[Bridge] mqttReloadDynamicSlots scheduled after quiet period");
+        Serial.println("[Bridge] Dynamic subscriptions scheduled after the quiet period");
       }
       if (icons_changed) {
         tiles_request_icon_refresh();
@@ -1934,6 +2190,10 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
     const bool is_binary = response_kind.equalsIgnoreCase("binary");
     const bool is_state = response_kind.equalsIgnoreCase("state");
     const bool is_discrete = is_binary || is_state;
+    // The range and how long its answer took (user 2026-10-14: 7 days felt
+    // slow; the log showed neither).
+    uint16_t answer_hours = 0;
+    uint32_t answer_wait_ms = 0;
     if (has_entity) {
       if (is_discrete) {
         uint16_t response_hours = 0;
@@ -1946,15 +2206,37 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
           clear_pending_history_request(response_entity.c_str());
         }
       } else {
+        // Keep it for a replay only when the answer is for the range still
+        // pending: a fast second switch replaces the pending range first.
+        uint16_t response_hours = 0;
+        uint16_t response_period = 0;
+        const PendingHistoryRequest* request =
+            find_pending_history_request(response_entity.c_str());
+        if (request) {
+          answer_hours = request->hours;
+          answer_wait_ms = millis() - request->requested_at_ms;
+        }
+        if (request &&
+            extract_json_uint16_field(large_buf, "hours", response_hours) &&
+            extract_json_uint16_field(large_buf, "period_minutes", response_period) &&
+            response_hours == request->hours &&
+            response_period == request->period_minutes) {
+          store_history_replay(*request, large_buf, copy_len);
+        }
         clear_pending_history_request(response_entity.c_str());
       }
     }
-    Serial.printf("[%s] Response received: %s, %u bytes\n",
+    char answer_time[48] = "";
+    if (answer_hours) {
+      snprintf(answer_time, sizeof(answer_time), ", %u h, %lu ms after the request",
+               static_cast<unsigned>(answer_hours), static_cast<unsigned long>(answer_wait_ms));
+    }
+    Serial.printf("[%s] Response received: %s, %u bytes%s\n",
                   is_binary ? "BinaryHistory"
                             : (is_state ? "StateHistory" : "History"),
                   response_entity.length() ? response_entity.c_str()
                                            : "unknown entity",
-                  static_cast<unsigned>(copy_len));
+                  static_cast<unsigned>(copy_len), answer_time);
     queue_sensor_popup_history(nullptr, large_buf, copy_len);
     if (!is_discrete) {
       queue_tile_graph_history(nullptr, large_buf, copy_len);
@@ -1973,32 +2255,46 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
     return;
   }
 
-  Serial.printf("MQTT: Unhandled topic %s\n", topic);
+  Serial.printf("[%s] Unhandled topic %s\n", networkManager.bridgeLogName(), topic);
 }
 
 // ========== Subscribe to topics ==========
 void mqttSubscribeTopics() {
-  networkManager.mqttEnqueueSubscribe((mqttTopics.deviceBase() + "/stat/value").c_str());
+  unsigned queued = 0;
+  if (networkManager.mqttEnqueueSubscribe((mqttTopics.deviceBase() + "/stat/value").c_str())) {
+    ++queued;
+  }
   for (const auto& route : kRoutes) {
     const char* tpc = mqttTopics.topic(route.key);
     if (!tpc || !*tpc) continue;
-    if (networkManager.mqttEnqueueSubscribe(tpc)) {
-      Serial.printf("MQTT: subscribe queued %s\n", tpc);
-    }
+    if (networkManager.mqttEnqueueSubscribe(tpc)) ++queued;
   }
   // Explicit, capability-gated subscription: profiles without the built-in
   // camera never subscribe to {base}/cmnd/local_camera.
   if (const char* camera_topic = local_camera::commandTopic()) {
-    if (networkManager.mqttEnqueueSubscribe(camera_topic)) {
-      Serial.printf("MQTT: subscribe queued %s\n", camera_topic);
-    }
+    if (networkManager.mqttEnqueueSubscribe(camera_topic)) ++queued;
   }
+  // Same for {base}/cmnd/audio on profiles without a speaker.
+  if (const char* audio_topic = speaker::commandTopic()) {
+    if (networkManager.mqttEnqueueSubscribe(audio_topic)) ++queued;
+  }
+  // And {base}/cmnd/assist (microphone capture for Home Assistant Assist).
+  if (const char* assist_topic = speaker::assistCommandTopic()) {
+    if (networkManager.mqttEnqueueSubscribe(assist_topic)) ++queued;
+  }
+  Serial.printf("[%s] %u fixed subscriptions queued\n", networkManager.bridgeLogName(), queued);
 
   // After MQTT reconnects, the broker has no subscriptions for this session.
   // Subscribe to every existing route once without first queueing pointless
   // unsubscribe commands.
   mqttReloadDynamicSlots(true);
   hardwareIo.subscribeMqttTopics();
+  if (g_live_picture_topic.length() && networkManager.linkConfigured()) {
+    networkManager.mqttEnqueueSubscribe(g_live_picture_topic.c_str());
+  }
+  if (networkManager.linkConfigured()) {
+    for (const String& topic : g_tile_picture_topics) networkManager.mqttEnqueueSubscribe(topic.c_str());
+  }
 }
 
 // ========== Publish home snapshot ==========
@@ -2075,12 +2371,12 @@ void mqttPublishScene(const char* scene_name) {
   if (entity.length() && !ha_control::supportsSceneTile(entity.c_str())) return;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Scene command skipped (MQTT offline): %s\n", scene_name);
+    Serial.printf("Scene command skipped (offline): %s\n", scene_name);
     return;
   }
 
   bool queued = networkManager.mqttEnqueuePublish(mqttTopics.topic(TopicKey::SCENE_CMND), scene_name, false);
-  Serial.printf("Scene command -> MQTT '%s' (%s)\n", scene_name, queued ? "queued" : "queue-full");
+  Serial.printf("Scene command -> '%s' (%s)\n", scene_name, queued ? "queued" : "queue-full");
 }
 
 // ========== Publish light/switch command ==========
@@ -2090,7 +2386,7 @@ void mqttPublishSwitchCommand(const char* entity_id, const char* state) {
   if (!ha_control::supportsSwitchTile(entity_id)) return;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Switch command skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Switch command skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2110,14 +2406,14 @@ void mqttPublishSwitchCommand(const char* entity_id, const char* state) {
   char payload[256];
   snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"state\":\"%s\"}", entity_id, action);
   bool queued = networkManager.mqttEnqueuePublish(topic, payload, false);
-  Serial.printf("Switch command -> MQTT '%s' (%s)\n", topic, queued ? "queued" : "queue-full");
+  Serial.printf("Switch command -> '%s' (%s)\n", topic, queued ? "queued" : "queue-full");
 }
 
 void mqttPublishMediaCommand(const char* entity_id, const char* command) {
   if (!entity_id || !*entity_id) return;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Media command skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Media command skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2131,7 +2427,7 @@ void mqttPublishMediaCommand(const char* entity_id, const char* command) {
   char payload[256];
   snprintf(payload, sizeof(payload), "{\"entity_id\":\"%s\",\"command\":\"%s\"}", entity_id, action);
   bool queued = networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Media command -> MQTT '%s' (%s, priority)\n",
+  Serial.printf("Media command -> '%s' (%s, priority)\n",
                 topic, queued ? "queued" : "queue-full");
 }
 
@@ -2140,7 +2436,7 @@ void mqttPublishMediaSeek(const char* entity_id, float position_seconds) {
   if (position_seconds < 0.0f) position_seconds = 0.0f;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Media seek skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Media seek skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2157,7 +2453,7 @@ void mqttPublishMediaSeek(const char* entity_id, float position_seconds) {
            entity_id,
            position_seconds);
   bool queued = networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Media seek -> MQTT '%s' %.1fs (%s, priority)\n",
+  Serial.printf("Media seek -> '%s' %.1fs (%s, priority)\n",
                 topic,
                 position_seconds,
                 queued ? "queued" : "queue-full");
@@ -2169,7 +2465,7 @@ void mqttPublishMediaVolume(const char* entity_id, float volume_level) {
   if (volume_level > 1.0f) volume_level = 1.0f;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Media volume skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Media volume skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2186,7 +2482,7 @@ void mqttPublishMediaVolume(const char* entity_id, float volume_level) {
            entity_id,
            volume_level);
   bool queued = networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Media volume -> MQTT '%s' %.0f%% (%s, priority)\n",
+  Serial.printf("Media volume -> '%s' %.0f%% (%s, priority)\n",
                 topic, volume_level * 100.0f,
                 queued ? "queued" : "queue-full");
 }
@@ -2195,7 +2491,7 @@ void mqttPublishMediaMute(const char* entity_id, bool muted) {
   if (!entity_id || !*entity_id) return;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Media mute skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Media mute skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2212,7 +2508,7 @@ void mqttPublishMediaMute(const char* entity_id, bool muted) {
            entity_id,
            muted ? "true" : "false");
   bool queued = networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Media mute -> MQTT '%s' %s (%s, priority)\n",
+  Serial.printf("Media mute -> '%s' %s (%s, priority)\n",
                 topic, muted ? "on" : "off",
                 queued ? "queued" : "queue-full");
 }
@@ -2224,7 +2520,7 @@ void mqttPublishClimateTemperature(const char* entity_id,
                                    float target_high) {
   if (!entity_id || !*entity_id) return;
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Climate temperature skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Climate temperature skipped (offline): %s\n", entity_id);
     return;
   }
   const char* topic = mqttTopics.topic(TopicKey::CLIMATE_CMND);
@@ -2244,14 +2540,14 @@ void mqttPublishClimateTemperature(const char* entity_id,
   }
   const bool queued =
       networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Climate temperature -> MQTT '%s' (%s, priority)\n",
+  Serial.printf("Climate temperature -> '%s' (%s, priority)\n",
                 topic, queued ? "queued" : "queue-full");
 }
 
 void mqttPublishClimateHumidity(const char* entity_id, float humidity) {
   if (!entity_id || !*entity_id) return;
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Climate humidity skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Climate humidity skipped (offline): %s\n", entity_id);
     return;
   }
   const char* topic = mqttTopics.topic(TopicKey::CLIMATE_CMND);
@@ -2264,14 +2560,14 @@ void mqttPublishClimateHumidity(const char* entity_id, float humidity) {
            entity_id, humidity);
   const bool queued =
       networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Climate humidity -> MQTT '%s' (%s, priority)\n",
+  Serial.printf("Climate humidity -> '%s' (%s, priority)\n",
                 topic, queued ? "queued" : "queue-full");
 }
 
 void mqttPublishClimateHvacMode(const char* entity_id, const char* hvac_mode) {
   if (!entity_id || !*entity_id || !hvac_mode || !*hvac_mode) return;
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Climate mode skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Climate mode skipped (offline): %s\n", entity_id);
     return;
   }
   const char* topic = mqttTopics.topic(TopicKey::CLIMATE_CMND);
@@ -2284,7 +2580,7 @@ void mqttPublishClimateHvacMode(const char* entity_id, const char* hvac_mode) {
            entity_id, hvac_mode);
   const bool queued =
       networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Climate mode -> MQTT '%s' (%s, priority)\n",
+  Serial.printf("Climate mode -> '%s' (%s, priority)\n",
                 topic, queued ? "queued" : "queue-full");
 }
 
@@ -2292,7 +2588,7 @@ void mqttPublishClimatePresetMode(
     const char* entity_id, const char* preset_mode) {
   if (!entity_id || !*entity_id || !preset_mode || !*preset_mode) return;
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Climate preset skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Climate preset skipped (offline): %s\n", entity_id);
     return;
   }
   const char* topic = mqttTopics.topic(TopicKey::CLIMATE_CMND);
@@ -2305,7 +2601,7 @@ void mqttPublishClimatePresetMode(
            entity_id, preset_mode);
   const bool queued =
       networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Climate preset -> MQTT '%s' (%s, priority)\n",
+  Serial.printf("Climate preset -> '%s' (%s, priority)\n",
                 topic, queued ? "queued" : "queue-full");
 }
 
@@ -2320,7 +2616,7 @@ static void mqtt_publish_climate_option(
     return;
   }
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Climate %s skipped (MQTT offline): %s\n",
+    Serial.printf("Climate %s skipped (offline): %s\n",
                   log_name, entity_id);
     return;
   }
@@ -2333,7 +2629,7 @@ static void mqtt_publish_climate_option(
            entity_id, command, field, value);
   const bool queued =
       networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Climate %s -> MQTT '%s' (%s, priority)\n",
+  Serial.printf("Climate %s -> '%s' (%s, priority)\n",
                 log_name, topic, queued ? "queued" : "queue-full");
 }
 
@@ -2377,7 +2673,7 @@ void mqttPublishCoverCommand(const char* entity_id,
     return;
   }
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Cover command skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Cover command skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2410,7 +2706,7 @@ void mqttPublishCoverCommand(const char* entity_id,
   }
   const bool queued =
       networkManager.mqttEnqueuePublishPriority(topic, payload, false);
-  Serial.printf("Cover command -> MQTT '%s' command=%s (%s, priority)\n",
+  Serial.printf("Cover command -> '%s' command=%s (%s, priority)\n",
                 topic, command, queued ? "queued" : "queue-full");
 }
 
@@ -2424,7 +2720,7 @@ void mqttPublishLightCommand(const char* entity_id,
   if (handle_local_light_command(entity_id, state, brightness_pct)) return;
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Light command skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("Light command skipped (offline): %s\n", entity_id);
     return;
   }
 
@@ -2471,7 +2767,7 @@ void mqttPublishLightCommand(const char* entity_id,
   payload += "}";
 
   bool queued = networkManager.mqttEnqueuePublish(topic, payload.c_str(), false);
-  Serial.printf("Light command -> MQTT '%s' (%s)\n", topic, queued ? "queued" : "queue-full");
+  Serial.printf("Light command -> '%s' (%s)\n", topic, queued ? "queued" : "queue-full");
 }
 
 void mqttPublishHistoryRequest(const char* entity_id,
@@ -2494,6 +2790,11 @@ void mqttPublishHistoryRequest(const char* entity_id,
   const char* history_topic = networkManager.getHistoryRequestTopic();
   const bool can_request_ha = mqtt_online && history_topic && *history_topic;
   const bool time_valid = has_valid_local_time_for_history();
+
+  if (can_request_ha && replay_history_response(entity_id, hours, period_minutes, points)) {
+    clear_pending_history_request(entity_id);
+    return;
+  }
 
   // Discard previous pending entries for the same entity.
   clear_pending_history_request(entity_id);
@@ -2519,7 +2820,7 @@ void mqttPublishHistoryRequest(const char* entity_id,
     // before the request was even sent.
     bool ok = networkManager.mqttEnqueuePublishWithLargeBuffer(
         history_topic, payload.c_str(), false, 20000, true);
-    Serial.printf("History request -> MQTT '%s' (%s, priority)\n",
+    Serial.printf("History request -> '%s' (%s, priority)\n",
                   history_topic, ok ? "queued" : "queue-full");
     if (ok) {
       mark_pending_history_request(entity_id, millis(), hours, period_minutes, points);
@@ -2536,7 +2837,7 @@ void mqttPublishHistoryRequest(const char* entity_id,
   }
 
   if (!mqtt_online) {
-    Serial.printf("History request skipped (MQTT offline): %s\n", entity_id);
+    Serial.printf("History request skipped (offline): %s\n", entity_id);
   } else if (!history_topic || !*history_topic) {
     Serial.printf("History request skipped (no topic): %s\n", entity_id);
   }
@@ -2583,7 +2884,7 @@ static void mqttPublishDiscreteHistoryRequest(const char* entity_id,
 
   const bool queued = networkManager.mqttEnqueuePublishWithLargeBuffer(
       history_topic, payload.c_str(), false, 20000, true);
-  Serial.printf("[%s] Request -> MQTT '%s' (%s, priority)\n", log_tag,
+  Serial.printf("[%s] Request -> '%s' (%s, priority)\n", log_tag,
                 history_topic, queued ? "queued" : "queue-full");
   if (queued) {
     mark_pending_discrete_history_request(entity_id, kind, hours);
@@ -2621,7 +2922,7 @@ void mqttPublishWeatherRequest(const char* entity_id) {
   payload += "\"}";
 
   bool queued = networkManager.mqttEnqueuePublish(weather_topic, payload.c_str(), false);
-  Serial.printf("Weather request -> MQTT '%s' (%s)\n", weather_topic, queued ? "queued" : "queue-full");
+  Serial.printf("Weather request -> '%s' (%s)\n", weather_topic, queued ? "queued" : "queue-full");
 }
 
 bool mqttPublishEnergyRequest(const char* period) {
@@ -2631,7 +2932,7 @@ bool mqttPublishEnergyRequest(const char* period) {
   }
 
   if (!networkManager.isMqttConnected()) {
-    Serial.printf("Energy request skipped (MQTT offline): %s\n", p);
+    Serial.printf("Energy request skipped (offline): %s\n", p);
     return false;
   }
 
@@ -2650,7 +2951,7 @@ bool mqttPublishEnergyRequest(const char* period) {
   // from the loop task or bypassing P4 SDIO guard intervals.
   bool queued = networkManager.mqttEnqueuePublishWithLargeBuffer(
       energy_topic, payload.c_str(), false, 12000, true);
-  Serial.printf("Energy request -> MQTT '%s' period=%s (%s, priority)\n",
+  Serial.printf("Energy request -> '%s' period=%s (%s, priority)\n",
                 energy_topic,
                 p,
                 queued ? "queued" : "queue-full");
@@ -2743,14 +3044,11 @@ void mqttReloadDynamicSlots(bool subscribe_all) {
     }
     for (const auto& topic : new_topics) {
       if (!subscribe_all && topicListContains(old_topics, topic)) continue;
-      if (networkManager.mqttEnqueueSubscribe(topic.c_str())) {
-        ++subscribe_count;
-        Serial.printf("MQTT: subscribe queued %s\n", topic.c_str());
-      }
+      if (networkManager.mqttEnqueueSubscribe(topic.c_str())) ++subscribe_count;
       lvglServiceDuringBlockingWork();
     }
   }
-  Serial.printf("[Bridge] mqttReloadDynamicSlots: -%u +%u Topics in %u ms%s\n",
+  Serial.printf("[Bridge] Dynamic subscriptions: -%u +%u topics in %u ms%s\n",
                 static_cast<unsigned>(unsubscribe_count),
                 static_cast<unsigned>(subscribe_count),
                 static_cast<unsigned>(millis() - t_control0),
@@ -2782,7 +3080,7 @@ void mqttServiceDynamicSlotsReload() {
   g_dynamic_slots_reload_requested = false;
   uint32_t t_slots0 = millis();
   mqttReloadDynamicSlots();
-  Serial.printf("[Bridge] deferred mqttReloadDynamicSlots: %u ms\n",
+  Serial.printf("[Bridge] Deferred dynamic subscriptions: %u ms\n",
                 (unsigned)(millis() - t_slots0));
 }
 
@@ -2794,7 +3092,13 @@ void mqttServiceDynamicSlotsReload() {
 // All resulting publishes and subscribes return through the outbound queue.
 void mqttServicePostConnect() {
   if (!networkManager.consumeMqttPostConnectPending()) return;
-  Serial.println("[MQTT] Post-connect: subscriptions/discovery/settings (loop task)");
+  if (networkManager.linkPairMode()) {
+    // A direct link in pair mode carries the pairing topics only.
+    Serial.println("[Link] Post-connect in pair mode: pairing only");
+    command_channel::onMqttConnected();
+    return;
+  }
+  Serial.printf("[%s] Post-connect: subscriptions/discovery/settings (loop task)\n", networkManager.bridgeLogName());
   viewNavigationConnected();
   mqttSubscribeTopics();
   mqttPublishDiscovery();
@@ -2804,6 +3108,9 @@ void mqttServicePostConnect() {
   local_camera::onMqttConnected();
   // Bridge pairing: secure topic subscription, status and session request.
   command_channel::onMqttConnected();
+  // Retained {base}/stat/audio (and {base}/stat/assist once the microphone
+  // answered) on speaker profiles; no-op elsewhere.
+  speaker::onMqttConnected();
   // Announce the exact MAC-based Bridge topic after every connection. Without
   // this retained message the HA integration cannot discover a new device or
   // repair an entry that still points at an older device ID. The publish uses
@@ -2824,6 +3131,49 @@ void mqttServicePostConnect() {
   networkManager.publishBridgeRequest(true);
 }
 
+// The panel's own JPEG quality for the Bridge, or nothing for the Bridge's.
+static void camera_quality_field(char* out, size_t size) {
+  out[0] = '\0';
+  if (camera_geometry::kJpegQuality) {
+    snprintf(out, size, ",\"quality\":%u",
+             static_cast<unsigned>(camera_geometry::kJpegQuality));
+  }
+}
+
+void mqttPublishCameraFullScreenOpen(const char* entity_id, uint8_t fps,
+                                     uint16_t width, uint16_t height,
+                                     uint16_t turn_cw) {
+  if (!entity_id || !*entity_id) return;
+  const auto& text = i18n::strings(configManager.getConfig().language);
+  const camera_transport::Request transport = camera_transport::request();
+  const char* topic = mqttTopics.topic(TopicKey::CAMERA_CMND);
+  if (!networkManager.isMqttConnected() || !topic || !*topic) {
+    camera_popup_set_status(text.camera_mqtt_disconnected, true);
+    return;
+  }
+  char quality[24];
+  camera_quality_field(quality, sizeof(quality));
+  char payload[384];
+  snprintf(payload, sizeof(payload),
+           "{\"entity_id\":\"%s\",\"command\":\"open\","
+           "\"width\":%u,\"height\":%u,\"fps\":%u,"
+           "\"view\":\"full\",\"rotate\":%u,\"fit\":\"%s\","
+           "\"chunk\":%u,\"window\":%u%s,"
+           "\"transport\":\"tcp-ack-v1\",\"protocol_version\":1}",
+           entity_id, static_cast<unsigned>(width),
+           static_cast<unsigned>(height),
+           static_cast<unsigned>(fps ? fps : camera_geometry::kFps),
+           static_cast<unsigned>(turn_cw), camera_geometry::kFullFit,
+           static_cast<unsigned>(transport.chunk_bytes),
+           static_cast<unsigned>(transport.window), quality);
+  const bool queued =
+      networkManager.mqttEnqueuePublishPriority(topic, payload, false);
+  Serial.printf("[Camera] command open full screen %ux%u -> %s (%s)\n",
+                static_cast<unsigned>(width), static_cast<unsigned>(height),
+                topic, queued ? "queued" : "queue-full");
+  if (!queued) camera_popup_set_status(text.camera_mqtt_queue_full, true);
+}
+
 void mqttPublishCameraCommand(const char* entity_id, const char* command,
                               uint8_t fps) {
   if (!entity_id || !*entity_id) return;
@@ -2842,14 +3192,20 @@ void mqttPublishCameraCommand(const char* entity_id, const char* command,
   const char* action = (command && *command) ? command : "open";
   char payload[384];
   if (strcmp(action, "open") == 0) {
+    const camera_transport::Request transport = camera_transport::request();
+    char quality[24];
+    camera_quality_field(quality, sizeof(quality));
     snprintf(payload, sizeof(payload),
              "{\"entity_id\":\"%s\",\"command\":\"%s\","
              "\"width\":%u,\"height\":%u,\"fps\":%u,"
+             "\"chunk\":%u,\"window\":%u%s,"
              "\"transport\":\"tcp-ack-v1\",\"protocol_version\":1}",
              entity_id, action,
              camera_geometry::kWidth,
              camera_geometry::kHeight,
-             fps ? fps : camera_geometry::kFps);
+             fps ? fps : camera_geometry::kFps,
+             static_cast<unsigned>(transport.chunk_bytes),
+             static_cast<unsigned>(transport.window), quality);
   } else {
     snprintf(payload, sizeof(payload),
              "{\"entity_id\":\"%s\",\"command\":\"%s\"}",

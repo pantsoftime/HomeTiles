@@ -1,4 +1,4 @@
-import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
+import {radiusPolicyHost, surfaceStyleHost, popupSurfaceHost} from '../../lib/surface-style-host.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,8 +47,13 @@ constexpr int SCREEN_WIDTH=Device::kScreenWidth,SCREEN_HEIGHT=Device::kScreenHei
 String getMdiChar(const String&){return "\xF3\xB0\x96\xAD";}
 ${radiusPolicyHost(root, 'Device::kGridCellH', 'Device::kGridGap')}
 #include "src/core/config/icon_glow.h"
-struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = true; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; };
+struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = true; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; uint32_t default_tile_color = 0x1A1A1A; const char* language = "en"; };
 struct TestConfigManager { TestConfig config; const TestConfig& getConfig() const { return config; } } configManager;
+// The forecast texts renderer.cpp measures to fit the days.
+namespace i18n {
+inline const char* weather_today_button_label(const char*){return "Today";}
+inline String weather_weekday_short(const char*,const String&){return "Wed";}
+}
 ${surfaceStyleHost(root)}
 constexpr int MALLOC_CAP_SPIRAM=1,MALLOC_CAP_8BIT=2;
 void* heap_caps_malloc(size_t n,int){return malloc(n);}void heap_caps_free(void*p){free(p);}
@@ -56,6 +61,7 @@ ${strip(read('src/tiles/runtime/tile_renderer_fonts.h'))}
 ${strip(read('src/ui/popups/popup_layout.h'))}
 ${strip(read('src/ui/popups/popup_open.h'))}
 ${strip(read('src/ui/popups/popup_shell.h'))}
+${popupSurfaceHost(root)}
 ${strip(read('src/ui/popups/popup_open.cpp'))}
 ${strip(read('src/ui/shared/ui_pulse.h'))}
 ${strip(read('src/tiles/icons/mdi_bar_icons.h'))}
@@ -66,7 +72,10 @@ ${strip(read('src/types/weather/tile_layout.h'))}
 ${strip(read('src/ui/popups/weather/weather_popup.h'))}
 enum class GridType{TAB0,SCREENSAVER};constexpr int TILES_PER_GRID=1,GRID_CELL_W=Device::kGridCellW,GRID_CELL_H=Device::kGridCellH,GRID_GAP=Device::kGridGap;
 #include "src/tiles/config/tile_icon_colors.h"
-struct Tile{String title="Weather",sensor_entity="weather.home",icon_name="weather-sunny",sensor_unit,icon_colors;float col=0,row=0,span_w=1,span_h=1;uint8_t sensor_value_font=0,sensor_display_mode=0,sensor_decimals=0xFF,popup_open_mode=1;int type=1,sensor_gauge_min=0,sensor_gauge_max=100,sensor_gauge_arc=270,sensor_gauge_size=160,sensor_gauge_y_offset=0,sensor_graph_height=60,sensor_value_y_offset=0;};
+${strip(read('src/types/sensor/gauge_range.h'))}
+struct Tile{String title="Weather",sensor_entity="weather.home",icon_name="weather-sunny",sensor_unit,icon_colors,weather_temperature_sensor,weather_humidity_sensor;float col=0,row=0,span_w=1,span_h=1;uint8_t sensor_value_font=0,sensor_display_mode=0,sensor_decimals=0xFF,popup_open_mode=1,sensor_gauge_decimals=0;int type=1,sensor_gauge_min=0,sensor_gauge_max=100,sensor_gauge_arc=270,sensor_gauge_size=160,sensor_gauge_y_offset=0,sensor_graph_height=60,sensor_value_y_offset=0;};
+// No temperature/humidity sensors here (test-weather-sensor-overrides.mjs).
+namespace weather_sensors { inline uint32_t mix_hash(const String&,const String&,uint32_t h){return h;} inline void apply_temperature(const String&,const String&,float&,bool&){} inline void append_humidity(const String&,String&){} }
 ${read('src/tiles/config/tile_config.h').match(/static constexpr uint8_t SENSOR_VALUE_FONT_MAX = \d+;/)[0]}
 namespace tile_icon_source { inline lv_obj_t* card_icon(lv_obj_t*) { return nullptr; } inline void refresh_card(lv_obj_t*, const Tile&) {} inline uint32_t popup_background(lv_obj_t*, uint32_t fallback) { return fallback; } }
 constexpr int TILE_POPUP_OPEN_SHORT_PRESS=1;
@@ -86,6 +95,8 @@ void viewNavigationSource(lv_obj_t*){}
 ${['brighten_rgb_color','disable_pressed_button_animation','finish_press_before_popup'].map(n=>fn(read('src/tiles/runtime/tile_renderer_shared.h'),n)).join('\n')}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'apply_fractional_tile_geometry')}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'place_tile_card')}
+#include "src/types/climate/layout.h"
+#include "src/tiles/runtime/tile_press.h"
 ${strip(read('src/tiles/runtime/tile_icon_disc.h'))}
 ${strip(read('src/tiles/runtime/compact_sensor_layout.h'))}
 PopupShellParts popup;int opens=0,completed_opens=0,sensor_opens=0;
@@ -123,6 +134,7 @@ lv_obj_t* render_sensor_tile(lv_obj_t* parent, int col, int row, const Tile& til
 }
 ${strip(read('src/ui/popups/energy/energy_popup.h'))}
 void show_energy_popup(const EnergyPopupInit&){}void energy_request_period(const char*,bool){}
+String energy_source_icon(const String& id){return haBridgeConfig.findEntityIcon(id);}
 ${strip(read('src/types/energy/renderer.cpp')).replaceAll('is_disabled_token','energy_is_disabled_token')}
 void check_energy_layout() {
  for(float width:{1.f,1.5f,2.f}) for(float height:{.5f,1.f}) {
@@ -139,7 +151,7 @@ void check_energy_layout() {
     lv_area_t card_area,value_area;lv_obj_get_coords(card,&card_area);lv_obj_get_coords(value,&value_area);
     assert(value_area.y2<=card_area.y2&&"Every chosen value size fits in the half tile");
     auto*disc=lv_obj_get_child(card,0);
-    assert(lv_obj_get_style_radius(disc,LV_PART_MAIN)==tile_radius::kMinimum-compact_sensor_layout::inset());
+    assert(lv_obj_get_style_radius(disc,LV_PART_MAIN)==ui_surface_style::radius(tile_radius::kMinimum-compact_sensor_layout::inset()-tile_icon_disc::corner_shrink()));
    }
    lv_obj_delete(card);
   }
@@ -148,9 +160,14 @@ void check_energy_layout() {
 #include "src/types/climate/layout.h"
 constexpr int GRID_COLS=Device::kGridCols,GRID_ROWS=Device::kGridRows;
 constexpr int GRID_PAD=Device::kGridPad;
-${read('src/tiles/config/tile_config.h').match(/static constexpr int GRID_EXTRA_X =[^]*?GRID_PAD_BOTTOM = [^;]+;/)[0]}
+#include "src/tiles/config/grid_layout.h"
+${read('src/tiles/config/tile_config.h').match(/static const int& GRID_PAD_LEFT =[^]*?GRID_SHOWN_ROWS = [^;]+;/)[0]}
 ${fn(read('src/fonts/ui_fonts.h'),'ui_font_for_size')}
 ${strip(read('src/ui/screensaver/screensaver_tile_shadow.h'))}
+${strip(read('src/ui/shared/tabular_digits.h'))}
+${strip(read('src/ui/shared/tabular_digits.cpp'))}
+${strip(read('src/types/clock/clock_face.h'))}
+${strip(read('src/types/text/text_options.h'))}
 ${strip(read('src/web/server/render/web_admin_styles.cpp').split('void appendAdminStyles(')[0])}
 bool pressed=false;lv_point_t pointer{};bool measuring=false;int covered_draws=0;uint64_t flushed_pixels=0;
 int tile_draws=0, tile_style_changes=0;
@@ -276,7 +293,10 @@ void check_value_alignment(lv_display_t* display) {
  lv_obj_get_coords(lv_obj_get_child(sensor,0),&disc);
  lv_obj_get_coords(lv_obj_get_child(sensor,1),&icon);
  lv_obj_get_coords(lv_obj_get_child(sensor,2),&title);
- assert(lv_obj_get_style_radius(lv_obj_get_child(sensor,0),LV_PART_MAIN)==ui_surface_style::radius(tile_icon_disc::radius_baseline()));
+ // Drawn smaller around its middle to the bar pill's inset, concentric:
+ // the radius shrinks by the same amount, the box (coords) stays.
+ assert(lv_obj_get_style_radius(lv_obj_get_child(sensor,0),LV_PART_MAIN)==ui_surface_style::radius(tile_icon_disc::radius_baseline()-tile_icon_disc::corner_shrink()));
+ assert(lv_obj_get_style_transform_width(lv_obj_get_child(sensor,0),LV_PART_MAIN)==-tile_icon_disc::corner_shrink());
  assert(tile_icon_disc::round_diameter()==tile_icon_disc::diameter()+tile_icon_disc::inset());
  // One half-height row square in the corner, concentric with the tile corner
  // like the half-height disc (left and top gaps equal its inset), with the
@@ -316,16 +336,16 @@ void check_value_alignment(lv_display_t* display) {
  {
   // Unrounded, like every corner disc length (the disc sits at the inset).
   char want[64];snprintf(want,sizeof want,"--icon-disc-corner:%.2fpx;",
-    static_cast<double>(lv_area_get_width(&disc))*preview_cell_h_px()/GRID_CELL_H);
+    static_cast<double>(static_cast<float>(lv_area_get_width(&disc))*preview_cell_h_px()/GRID_CELL_H));
   assert(css.find(want)!=std::string::npos&&"The preview header disc has the device size");
  }
  for(const auto& item:std::vector<std::pair<const char*,int>>{
      {"title-top",title.y1-sensor_area.y1},{"title-right",sensor_area.x2-title.x2},
      {"icon-top",icon.y1-sensor_area.y1},{"icon-left",icon.x1-sensor_area.x1}}) {
-  // The icon position is unrounded like the disc; the title stays in whole
-  // preview pixels.
+  // The icon position is unrounded like the disc (in float, like the
+  // emitter); the title stays in whole preview pixels.
   const bool icon_item=std::string(item.first).rfind("icon",0)==0;
-  char fraction[32];snprintf(fraction,sizeof fraction,"%.2f",static_cast<double>(item.second)*preview_cell_h_px()/GRID_CELL_H);
+  char fraction[32];snprintf(fraction,sizeof fraction,"%.2f",static_cast<double>(static_cast<float>(item.second)*preview_cell_h_px()/GRID_CELL_H));
   const auto property=std::string("--tile-header-")+item.first+":"+
       (icon_item?std::string(fraction):std::to_string(preview_scaled_exact_px(item.second)))+"px;";
   assert(css.find(property)!=std::string::npos&&"Preview scale must come from the actual Sensor header");
@@ -358,7 +378,6 @@ void check_value_alignment(lv_display_t* display) {
  std::cout<<"Value alignment: y="<<expected_y<<", all supported spans passed"<<std::endl;
  lv_obj_delete(sensor); lv_refr_now(display);
 }
-void remove_optimization(lv_obj_t*o){lv_obj_remove_event_cb(o,draw_popup_background);for(uint32_t i=0;i<lv_obj_get_child_count(o);++i)remove_optimization(lv_obj_get_child(o,i));}
 int main(){lv_init();auto*d=lv_display_create(SCREEN_WIDTH,SCREEN_HEIGHT);std::vector<uint32_t>pixels(SCREEN_WIDTH*SCREEN_HEIGHT),band(SCREEN_WIDTH*28);lv_display_set_color_format(d,LV_COLOR_FORMAT_XRGB8888);lv_display_set_buffers(d,band.data(),nullptr,band.size()*4,LV_DISPLAY_RENDER_MODE_PARTIAL);lv_display_set_user_data(d,&pixels);lv_display_set_flush_cb(d,[](lv_display_t*d,const lv_area_t*a,uint8_t*data){if(measuring)flushed_pixels+=lv_area_get_size(a);auto&pixels=*static_cast<std::vector<uint32_t>*>(lv_display_get_user_data(d));auto*source=reinterpret_cast<uint32_t*>(data);for(int y=a->y1;y<=a->y2;++y)for(int x=a->x1;x<=a->x2;++x)pixels[y*SCREEN_WIDTH+x]=*source++;lv_display_flush_ready(d);});
  lv_theme_default_init(d,lv_color_hex(0x26A69A),lv_color_hex(0xC14444),false,&ui_font_20);
  static_assert(LV_THEME_DEFAULT_TRANSITION_TIME==80);
@@ -377,13 +396,15 @@ int main(){lv_init();auto*d=lv_display_create(SCREEN_WIDTH,SCREEN_HEIGHT);std::v
   for(int cycle=0;cycle<5;++cycle){
    lv_area_t area;lv_obj_get_coords(card,&area);pointer={area.x1+40,area.y1+80};pressed=true;lv_indev_read(input);lv_tick_inc(30);lv_refr_now(d);const int before=opens;covered_draws=0;flushed_pixels=0;measuring=true;pressed=false;lv_indev_read(input);assert(opens==before+1);lv_refr_now(d);measuring=false;
    if(cycle==0)std::cout<<span<<"x"<<span<<" col="<<col<<": covered draws="<<covered_draws<<", flushed pixels="<<flushed_pixels<<std::endl;
-   const auto incremental=pixels;remove_optimization(card);lv_obj_invalidate(lv_screen_active());lv_refr_now(d);assert(incremental==pixels&&"Optimized popup pixels must match an unfiltered full redraw, including shadow and exposed tile");
-   total_covered+=covered_draws;register_popup_background(card);
-   hide_popup_shell(popup.card);lv_refr_now(d);const auto closed=pixels;remove_optimization(card);lv_obj_invalidate(lv_screen_active());lv_refr_now(d);assert(closed==pixels&&"Closing must restore the cached Weather tile completely");register_popup_background(card);
+   const auto incremental=pixels;lv_obj_invalidate(lv_screen_active());lv_refr_now(d);assert(incremental==pixels&&"Optimized popup pixels must match an unfiltered full redraw, including shadow and exposed tile");
+   total_covered+=covered_draws;
+   hide_popup_shell(popup.card);lv_refr_now(d);const auto closed=pixels;lv_obj_invalidate(lv_screen_active());lv_refr_now(d);assert(closed==pixels&&"Closing must restore the cached Weather tile completely");
    assert(lv_obj_get_child_count(card)==children&&"Opening must retain the existing Weather widgets");
   }
   lv_obj_delete(card);lv_refr_now(d);
  }
+ // No widget registers for this: the popup's own dirty areas (popup_shell.cpp
+ // shell_areas) let LVGL start each covered band at the opaque frame.
  assert(total_covered==0&&"Opening must not redraw Weather objects fully covered by the popup");lv_deinit();}
 `;
 const source=path.join(out,'test.cpp');fs.writeFileSync(source,cpp);

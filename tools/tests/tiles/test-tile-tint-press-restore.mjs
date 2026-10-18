@@ -21,7 +21,7 @@ const fn = name => {
   return found.source;
 };
 
-assert.match(fn('set_tile_tint'), /lv_color_hex\(tile_icon_disc::card_state_color\(card, false\)\), kTintStore\)/,
+assert.match(fn('tint_card'), /lv_color_hex\(tile_icon_disc::card_state_color\(card, false\)\), kTintStore\)/,
   'the tint keeps the resting color, not the color shown during a press');
 
 const host = await lvglHost(root);
@@ -48,12 +48,19 @@ ${radiusPolicyHost(root)}
 struct Config{bool tile_borders=true;bool icon_discs=true;uint8_t icon_glow=icon_glow::kDefault;int tile_radius=tile_radius::kMinimum;const char*language="en";};struct Manager{Config cfg;const Config&getConfig(){return cfg;}}configManager;
 ${surfaceStyleHost(root)}
 constexpr int GRID_CELL_H=CELL_H,GRID_GAP=GAP;
+#include "src/types/climate/layout.h"
+#include "src/tiles/runtime/tile_press.h"
 ${read('src/tiles/runtime/tile_icon_disc.h').replace(/^#.*$/gm, '')}
 #include "src/tiles/config/tile_tint.h"
 static uint32_t tileDefaultBgColor() { return 0x1A1A1A; }
 namespace tile_icon_source {
 ${tintStore}
+// Cards without a surface rule (tile_surface::set_rule) keep their surface.
+void follow_tint(lv_obj_t*, bool) {}
+void change_surface(lv_obj_t*, uint8_t) {}
+void clear_tile_tint(lv_obj_t* card, bool plain = false);
 ${fn('apply_card_background')}
+${fn('tint_card')}
 ${fn('set_tile_tint')}
 ${fn('clear_tile_tint')}
 }

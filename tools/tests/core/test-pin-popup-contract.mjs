@@ -35,7 +35,7 @@ for (const marker of [
   'g.keys_y = top + (available - block) / 2 + 2 * g.prompt_h + prompt_gap + dots_gap;',
   'g.prompt_y = top + even - cap_top;',
   'g.dots_y = g.prompt_y + baseline + even - (g.prompt_h - g.dot) / 2;',
-  'constexpr int kKeyRadius = popup_layout::kCloseButtonRadius + popup_layout::kCloseButtonRadius / 2;',
+  'constexpr int kKeyRadius = tile_radius::kMinimum;',
   'ui_surface_style::apply_radius(button, kKeyRadius, 0);',
   'for (uint8_t digit = 1; digit <= 9; ++digit)',
   'getMdiChar("backspace")',
@@ -47,6 +47,11 @@ for (const marker of [
   'const char* error = ctx->error.length() ? ctx->error.c_str() : tr.pin_popup_incorrect;',
   'lv_label_set_text(ctx->prompt_label, ctx->show_error ? error : prompt);',
   'lv_obj_set_flag(ctx->dots[i], LV_OBJ_FLAG_HIDDEN, i >= circles);',
+  // The dots follow the open surface like the prompt (white on a filled
+  // tile's card in the light theme, not the preloaded dark ring).
+  'const lv_color_t ring = lv_color_hex(ui_theme::text());',
+  'lv_obj_set_style_border_color(ctx->dots[i], ring, 0);',
+  'lv_obj_set_style_bg_color(ctx->dots[i], inside, 0);',
   'lv_obj_set_style_bg_opa(ctx->dots[i], i < ctx->length ? LV_OPA_COVER : LV_OPA_TRANSP, 0);',
   'const int size_limit = popup_layout::kCardHeight * popup_layout::kKeypadKeyMaxPermille / 1000;',
   'lv_obj_align(ctx->dots_row, LV_ALIGN_TOP_MID, 0, g.dots_y);',
@@ -56,7 +61,7 @@ for (const marker of [
   // Colors: the popup control rule; backspace halfway, confirm white.
   'popup_nav_style::fill(card, icon, fill, opa);',
   'popup_nav_style::set_bg(key, fill, backspace ? static_cast<lv_opa_t>(opa / 2) : opa, LV_PART_MAIN);',
-  'popup_nav_style::set_bg(key, lv_color_white(), LV_OPA_COVER, LV_PART_MAIN);',
+  'popup_nav_style::set_bg(key, lv_color_hex(ui_theme::icon()), LV_OPA_COVER, LV_PART_MAIN);',
   'pin_access::secureClear(ctx->input, sizeof(ctx->input))',
   'LV_EVENT_CLICKED',
   'lv_obj_set_style_bg_color(ctx->card, lv_color_hex(init.bg_color), 0);',
@@ -121,17 +126,17 @@ for (const marker of [
   'void UIManager::lockProtectedAccess()',
   'tileConfig.isFolderPinEnabled(folder_id)',
   'tiles_switch_to_folder(TileConfig::rootFolderId())',
-  'config.settings_swipe_enabled',
+  'swipe_gestures::actions(configManager.getConfig(), actions);',
   'createSettingsGestureZone();',
   'static constexpr int kSettingsGestureCaptureWidth = popup_layout::scale(56);',
-  'const int32_t edge_zone = kSettingsGestureCaptureWidth;',
+  'int32_t nearest = kSettingsGestureCaptureWidth;',
   'settings_gesture_indev_event_cb',
   'lv_indev_get_point(input, &point);',
   'LV_EVENT_PRESSED, this);',
   'LV_EVENT_RELEASED, this);',
   'static_cast<lv_obj_t*>(lv_event_get_param(event));',
-  'if (object == self->tab_panels[0])',
-  'if (!started_on_home) return;',
+  'if (object == self->tab_panels[tab])',
+  'if (!started_on_home && !over_preview) return;',
   'settings_gesture_pressed_object_event_cb',
   'LV_EVENT_PRESSING, self);',
   'LV_EVENT_DELETE, self);',
@@ -140,18 +145,19 @@ for (const marker of [
   'lv_indev_wait_release(input);',
   'lv_indev_reset(input, nullptr);',
   'void UIManager::refreshSettingsGestureZone()',
-  'void UIManager::setSettingsGestureStyle(const String& title,',
-  'const uint32_t snapshot_color = snapshot.bg_color;',
-  '? (tileBgColorFollowsDefault(snapshot_color)',
-  '? tileDefaultBgColor()',
-  ': settings_gesture_bg_color;',
-  'config.settings_tile_hidden && snapshot.valid',
-  'requestSettingsAccess(title, icon_name, bg_color);',
+  // One PIN popup before Settings from the tile, the head's gear and the
+  // swipe: the global tile color, the gear and "Settings" (user 2026-10-08).
+  'void UIManager::requestSettingsAccess() {',
+  'init.title = tr.tile_type_settings;',
+  'init.icon_name = "cog";',
+  'init.bg_color = tileDefaultBgColor();',
+  '  runSwipeAction(access_gesture_action);\n}',
+  'case swipe_gestures::kSettings:\n      requestSettingsAccess();',
   'SettingsRevealEdge::Left:',
   'SettingsRevealEdge::Right:',
   'SettingsRevealEdge::Top:',
   'SettingsRevealEdge::Bottom:',
-  'static constexpr int kSettingsGestureThreshold = popup_layout::scale(48);',
+  'static constexpr int kSettingsGestureThreshold = touch_rules::kSwipeDistance;',
   'const int32_t threshold = kSettingsGestureThreshold;',
   'matches = dx >= threshold && abs_dx > abs_dy;',
   'matches = -dx >= threshold && abs_dx > abs_dy;',
@@ -224,10 +230,19 @@ if (manager.slice(completeAccessStart, completeAccessEnd)
   throw new Error('A PIN touch callback must never build a folder grid synchronously');
 }
 
+// The input stops a tap or long press only when its finger moved further than
+// a tap (user 2026-10-13: a swipe must cause no false input), and holds back
+// a press only to give it once the finger rests or lifts: a still tap at an
+// edge always reaches its tile.
+if ((manager.match(/lv_indev_stop_processing\(input\)/g) || []).length !== 2 ||
+    !/if \(self->touch_watched && self->touch_moved\) \{\s*lv_indev_stop_processing\(input\);/.test(manager) ||
+    !/if \(self->touch_watched && !home_bar::is_dots\(pressed_object\)\) \{\s*lv_indev_stop_processing\(input\);\s*self->touch_press_obj = pressed_object;/.test(manager) ||
+    !/lv_obj_send_event\(released, LV_EVENT_PRESSED, input\);/.test(manager)) {
+  throw new Error('Settings gesture must not block a still tap: stop processing only after the finger moved');
+}
 for (const forbidden of [
   'settings_gesture_zone = lv_obj_create',
   'lv_obj_move_foreground(settings_gesture_zone)',
-  'lv_indev_stop_processing(input)',
   'access_gesture_timer',
   'processAccessGesture()',
 ]) {
@@ -236,8 +251,10 @@ for (const forbidden of [
   }
 }
 
-if (!manager.includes('(snapshot_color & TILE_BG_COLOR_RGB_MASK)')) {
-  throw new Error('An explicitly black Settings tile must remain black in the PIN popup');
+// The Settings PIN popup takes the global tile color, whatever color the
+// Settings tile has (user 2026-10-08).
+if (manager.includes('snapshot_color') || !manager.includes('init.bg_color = tileDefaultBgColor();')) {
+  throw new Error('The Settings PIN popup must take the global tile color');
 }
 
 if (manager.includes('popup_layout::scale(72)') ||
@@ -291,12 +308,12 @@ if (indevBlock.includes('if (code == LV_EVENT_PRESSING)')) {
 
 requireMarker(renderer, 'String icon_name;', 'Navigation popup icon');
 requireMarker(renderer, 'uint32_t bg_color;', 'Navigation popup color');
-requireMarker(renderer,
-              'uiManager.setSettingsGestureStyle(tile.title, tile.icon_name, btn_color);',
-              'Visible Settings edge-swipe identity');
-requireMarker(renderer,
-              'uiManager.requestSettingsAccess(data->title, data->icon_name,',
-              'Settings navigation gate');
+if (renderer.includes('setSettingsGestureStyle') || manager.includes('settings_gesture_bg_color')) {
+  throw new Error('The Settings PIN popup must not take the color, icon or title of the Settings tile');
+}
+requireMarker(renderer, 'uiManager.requestSettingsAccess();', 'Settings navigation gate');
+requireMarker(read('src/ui/tabs/tiles/home_bar.cpp'),
+              'void on_gear(lv_event_t*) { uiManager.requestSettingsAccess(); }', 'Head gear gate');
 requireMarker(renderer,
               'uiManager.requestFolderAccess(data->target_folder_id, data->title,',
               'Folder navigation gate');

@@ -10,7 +10,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {cppFunctionDefinitions} from '../../lib/cpp-source.mjs';
 import {lvglHost} from '../../lib/lvgl-host.mjs';
-import {radiusPolicyHost, surfaceStyleHost} from '../../lib/surface-style-host.mjs';
+import {radiusPolicyHost, surfaceStyleHost, popupSurfaceHost} from '../../lib/surface-style-host.mjs';
 import {extractFunction, inlineScriptSafe, readRepoFile} from '../../lib/admin-source.mjs';
 import {findBrowser} from '../../lib/headless-dom.mjs';
 
@@ -106,7 +106,7 @@ constexpr int SCREEN_WIDTH=Device::kScreenWidth,SCREEN_HEIGHT=Device::kScreenHei
 String getMdiChar(const String&){return "\xF3\xB0\x96\xAD";}
 ${radiusPolicyHost(root, 'Device::kGridCellH', 'Device::kGridGap')}
 #include "src/core/config/icon_glow.h"
-struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = true; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; const char* language = "en"; };
+struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = true; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; uint32_t default_tile_color = 0x1A1A1A; const char* language = "en"; };
 struct TestConfigManager { TestConfig config; const TestConfig& getConfig() const { return config; } } configManager;
 ${surfaceStyleHost(root)}
 constexpr int MALLOC_CAP_SPIRAM=1,MALLOC_CAP_8BIT=2;
@@ -116,6 +116,7 @@ ${strip(read('src/tiles/runtime/tile_renderer_fonts.h'))}
 ${strip(read('src/ui/popups/popup_layout.h'))}
 ${strip(read('src/ui/popups/popup_open.h'))}
 ${strip(read('src/ui/popups/popup_shell.h'))}
+${popupSurfaceHost(root)}
 ${strip(read('src/ui/popups/popup_open.cpp'))}
 ${strip(read('src/ui/shared/ui_pulse.h'))}
 ${strip(read('src/tiles/icons/mdi_bar_icons.h'))}
@@ -126,7 +127,9 @@ ${strip(read('src/types/weather/tile_layout.h'))}
 ${strip(read('src/ui/popups/weather/weather_popup.h'))}
 enum class GridType{TAB0,TAB1,TAB2,SCREENSAVER};constexpr int TILES_PER_GRID=1,GRID_CELL_W=Device::kGridCellW,GRID_CELL_H=Device::kGridCellH,GRID_GAP=Device::kGridGap;
 #include "src/tiles/config/tile_icon_colors.h"
-struct Tile{String title="Weather\nMunich",sensor_entity="weather.home",icon_name="weather-cloudy",sensor_unit,icon_colors;float col=0,row=0,span_w=1,span_h=1;uint8_t sensor_value_font=0,sensor_display_mode=0,sensor_decimals=0xFF,popup_open_mode=1;int type=12;};
+struct Tile{String title="Weather\nMunich",sensor_entity="weather.home",icon_name="weather-cloudy",sensor_unit,icon_colors,weather_temperature_sensor,weather_humidity_sensor;float col=0,row=0,span_w=1,span_h=1;uint8_t sensor_value_font=0,sensor_display_mode=0,sensor_decimals=0xFF,popup_open_mode=1;int type=12;};
+// No temperature/humidity sensors here (test-weather-sensor-overrides.mjs).
+namespace weather_sensors { inline uint32_t mix_hash(const String&,const String&,uint32_t h){return h;} inline void apply_temperature(const String&,const String&,float&,bool&){} inline void append_humidity(const String&,String&){} }
 ${read('src/tiles/config/tile_config.h').match(/static constexpr uint8_t SENSOR_VALUE_FONT_MAX = \d+;/)[0]}
 struct TileGridConfig{Tile tiles[TILES_PER_GRID];};struct TileConfigStub{TileGridConfig grid;const TileGridConfig&getActiveGrid()const{return grid;}}tileConfig;
 namespace tile_icon_source { inline lv_obj_t* card_icon(lv_obj_t*) { return nullptr; } inline void refresh_card(lv_obj_t*, const Tile&) {} inline uint32_t popup_background(lv_obj_t*, uint32_t fallback) { return fallback; } }
@@ -146,10 +149,13 @@ inline String format_number(const char*,float v,uint8_t d,bool trim){char b[32];
 inline String weather_condition_label(const char*,const String&c){if(c=="cloudy")return "Cloudy";if(c=="partlycloudy")return "Partly cloudy";if(c=="sunny")return "Sunny";if(c=="rainy")return "Rainy";return c.empty()?String("--"):c;}
 inline String weather_weekday_short(const char*,const String&iso){if(iso.size()<10)return "";struct tm t{};t.tm_year=std::atoi(iso.substr(0,4).c_str())-1900;t.tm_mon=std::atoi(iso.substr(5,2).c_str())-1;t.tm_mday=std::atoi(iso.substr(8,2).c_str());t.tm_hour=12;mktime(&t);return locale("en").weather_weekdays_short[t.tm_wday];}
 inline const char* weather_today_label(const char*){return "Today";}
+inline const char* weather_today_button_label(const char*){return "Today";}
 }
 ${strip(read('src/types/weather/weather_icon_table.h'))}
 ${strip(read('src/types/weather/weather_icons.h'))}
 ${strip(read('src/types/weather/weather_icons.cpp'))}
+// The theme Automatic notes the sun times (its own test).
+namespace theme_schedule { inline void note_sun(const weather_icons::SunTimes&) {} }
 void set_label_style(lv_obj_t*o,lv_color_t c,const lv_font_t*f){lv_obj_set_style_text_color(o,c,0);lv_obj_set_style_text_font(o,f,0);}
 void set_tile_grid_cell(lv_obj_t*o,int col,int row,int w,int h){lv_obj_set_size(o,w*GRID_CELL_W+(w-1)*GRID_GAP,h*GRID_CELL_H+(h-1)*GRID_GAP);lv_obj_set_pos(o,Device::kGridPad+col*(GRID_CELL_W+GRID_GAP),Device::kGridPad+row*(GRID_CELL_H+GRID_GAP));}
 WeatherTileWidgets widgets[TILES_PER_GRID];WeatherTileWidgets* tile_renderer_get_weather_widgets(GridType){return widgets;}
@@ -158,6 +164,8 @@ void viewNavigationSource(lv_obj_t*){}
 ${['brighten_rgb_color','disable_pressed_button_animation','finish_press_before_popup'].map(n=>fn(read('src/tiles/runtime/tile_renderer_shared.h'),n)).join('\n')}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'apply_fractional_tile_geometry')}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'place_tile_card')}
+#include "src/types/climate/layout.h"
+#include "src/tiles/runtime/tile_press.h"
 ${strip(read('src/tiles/runtime/tile_icon_disc.h'))}
 ${strip(read('src/tiles/runtime/compact_sensor_layout.h'))}
 void show_weather_popup(const WeatherPopupInit&){}
@@ -166,9 +174,14 @@ ${runtimeFns}
 #include "src/types/climate/layout.h"
 constexpr int GRID_COLS=Device::kGridCols,GRID_ROWS=Device::kGridRows;
 constexpr int GRID_PAD=Device::kGridPad;
-${read('src/tiles/config/tile_config.h').match(/static constexpr int GRID_EXTRA_X =[^]*?GRID_PAD_BOTTOM = [^;]+;/)[0]}
+#include "src/tiles/config/grid_layout.h"
+${read('src/tiles/config/tile_config.h').match(/static const int& GRID_PAD_LEFT =[^]*?GRID_SHOWN_ROWS = [^;]+;/)[0]}
 ${fn(read('src/fonts/ui_fonts.h'),'ui_font_for_size')}
 ${strip(read('src/ui/screensaver/screensaver_tile_shadow.h'))}
+${strip(read('src/ui/shared/tabular_digits.h'))}
+${strip(read('src/ui/shared/tabular_digits.cpp'))}
+${strip(read('src/types/clock/clock_face.h'))}
+${strip(read('src/types/text/text_options.h'))}
 ${strip(read('src/web/server/render/web_admin_styles.cpp').split('void appendAdminStyles(')[0])}
 ${strip(read('src/types/weather/web_scripts.cpp'))}
 static void box(std::ostream&o,const char*name,lv_obj_t*obj,lv_obj_t*card,bool&first){
@@ -225,6 +238,9 @@ const preview = [
   extractFunction('escapeHtml', read('src/web/admin/tiles/state.js')),
   extractFunction('normalizeMdiIconName', read('src/web/admin/tiles/state.js')),
   extractFunction('formatLocalizedNumber', read('src/web/admin/core/localization.js')),
+  // The panel theme's roles (no data-panel-theme here: the dark theme).
+  ...['toneHex', 'panelLight', 'panelVar', 'panelRole', 'surfaceRoleTable', 'panelRoleHex']
+    .map(name => extractFunction(name, read('src/web/admin/tiles/grid-preview.js'))),
 ].join('\n');
 const fontUrl = pathToFileURL(path.join(root, 'docs/assets/fonts/inter-4.1-regular.woff2')).href;
 const css = readRepoFile('src/web/assets/admin.css').replace(/\r\n/g, '\n')
@@ -319,7 +335,22 @@ document.fonts.load('400 20px "HomeTiles Inter"').then(() => {
     });
     results.push({boxes, texts});
   }
-  document.getElementById('result').textContent = JSON.stringify({scale, results});
+  // The layout window gives a tile another layout's cells through its own
+  // grid's variables: the days follow those cells, not this boot's
+  // (user 2026-10-08: two days squeezed into a larger bar tile).
+  const wide = Math.round(WEATHER_TILE_LAYOUT.cellW * 1.4);
+  const other = document.createElement('div');
+  other.className = 'tile weather';
+  other.style.setProperty('--preview-cell-w', wide * scale + 'px');
+  document.getElementById('host').replaceChildren(other);
+  applyWeatherPreview(other, parseWeatherPreviewPayload(${JSON.stringify(payload)}),
+                      {col: 0, span_w: 2, span_h: 2, sensor_display_mode: 0}, 'weather-cloudy', '');
+  const windowDays = {
+    shown: other.querySelectorAll('.weather-preview-day').length,
+    expected: weatherForecastCount(2 * wide + WEATHER_TILE_LAYOUT.gap, WEATHER_TILE_LAYOUT.forecastTextW),
+    own: weatherForecastCount(2 * WEATHER_TILE_LAYOUT.cellW + WEATHER_TILE_LAYOUT.gap, WEATHER_TILE_LAYOUT.forecastTextW),
+  };
+  document.getElementById('result').textContent = JSON.stringify({scale, results, windowDays});
   document.body.dataset.done = '1';
 });
 </script></body></html>`;
@@ -330,7 +361,9 @@ document.fonts.load('400 20px "HomeTiles Inter"').then(() => {
   assert.equal(run.status, 0, run.stderr);
   const match = /<pre id="result">([^<]*)<\/pre>/.exec(run.stdout);
   assert(match && match[1], profile + ': the preview harness did not finish\n' + run.stdout.slice(-2000));
-  const {scale, results} = JSON.parse(match[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
+  const {scale, results, windowDays} = JSON.parse(match[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
+  assert.ok(windowDays.expected > windowDays.own, profile + ': the wider cells fit more days');
+  assert.equal(windowDays.shown, windowDays.expected, profile + ': the days follow the tile grid of the window');
   const report = [];
   tiles.forEach((device, index) => {
     const browserTile = results[index];

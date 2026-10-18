@@ -1,58 +1,11 @@
 
-  // Per-tile icon disc options are common to every type with an icon, so
-  // they travel with the type fields through drafts, copy/paste and saves.
-  function tileTypeHasIcon(typeValue) {
-    return !['0', '16'].includes(String(typeValue ?? '0'));
-  }
-  // Glow only matters where the icon can take a color: from its entity
-  // (switch/light, climate, cover, binary sensor), from the color bar or
-  // state colors (sensor family, energy) or from a fixed icon color (scene,
-  // folder, back, camera). Other icons are always white.
-  function tileTypeHasColoredIcon(typeValue) {
-    return ['1', '2', '4', '5', '8', '12', '14', '15', '17', '18', '19', '20', '21', '22', '23']
-      .includes(String(typeValue ?? '0'));
-  }
-  // Stored disc mode: 0 follows the global option, 2 hides the disc on this
-  // tile. A legacy stored 1 ("on") loads as checked.
-  function iconDiscModeFromCheckbox(box) {
-    return box?.checked === false ? '2' : '0';
-  }
-  // Like the per-tile Tile borders option, only Back, Clock and Text can hide
-  // their own icon disc; every other tile follows the global option.
-  function tileTypeHasDiscToggle(typeValue) {
-    return ['8', '9', '10'].includes(String(typeValue ?? '0'));
-  }
-  function collectIconDiscFields(tab, typeValue) {
-    const box = document.getElementById(tab + '_tile_icon_disc');
-    if (!box || !tileTypeHasIcon(typeValue)) return {};
-    const glow = document.getElementById(tab + '_tile_icon_glow');
-    return {
-      icon_disc: tileTypeHasDiscToggle(typeValue) ? iconDiscModeFromCheckbox(box) : '0',
-      icon_glow: tileTypeHasColoredIcon(typeValue) && glow?.checked === false ? '0' : '1',
-    };
-  }
-  function loadIconDiscFields(tab, data) {
-    const box = document.getElementById(tab + '_tile_icon_disc');
-    if (box) box.checked = String(data?.icon_disc) !== '2';
-    const glow = document.getElementById(tab + '_tile_icon_glow');
-    if (glow) glow.checked = !['0', 'false'].includes(String(data?.icon_glow));
-    syncIconDiscFields(tab);
-  }
-  function resetIconDiscFields(tab) {
-    const box = document.getElementById(tab + '_tile_icon_disc');
-    if (box) box.checked = true;
-    const glow = document.getElementById(tab + '_tile_icon_glow');
-    if (glow) glow.checked = true;
-  }
+  // The icon block of the common fields only holds Weather's colored icons
+  // option: every circle shows, in its icon's color (user 2026-10-11: no
+  // circle options per tile). Stored per-tile disc values of older tiles are
+  // kept by the server but no longer drawn.
   function syncIconDiscFields(tab) {
-    const typeValue = document.getElementById(tab + '_tile_type')?.value || '0';
-    const discToggle = tileTypeHasDiscToggle(typeValue);
-    const colored = tileTypeHasColoredIcon(typeValue);
-    const weather = typeValue === '12';
-    document.getElementById(tab + '_tile_icon_disc_fields')
-      ?.classList.toggle('hidden', !tileTypeHasIcon(typeValue) || (!discToggle && !colored && !weather));
-    document.getElementById(tab + '_tile_icon_disc_row')?.classList.toggle('hidden', !discToggle);
-    document.getElementById(tab + '_tile_icon_glow_row')?.classList.toggle('hidden', !colored);
+    const weather = (document.getElementById(tab + '_tile_type')?.value || '0') === '12';
+    document.getElementById(tab + '_tile_icon_disc_fields')?.classList.toggle('hidden', !weather);
     document.getElementById(tab + '_weather_colored_icons_row')?.classList.toggle('hidden', !weather);
   }
 
@@ -60,7 +13,7 @@
     const prefix = tab;
     const typeValue = document.getElementById(prefix + '_tile_type')?.value || '0';
     const meta = getTileTypeMeta(typeValue);
-    const out = collectIconDiscFields(prefix, typeValue);
+    const out = {};
     if (!meta.save) return out;
     const fd = new FormData();
     callTypeHandler(meta, 'save', prefix, fd);
@@ -71,15 +24,19 @@
   }
 
   function normalizeSnapshotLayout(snapshot, index, tab = currentTileTab) {
-    const fallbackCol = (index >= 0) ? ((index % GRID_COLS) + 1) : 1;
+    // The shown grid, like normalizeTileLayout (an upright layout's lower
+    // rows must survive the draft and the save).
+    const cols = placeCols(tab);
+    const rows = placeRows(tab);
+    const fallbackCol = (index >= 0) ? ((index % cols) + 1) : 1;
     const firstRow = firstAllowedGridRow(tab);
     const fallbackRow = (index >= 0)
-      ? (Math.max(firstRow, Math.floor(index / GRID_COLS)) + 1)
+      ? (Math.max(firstRow, Math.floor(index / cols)) + 1)
       : (firstRow + 1);
-    let col = clampHalf(snapshot?.col, 1, GRID_COLS, fallbackCol);
-    let row = clampHalf(snapshot?.row, firstRow + 1, GRID_ROWS + 0.5, fallbackRow);
-    let spanW = clampHalf(snapshot?.span_w, 0.5, GRID_COLS, 1);
-    let spanH = clampHalf(snapshot?.span_h, 0.5, GRID_ROWS, 1);
+    let col = clampHalf(snapshot?.col, 1, cols, fallbackCol);
+    let row = clampHalf(snapshot?.row, firstRow + 1, rows + 0.5, fallbackRow);
+    let spanW = clampHalf(snapshot?.span_w, 0.5, cols, 1);
+    let spanH = clampHalf(snapshot?.span_h, 0.5, rows, 1);
     return constrainLayoutToTab(
       normalizeLayoutForTileType(snapshot?.type, col - 1, row - 1,
                                  spanW, spanH),
@@ -167,6 +124,14 @@
     if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'camera_entity')) {
       tile.sensor_entity = snapshot.camera_entity || '';
     }
+    // The Camera tile's picture options in their stored fields (types/camera/admin.js).
+    if (Number(tile.type) === 18 && snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'camera_display')) {
+      tile.sensor_display_mode = String(snapshot.camera_display) === '1' ? 1 : 0;
+      tile.sensor_decimals = Math.max(0, CAMERA_FITS.indexOf(String(snapshot.camera_fit)));
+      tile.image_slideshow_sec = cameraEvery(snapshot.camera_every);
+      tile.key_code = cameraTransparency(snapshot.camera_transparency);
+      tile.key_modifier = cameraOptionFlags({head: snapshot.camera_head, tap: snapshot.camera_tap});
+    }
     for (const kind of ['lock', 'alarm', 'fan']) {
       if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, kind + '_entity')) tile.sensor_entity = snapshot[kind + '_entity'] || '';
     }
@@ -194,6 +159,11 @@
       tile.sensor_gauge_max = Number.isFinite(num) ? num : 100;
     }
 
+    // The Text tile's alignment in its stored field (types/text/text_options.h).
+    if (Number(tile.type) === 10 && snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'text_options')) {
+      const num = Number(snapshot.text_options);
+      tile.sensor_gauge_max = Number.isFinite(num) ? num : 100;
+    }
     if ([8,9,10].includes(Number(tile.type)) && snapshot?.tile_border !== undefined) {
       tile.sensor_display_mode = ['0','false'].includes(String(snapshot.tile_border)) ? 1 : 0;
     }

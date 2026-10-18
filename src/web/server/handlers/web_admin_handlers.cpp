@@ -4,14 +4,20 @@
 #include "src/core/config/pin_access.h"
 #include "src/network/bridge/device_entities.h"
 #include "src/network/network_manager.h"
+#include "src/network/link/link_config.h"
+#include "src/network/secure/command_channel.h"
 #include "src/network/transport/network_transport.h"
 #include "src/network/mqtt/mqtt_handlers.h"
 #include "src/ui/tabs/settings/tab_settings.h"
 #include "src/tiles/config/tile_config.h"
 #include "src/tiles/config/tile_geometry.h"
+#include "src/tiles/icons/mdi_icons.h"
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"
 #include "src/ui/ui_manager.h"
+#include "src/ui/shared/theme_schedule.h"
+#include "src/ui/shared/ui_theme.h"
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/core/config/swipe_gestures.h"
 #include "src/ui/screensaver/image_screensaver.h"
 #include "src/types/clock/clock_format.h"
 #include "src/web/server/web_admin_utils.h"
@@ -42,10 +48,13 @@ void WebAdminServer::handleSaveMQTT() {
     strncpy(cfg.mqtt_base_topic, "hometiles", CONFIG_MQTT_BASE_MAX - 1);
     strncpy(cfg.ha_prefix, "ha/statestream", CONFIG_HA_PREFIX_MAX - 1);
     cfg.tile_borders = true;
-    cfg.tile_radius = tile_radius::kDefault;
-    cfg.icon_discs = true;
-    cfg.icon_glow = icon_glow::kDefault;
-    cfg.default_tile_color = tile_color::kDefault;
+    // The swipes of a new panel (swipe_gestures.h): Settings from the top,
+    // Home from the bottom.
+    cfg.settings_swipe_enabled = true;
+    cfg.settings_reveal_edge = swipe_gestures::kDefaultSettingsEdge;
+    cfg.home_swipe_edge = swipe_gestures::kDefaultHomeEdge;
+    cfg.back_swipe_edge = swipe_gestures::kEdgeOff;
+    cfg.screensaver_swipe_edge = swipe_gestures::kEdgeOff;
   }
   const DeviceConfig previous_cfg = cfg;
 
@@ -123,6 +132,12 @@ void WebAdminServer::handleSaveMQTT() {
     copyToBuffer(cfg.mqtt_user, sizeof(cfg.mqtt_user), server.arg("mqtt_user"));
   }
   copyIfNonEmpty(cfg.mqtt_pass, sizeof(cfg.mqtt_pass), "mqtt_pass");
+  // The hidden password field cannot be emptied (empty keeps it). Without a
+  // broker host the credentials have no use: drop them with the host.
+  if (!cfg.mqtt_host[0]) {
+    cfg.mqtt_user[0] = '\0';
+    cfg.mqtt_pass[0] = '\0';
+  }
   if (server.hasArg("mqtt_client_id")) {
     String client_id = server.arg("mqtt_client_id");
     client_id.trim();
@@ -232,18 +247,7 @@ void WebAdminServer::handleSaveMQTT() {
     Tile settings_tile;
     const bool settings_tile_present = tileConfig.getSettingsTile(settings_tile);
     if (hide_tile && settings_tile_present) {
-      SettingsTileSnapshot& snapshot = cfg.settings_tile_snapshot;
-      memset(&snapshot, 0, sizeof(snapshot));
-      snapshot.valid = true;
-      strncpy(snapshot.title, settings_tile.title.c_str(),
-              sizeof(snapshot.title) - 1);
-      strncpy(snapshot.icon_name, settings_tile.icon_name.c_str(),
-              sizeof(snapshot.icon_name) - 1);
-      snapshot.bg_color = settings_tile.bg_color;
-      snapshot.col = settings_tile.col;
-      snapshot.row = settings_tile.row;
-      snapshot.span_w = settings_tile.span_w < 1 ? 1 : settings_tile.span_w;
-      snapshot.span_h = settings_tile.span_h < 0.5f ? 1 : settings_tile.span_h;
+      TileConfig::snapshotSettingsTile(settings_tile, cfg.settings_tile_snapshot);
     }
     if (!hide_tile && previous_cfg.settings_tile_hidden &&
         settings_tile_target_col >= 0 && cfg.settings_tile_snapshot.valid) {
@@ -311,6 +315,11 @@ void WebAdminServer::handleSaveMQTT() {
       }
     }
     cfg.settings_tile_hidden = hide_tile;
+    // Parked in the layout the panel shows (user 2026-10-13: each layout
+    // decides; the layout window sets the others).
+    const uint8_t shown_layout_bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(grid_layout::active()));
+    cfg.settings_parked = hide_tile ? static_cast<uint8_t>(cfg.settings_parked | shown_layout_bit)
+                                    : static_cast<uint8_t>(cfg.settings_parked & ~shown_layout_bit);
     // Hidden Settings must always retain an on-device recovery path.
     cfg.settings_swipe_enabled = hide_tile || enable_swipe;
     new_pin = "";
@@ -618,6 +627,105 @@ void WebAdminServer::handleStatus() {
   sendChunkedResponse(server, 200, "application/json", getStatusJSON());
 }
 
+// The same code as the page's <html lang>, so the page compares like with
+// like, the time and date format "Auto" shows (the previews' clocks follow a
+// change made on the panel) and the design, stored and shown (user
+// 2026-10-14: one chosen on the panel did not reach the page). A poll, so
+// it does not count as Web Admin activity.
+void WebAdminServer::handleLanguage() {
+  const DeviceConfig& cfg = configManager.getConfig();
+  String json = "{\"language\":\"";
+  json += i18n::strings(cfg.language).html_lang;
+  json += "\",\"time_format\":";
+  json += String(clock_tile::resolve_time_format(clock_tile::TIME_FORMAT_AUTO, cfg.global_time_format, cfg.language));
+  json += ",\"date_format\":";
+  json += String(clock_tile::resolve_date_format(clock_tile::DATE_FORMAT_AUTO, cfg.global_date_format, cfg.language));
+  json += ",\"theme\":";
+  json += String(cfg.theme);
+  json += ui_theme::theme_light() ? ",\"theme_shown\":1" : ",\"theme_shown\":0";
+  // The Web Admin password, also when removed on the panel: the open page
+  // reloads into the new state (its header badge and hidden secrets).
+  json += web_admin_auth::enabled() ? ",\"web_auth\":1}" : ",\"web_auth\":0}";
+  server.send(200, "application/json", json);
+}
+
+// A base topic or prefix the link hello can carry: printable ASCII without
+// spaces, quotes, backslashes or MQTT wildcards, no trailing slash.
+static bool linkTopicRootValid(const String& value, size_t max_length) {
+  if (value.isEmpty() || value.length() >= max_length || value.endsWith("/")) return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char c = value[i];
+    if (c <= 0x20 || c > 0x7E || c == '"' || c == '\\' || c == '+' || c == '#') return false;
+  }
+  return true;
+}
+
+// The HomeTiles Bridge sends its address while the panel is added in Home
+// Assistant. The panel stores it, drops an older pairing, restarts and then
+// pairs over the link; MQTT is no longer used. It is accepted only within two
+// minutes after Pair was pressed on the panel, which replaces the Web Admin
+// password: whoever pressed it stands at the panel.
+void WebAdminServer::handleLinkSetup() {
+  if (!command_channel::linkWindowOpen()) {
+    sendJsonError(server, 403, "Press Pair on the panel first");
+    return;
+  }
+  String host = server.arg("host");
+  host.trim();
+  const long port = server.arg("port").toInt();
+  String base = server.arg("base");
+  base.trim();
+  String prefix = server.arg("ha_prefix");
+  prefix.trim();
+  if (!configManager.isConfigured() || !link_config::validHost(host.c_str()) || port < 1 ||
+      port > 65535 || !linkTopicRootValid(base, CONFIG_MQTT_BASE_MAX) ||
+      !linkTopicRootValid(prefix, CONFIG_HA_PREFIX_MAX)) {
+    sendJsonError(server, 400, "Invalid link settings");
+    return;
+  }
+
+  DeviceConfig cfg = configManager.getConfig();
+  // The topics are built at start: only another base topic or prefix needs a
+  // restart (a name clash with another panel); otherwise the link starts now.
+  const bool topics_changed = base != cfg.mqtt_base_topic || prefix != cfg.ha_prefix;
+  // The link replaces MQTT; without a broker host the panel is a new one if
+  // the link is removed later. The broker credentials go with the host.
+  if (topics_changed || cfg.mqtt_host[0] || cfg.mqtt_user[0] || cfg.mqtt_pass[0]) {
+    copyToBuffer(cfg.mqtt_base_topic, sizeof(cfg.mqtt_base_topic), base);
+    copyToBuffer(cfg.ha_prefix, sizeof(cfg.ha_prefix), prefix);
+    cfg.mqtt_host[0] = '\0';
+    cfg.mqtt_user[0] = '\0';
+    cfg.mqtt_pass[0] = '\0';
+    if (!configManager.save(cfg)) {
+      sendJsonError(server, 500, "Could not store the base topic");
+      return;
+    }
+  }
+  link_config::Settings settings{};
+  strncpy(settings.host, host.c_str(), sizeof(settings.host) - 1);
+  settings.port = static_cast<uint16_t>(port);
+  settings.pair_requested = true;
+  if (!link_config::save(settings)) {
+    sendJsonError(server, 500, "Could not store the link settings");
+    return;
+  }
+  // The Bridge that sent its address pairs anew; an older key is useless.
+  if (command_channel::state() == command_channel::PairingState::Active) {
+    command_channel::disable(nullptr);
+  }
+  server.send(200, "application/json", "{\"ok\":true}");
+  if (topics_changed) {
+    Serial.printf("[Link] Bridge address %s:%ld received; new base topic, restarting to pair\n",
+                  host.c_str(), port);
+    prepareDisplayForRestart();
+    delay(200);
+    BoardHAL::restart();
+    return;
+  }
+  Serial.printf("[Link] Bridge address %s:%ld received\n", host.c_str(), port);
+  command_channel::acceptLinkSetup(settings.host, settings.port);
+}
+
 void WebAdminServer::handleRestart() {
   server.sendHeader("Location", "/");
   server.send(303, "text/plain", "");
@@ -627,33 +735,132 @@ void WebAdminServer::handleRestart() {
   BoardHAL::restart();
 }
 
-void WebAdminServer::handleTileRadius() {
+// The gesture menu (swipe_gestures.h): GET answers the action of each edge
+// (left, right, top, bottom), POST takes "left", "right", "top" and "bottom"
+// (0 off, 1 Settings, 2 Home, 3 Back, 4 screensaver) and answers what the
+// panel keeps (one action per edge; a hidden Settings tile keeps its swipe).
+void WebAdminServer::handleGestures() {
   webAdminMarkActivity();
   if (server.method() == HTTP_POST) {
-    const String value = server.arg("radius");
-    bool valid = value.length() > 0 && value.length() <= 4;
-    for (size_t i = 0; i < value.length(); ++i)
-      valid = valid && value[i] >= '0' && value[i] <= '9';
-    const long radius = value.toInt();
-    if (!valid || radius < tile_radius::kMinimum || radius > tile_radius::kMaximum) {
-      sendJsonError(server, 400, "Invalid tile radius");
+    uint8_t wanted[swipe_gestures::kEdgeCount];
+    const char* names[swipe_gestures::kEdgeCount] = {"left", "right", "top", "bottom"};
+    for (uint8_t edge = 0; edge < swipe_gestures::kEdgeCount; ++edge) {
+      const String value = server.arg(names[edge]);
+      if (value.length() != 1 || value[0] < '0' || value[0] >= '0' + swipe_gestures::kActionCount) {
+        sendJsonError(server, 400, "Invalid gesture");
+        return;
+      }
+      wanted[edge] = static_cast<uint8_t>(value[0] - '0');
+    }
+    DeviceConfig cfg = configManager.getConfig();
+    swipe_gestures::apply(cfg, wanted);
+    if (!configManager.save(cfg)) {
+      sendJsonError(server, 500, "Could not save the gestures");
       return;
     }
-    if (server.arg("preview") == "1") {
-      ui_surface_style::preview_radius(radius);
-      server.send(200, "application/json", String("{\"success\":true,\"radius\":") + radius + "}");
-      return;
-    }
-    if (!configManager.saveTileRadius(static_cast<uint16_t>(radius))) {
-      sendJsonError(server, 500, "Could not save tile radius");
-      return;
-    }
-    ui_surface_style::request_global_radius_refresh();
+    // Runs in the main loop like the access saves: an armed swipe ends.
+    uiManager.refreshSettingsGestureZone();
   }
-  server.send(200, "application/json",
-      String("{\"success\":true,\"radius\":") + configManager.getConfig().tile_radius + "}");
+  uint8_t actions[swipe_gestures::kEdgeCount];
+  swipe_gestures::actions(configManager.getConfig(), actions);
+  String json = "{\"success\":true,\"actions\":[";
+  for (uint8_t edge = 0; edge < swipe_gestures::kEdgeCount; ++edge) {
+    if (edge) json += ",";
+    json += String(actions[edge]);
+  }
+  json += "],\"settings_edge\":";
+  json += String(configManager.getConfig().settings_reveal_edge);
+  json += "}";
+  server.send(200, "application/json", json);
 }
 
+// The gear in Home's head with a bar layout (home_bar.cpp): the heads are
+// built again on the next safe UI pass.
+void WebAdminServer::handleSaveHeadGear() {
+  webAdminMarkActivity();
+  const String value = server.arg("enabled");
+  const bool enabled = value == "1" || value == "true" || value == "on";
+  if (!configManager.saveHeadGear(enabled)) {
+    sendJsonError(server, 500, "Could not save the head gear");
+    return;
+  }
+  tiles_invalidate_folder(0);
+  tiles_request_reload_all();
+  server.send(200, "application/json", enabled ? "{\"success\":true,\"enabled\":true}"
+                                               : "{\"success\":true,\"enabled\":false}");
+}
+
+// The head bar's time and the pages' overview on its dots (the head bar
+// tab, user 2026-10-13): part=clock|overview, enabled=0|1. Only the heads
+// change: every prepared grid gets its head again at once (like a page
+// change); rebuilding every grid took the panel a while (user 2026-10-14).
+void WebAdminServer::handleSaveHeadSwitch() {
+  webAdminMarkActivity();
+  const String part = server.arg("part");
+  const String value = server.arg("enabled");
+  const bool enabled = value == "1" || value == "true" || value == "on";
+  bool saved = false;
+  if (part == "clock") {
+    saved = configManager.saveHeadClock(enabled);
+  } else if (part == "overview") {
+    saved = configManager.saveHeadOverview(enabled);
+  } else {
+    sendJsonError(server, 400, "Unknown head part");
+    return;
+  }
+  if (!saved) {
+    sendJsonError(server, 500, "Could not save the head bar");
+    return;
+  }
+  tiles_rebuild_heads(!powerManager.isInSleep());
+  server.send(200, "application/json", enabled ? "{\"success\":true,\"enabled\":true}"
+                                               : "{\"success\":true,\"enabled\":false}");
+}
+
+// Home's own title and icon in its head (the head bar tab, user
+// 2026-10-13): title= and icon=, empty = "Home" in the panel's language and
+// the house; one line. Only the heads change, at once (the pages' overview
+// names Home when it opens).
+void WebAdminServer::handleSaveHomeHead() {
+  webAdminMarkActivity();
+  String title = server.arg("title");
+  title.replace("\r", " ");
+  title.replace("\n", " ");
+  title.trim();
+  if (!configManager.saveHomeHead(title, normalizeMdiIconName(server.arg("icon")))) {
+    sendJsonError(server, 500, "Could not save the home head");
+    return;
+  }
+  tiles_rebuild_heads(!powerManager.isInSleep());
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+// The theme (ui_theme.h, 0 dark, 1 light, 2 automatic): stored, then the UI
+// loop applies it while running (UIManager::processThemeChange). The answer
+// names the theme shown now ("effective"), which Automatic picks by the time
+// of day (theme_schedule.h).
+void WebAdminServer::handleSaveTheme() {
+  webAdminMarkActivity();
+  const String value = server.arg("theme");
+  if (value != "0" && value != "1" && value != "2") {
+    sendJsonError(server, 400, "Invalid theme");
+    return;
+  }
+  const uint8_t stored = static_cast<uint8_t>(value.toInt());
+  if (!configManager.saveTheme(stored)) {
+    sendJsonError(server, 500, "Could not save the theme");
+    return;
+  }
+  const uint8_t shown = theme_schedule::effective(stored);
+  // The next boot before the clock runs starts with this theme.
+  if (stored == theme_schedule::kAutomatic) configManager.saveThemeAutoLast(shown);
+  uiManager.requestThemeChange();
+  server.send(200, "application/json",
+              String("{\"success\":true,\"theme\":") + static_cast<int>(stored) +
+                  ",\"effective\":" + static_cast<int>(shown) + "}");
+}
+
+// FORK: icon circles on/off; upstream v0.9 draws them always.
 void WebAdminServer::handleSaveIconDiscs() {
   webAdminMarkActivity();
   if (!server.hasArg("enabled")) {
@@ -668,69 +875,12 @@ void WebAdminServer::handleSaveIconDiscs() {
     sendJsonError(server, 500, "Could not save icon discs");
     return;
   }
-  // Shared disc styles update every grid, including cached and screensaver
-  // tiles, on the next safe UI pass; the icon refresh shows dark icons
-  // readable on the tile or their circle again. This handler does not touch
-  // LVGL.
+  // The shared circle styles update every grid, cached and screensaver tiles
+  // included, on the next safe UI pass. This handler does not touch LVGL.
   ui_surface_style::request_icon_disc_refresh();
-  tiles_request_icon_refresh();
   server.send(200, "application/json",
               enabled ? "{\"success\":true,\"enabled\":true}"
                       : "{\"success\":true,\"enabled\":false}");
-}
-
-void WebAdminServer::handleSaveIconGlow() {
-  webAdminMarkActivity();
-  const String value = server.arg("percent");
-  bool valid = value.length() > 0 && value.length() <= 3;
-  for (size_t i = 0; i < value.length(); ++i)
-    valid = valid && value[i] >= '0' && value[i] <= '9';
-  const long percent = value.toInt();
-  if (!valid || percent < icon_glow::kMinimum || percent > icon_glow::kMaximum) {
-    sendJsonError(server, 400, "Invalid icon glow");
-    return;
-  }
-  if (!configManager.saveIconGlow(static_cast<uint8_t>(percent))) {
-    sendJsonError(server, 500, "Could not save icon glow");
-    return;
-  }
-  // Every disc takes the new strength through the shared disc styles; tiles
-  // are rebuilt like a default tile color change and popups use it on their
-  // next sync. These calls only set flags for the UI loop.
-  ui_surface_style::request_icon_disc_refresh();
-  tiles_invalidate_folder(tileConfig.rootFolderId());
-  tiles_request_reload_all();
-  image_screensaver_tiles_changed();
-  server.send(200, "application/json",
-              String("{\"success\":true,\"percent\":") + static_cast<int>(configManager.getConfig().icon_glow) + "}");
-}
-
-void WebAdminServer::handleSaveDefaultTileColor() {
-  webAdminMarkActivity();
-  // Accepts "#RRGGBB" from the color picker.
-  String value = server.arg("color");
-  value.trim();
-  bool valid = value.length() == 7 && value[0] == '#';
-  for (size_t i = 1; valid && i < value.length(); ++i) valid = isxdigit(value[i]);
-  if (!valid) {
-    sendJsonError(server, 400, "Invalid tile color");
-    return;
-  }
-  const uint32_t rgb = static_cast<uint32_t>(strtoul(value.c_str() + 1, nullptr, 16));
-  if (!configManager.saveDefaultTileColor(rgb)) {
-    sendJsonError(server, 500, "Could not save tile color");
-    return;
-  }
-  // Tiles without their own color use the new default: the visible grid
-  // reloads, cached folder grids rebuild when opened and the screensaver
-  // grid refreshes. These calls only set flags for the UI loop.
-  tiles_invalidate_folder(tileConfig.rootFolderId());
-  tiles_request_reload_all();
-  image_screensaver_tiles_changed();
-  char response[48];
-  snprintf(response, sizeof(response), "{\"success\":true,\"color\":\"#%06X\"}",
-           static_cast<unsigned>(configManager.getConfig().default_tile_color));
-  server.send(200, "application/json", response);
 }
 
 void WebAdminServer::handleSaveTileBorders() {

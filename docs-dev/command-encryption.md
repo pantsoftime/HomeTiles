@@ -56,6 +56,11 @@ panel cannot stall them. A record of the earlier single SHA-256 scheme
 (version 1, never released) keeps Web Admin locked until the password is
 removed on the device and set again.
 
+The first password can be set only within two minutes after tapping
+Password under System > Security on the panel; without that tap the panel
+answers `403 panel_tap_required`. Changing or removing a set password needs
+the Web Admin session as before.
+
 Login:
 
 1. `GET /api/auth/challenge` →
@@ -238,8 +243,8 @@ Plaintext:
 | `hello` | panel → Bridge | `-` | 0 | fresh 32-hex challenge | empty |
 | `session` | Bridge → panel | new random session id | 0 | the challenge it answers | empty |
 | `rekey` | Bridge → panel | `-` | 0 | `-` | empty |
-| `cmd` | panel → Bridge | current session | 1, 2, … | `scene`, `light`, `switch`, `media`, `climate`, `cover`, `camera`, `value`, `fan`, `lock`, `alarm` | the unchanged plain command payload |
-| `data` | Bridge → panel | current session | 1, 2, … | `camera` or `local_camera` | the unchanged plain payload of `{base}/stat/camera` or `{base}/cmnd/local_camera` |
+| `cmd` | panel → Bridge | current session | 1, 2, … | `scene`, `light`, `switch`, `media`, `climate`, `cover`, `camera`, `value`, `fan`, `lock`, `alarm`, `entities`, `tiles` | the unchanged plain command payload |
+| `data` | Bridge → panel | current session | 1, 2, … | `camera`, `local_camera`, `entities` or `tiles` | the unchanged plain payload of `{base}/stat/camera` or `{base}/cmnd/local_camera`, a search answer part, or a declaration acknowledgement |
 | `unpair` | both | current session | next number of the sender (continues `cmd`/`data`) | `-` | empty |
 
 ### Session and replay protection
@@ -317,6 +322,53 @@ matching firmware betas used a typed 25-symbol code (contract v1): both sides
 discard a stored v1 code at start with a log line and run unencrypted until
 the panel is paired again.
 
+## Entity search
+
+A paired panel whose Bridge announces `"entity_search": 1` in its
+configuration lets the Web Admin entity picker search Home Assistant through
+the Bridge. Both messages travel only sealed (`SEALED_ONLY_COMMANDS`):
+
+- `entities` (panel → Bridge): `{"id":n,"list":"<picker list>","q":"<query>",
+  "web_auth":true|false}`. The Bridge answers every entity of the list's
+  domains only when the command is sealed, the pairing is not being removed
+  and `web_auth` is true, the same rule as Lock and Alarm. Otherwise it
+  answers only the entities released for the panel. The answer comes back as
+  sealed `entities` data in at most six parts of up to 1,900 bytes
+  (`{"id","p","n","full","more","r":[{v,t,i,a,d}]}`); the panel joins
+  them and keeps only the newest search.
+- `tiles` (panel → Bridge): the declaration of every entity the panel's
+  tiles use (folder and screensaver tiles, and their icon color sources),
+  like an ESPHome device names the Home Assistant states it needs. Parts of
+  `{"v":version,"p":part,"n":parts,"lists":{"<list>":["entity_id",…]},
+  "own":true,"web_auth":…}`, at most eight of up to 1,800 bytes and 300
+  entities. The sensor slots of the panel's settings are declared too. The
+  declaration is built from the tiles and the password alone, never from
+  what the Bridge serves, so the Bridge's answer cannot change the next one.
+  `version` is a hash of the content: the same tiles give the same version.
+  The panel declares on every new session and after every change, and
+  repeats the version every 15 seconds until the Bridge acknowledges it
+  with sealed `tiles` data `{"v":version}`.
+
+  The Bridge joins the parts of one version, leaves out entities outside
+  their list's domains, and replaces the panel's previous declaration.
+  Declared entities that any panel's releases hold are served; any other
+  declared entity only under the Lock/Alarm rule (sealed, pairing not being
+  removed, `web_auth` true in every part). Declaring never grants what the
+  released lists do not. With `"own":true` (every part) the declaration
+  names everything the panel uses, so the panel gets its own entry's
+  releases and its declared entities instead of every entry's releases;
+  lock rules and scenes still come from every entry. A declaration without
+  it (firmware b232–b237) narrows nothing. An unchanged result publishes
+  nothing. The Bridge keeps the last served declaration with the pairing's
+  key id (Home Assistant storage `tab5_lvgl.panel_entities.<entry>`), so a
+  restart serves the tiles from its first configuration; another pairing
+  ignores it, and removing the entry deletes it. `"entity_search": 2` in the
+  Bridge configuration announces declarations; Bridges with level 1 search
+  only, and the panel declares nothing to them.
+
+A plain (unpaired) panel never searches; its picker shows the released
+entities.
+
 ## Announcements, discovery and history requests
 
 The retained announcement on `tab5_lvgl/config/{id}/bridge` tells the Bridge
@@ -355,3 +407,19 @@ in pages of 5,000 rows, newest time range first, at most 60,480 rows (one
 change per 10 s for a week); beyond that the oldest buckets stay empty. State,
 binary and editable histories keep their existing paged limit of 8,192
 changes.
+
+Refresh (`tab5_lvgl/config/{id}/bridge/request`), energy and weather requests
+are never answered when retained either. A refresh republishes the
+configuration and every entity state: one runs at a time, one more waits and
+at most six start per minute. Energy and weather requests run one at a time
+with two waiting and twelve per minute. Further requests are dropped with one
+warning per minute. Without an Energy dashboard the Bridge answers
+`{"period": ..., "entries": []}` (one warning per hour) instead of staying
+silent, which had every panel ask again every 15 seconds.
+
+The configuration carries `"push": 1` when the Bridge sends name, unit and
+icon changes by itself (5 s after the change, only when the configuration
+differs). Such a panel asks for a refresh after a reconnect, 5 s after it
+dropped an incoming message (at most every 30 s) and otherwise every
+15 minutes; with older Bridges it keeps asking every minute. These flags only
+change how often the panel asks, never a check.

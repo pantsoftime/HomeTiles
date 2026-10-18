@@ -30,7 +30,8 @@ const policies = [
   // and subscribes like a sensor.
   // Lock, Alarm panel and Fan (24-26) store their entity and popup gesture
   // like the Cover and read their own detail state (not the cached payload).
-  ['entityTileStoresSensorEntity', [1, 5, 12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]],
+  // The Scene tile (2) stores the scene, script or button id it runs.
+  ['entityTileStoresSensorEntity', [1, 2, 5, 12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]],
   ['tileTypeUsesCachedEntityState', [1, 4, 5, 12, 14, 15, 17, 19, 20, 21, 22, 23]],
   ['tileTypeStoresPopupMode', [1, 5, 12, 14, 17, 19, 20, 21, 22, 23, 24, 25, 26]],
   ['tileTypeStoresPopupModeDirectly', [1, 12, 14, 17, 19, 20, 21, 22, 23, 24, 25, 26]],

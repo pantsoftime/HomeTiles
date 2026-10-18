@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <cstring>
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -51,7 +52,7 @@ struct CoverPopupContext {
   CoverState state;
   CoverPopupMode mode = CoverPopupMode::Position;
   // Card color of the last opening; state updates never change it.
-  uint32_t card_color = popup_surface::kDefaultCard;
+  uint32_t card_color = popup_surface::default_card();
   // The state color of icon, sliders and buttons (cover_accent): the cover
   // color (kHaCoverActive) or the inactive grey.
   uint32_t accent = 0x926BC7;
@@ -125,7 +126,8 @@ constexpr int kActionButtonGap =
     kActionButtonGapRaw > 0 ? kActionButtonGapRaw : 0;
 constexpr uint32_t kRemoteBlockMs = 1500;
 constexpr uint32_t kHaCoverActive = 0x926BC7;
-constexpr uint32_t kHaCoverInactive = 0x9E9E9E;
+// A closed cover: the resting grey of the theme (ui_theme::icon_rest).
+inline uint32_t ha_cover_inactive() { return ui_theme::icon_rest(); }
 
 bool has_feature(const CoverPopupContext* ctx, uint8_t feature) {
   return ctx && (ctx->state.supported_features & feature) != 0;
@@ -176,9 +178,12 @@ bool cover_icon_is_active(const CoverState& state) {
 
 // Home Assistant colors the whole Cover by its state (stateColorCss: icon,
 // sliders and buttons alike): the cover color for every known state, the
-// inactive grey for unknown and unavailable, like the tile's icon and bar.
+// inactive grey for unknown and unavailable, like the tile's icon and bar
+// (cover renderer cover_icon_color: unavailable is the theme's one
+// unavailable grey, so header, sliders and buttons match the tile).
 uint32_t cover_accent(const CoverState& state) {
-  return cover_icon_is_active(state) ? kHaCoverActive : kHaCoverInactive;
+  if (state.valid && !state.available) return ui_theme::unavailable_icon(ha_cover_inactive());
+  return cover_icon_is_active(state) ? kHaCoverActive : ha_cover_inactive();
 }
 
 void set_hidden(lv_obj_t* obj, bool hidden) {
@@ -516,7 +521,7 @@ void style_mode_button(lv_obj_t* button, lv_obj_t* icon, bool active,
   if (icon) {
     lv_obj_set_style_text_color(
         icon,
-        enabled ? lv_color_white()
+        enabled ? lv_color_hex(ui_theme::text())
                 : popup_surface::lighter(card_color, popup_surface::kDisabled),
         0);
   }
@@ -982,9 +987,9 @@ lv_obj_t* create_action_button(lv_obj_t* parent, const char* icon_name,
                                lv_obj_t** icon_out) {
   lv_obj_t* button = lv_button_create(parent);
   lv_obj_set_size(button, kActionButtonSize, kActionButtonSize);
-  lv_obj_set_style_bg_color(button, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(button, lv_color_hex(ui_theme::icon()), 0);
   lv_obj_set_style_bg_opa(button, LV_OPA_10, 0);
-  lv_obj_set_style_bg_color(button, lv_color_white(), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(button, lv_color_hex(ui_theme::icon()), LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(button, LV_OPA_20, LV_STATE_PRESSED);
   lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, LV_STATE_PRESSED);
@@ -1009,7 +1014,7 @@ lv_obj_t* create_action_button(lv_obj_t* parent, const char* icon_name,
   lv_obj_t* icon = lv_label_create(button);
   lv_obj_set_style_text_font(icon, FONT_MDI_ICONS, 0);
   popup_layout::applyIconScale(icon);
-  lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+  lv_obj_set_style_text_color(icon, lv_color_hex(ui_theme::text()), 0);
   lv_label_set_text(icon, getMdiChar(icon_name).c_str());
   lv_obj_center(icon);
   if (icon_out) *icon_out = icon;
@@ -1021,7 +1026,7 @@ lv_obj_t* create_mode_button(lv_obj_t* parent, const char* icon_name,
   lv_obj_t* button = lv_button_create(parent);
   lv_obj_set_size(button, kModeButtonSize, kModeButtonSize);
   lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(button, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(button, lv_color_hex(ui_theme::icon()), 0);
   lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(button, 0, 0);
   lv_obj_set_style_pad_all(button, 0, 0);
@@ -1034,7 +1039,7 @@ lv_obj_t* create_mode_button(lv_obj_t* parent, const char* icon_name,
   lv_obj_t* icon = lv_label_create(button);
   lv_obj_set_style_text_font(icon, FONT_MDI_ICONS, 0);
   popup_layout::applyIconScale(icon);
-  lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+  lv_obj_set_style_text_color(icon, lv_color_hex(ui_theme::text()), 0);
   lv_label_set_text(icon, getMdiChar(icon_name).c_str());
   lv_obj_center(icon);
   if (icon_out) *icon_out = icon;
@@ -1122,9 +1127,9 @@ void create_preset_buttons(CoverPopupContext* ctx,
                  place_left ? LV_ALIGN_LEFT_MID : LV_ALIGN_RIGHT_MID,
                  0, offset_y);
     lv_obj_set_style_radius(button, kPresetButtonHeight / 2, 0);
-    lv_obj_set_style_bg_color(button, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_color(button, lv_color_white(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(button, lv_color_hex(ui_theme::icon()), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(button, LV_OPA_20, LV_STATE_PRESSED);
     lv_obj_set_style_border_width(button, 0, 0);
     lv_obj_set_style_border_width(button, 0, LV_STATE_PRESSED);
@@ -1145,7 +1150,7 @@ void create_preset_buttons(CoverPopupContext* ctx,
 
     lv_obj_t* label = lv_label_create(button);
     lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(ui_theme::text()), 0);
     lv_label_set_text(label, kPresetLabels[i]);
     lv_obj_center(label);
     lv_obj_add_event_cb(button, on_preset, LV_EVENT_CLICKED, ctx);
@@ -1193,6 +1198,7 @@ static void finish_cover_popup_open(const CoverPopupInit& init) {
 // While open, the popup follows its tile's current background (a rules tint
 // that changes with the entity state); tile_icon_source calls this.
 void cover_popup_follow_tile_color(uint32_t color) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   CoverPopupContext* ctx = g_ctx;
   if (!ctx || !ctx->card || lv_obj_has_flag(ctx->card, LV_OBJ_FLAG_HIDDEN)) return;
   apply_card_color(ctx, color);
@@ -1215,6 +1221,7 @@ static void prepare_cover_popup_open(const CoverPopupInit& init) {
 }
 
 void show_cover_popup(const CoverPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   hide_pin_popup();
   if (!init.entity_id.length()) return;
   hide_light_popup();
@@ -1273,7 +1280,7 @@ void show_cover_popup(const CoverPopupInit& init) {
   lv_obj_set_style_text_align(ctx->top_value_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(ctx->top_value_label,
                              popup_layout::font40(), 0);
-  lv_obj_set_style_text_color(ctx->top_value_label, lv_color_white(), 0);
+  lv_obj_set_style_text_color(ctx->top_value_label, lv_color_hex(ui_theme::text()), 0);
   lv_obj_set_style_translate_y(
       ctx->top_value_label, popup_layout::kLargeValueTextOffsetY, 0);
 
@@ -1378,6 +1385,7 @@ void show_cover_popup(const CoverPopupInit& init) {
 }
 
 void update_cover_popup(const CoverPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (!g_ctx || !g_ctx->card || !g_ctx->overlay) return;
   if (lv_obj_has_flag(g_ctx->card, LV_OBJ_FLAG_HIDDEN)) return;
   if (!g_ctx->entity_id.equalsIgnoreCase(init.entity_id)) return;
@@ -1392,6 +1400,7 @@ void update_cover_popup(const CoverPopupInit& init) {
 }
 
 void preload_cover_popup() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (g_ctx && g_ctx->overlay && g_ctx->card) return;
   CoverPopupInit init;
   init.entity_id = "__preload__";

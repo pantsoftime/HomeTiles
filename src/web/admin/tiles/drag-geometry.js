@@ -126,7 +126,7 @@
 
   function getTileGridMetrics(tab) {
     const grid = getTileGrid(tab);
-    return getGridElementMetrics(grid, GRID_COLS, GRID_ROWS);
+    return getGridElementMetrics(grid, placeCols(tab), placeRows(tab));
   }
 
   function getRawGridCellFromPointer(tab, clientX, clientY, sizeStep = null) {
@@ -147,8 +147,8 @@
     if (col < 0) col = 0;
     const firstRow = firstAllowedGridRow(tab);
     if (row < firstRow) row = firstRow;
-    if (col >= GRID_COLS) col = GRID_COLS - unit;
-    if (row >= GRID_ROWS) row = GRID_ROWS - unit;
+    if (col >= placeCols(tab)) col = placeCols(tab) - unit;
+    if (row >= placeRows(tab)) row = placeRows(tab) - unit;
     return { col, row };
   }
 
@@ -166,16 +166,16 @@
       if (!isFinite(left) || !isFinite(top) || !(halfX > 0) || !(halfY > 0)) return null;
       const layout = getDragSourceLayout();
       return {
-        col: Math.max(0, Math.min(GRID_COLS - (layout?.span_w || 0.5), Math.round(left / halfX) / 2)),
+        col: Math.max(0, Math.min(placeCols(tab) - (layout?.span_w || 0.5), Math.round(left / halfX) / 2)),
         row: Math.max(firstAllowedGridRow(tab),
-                      Math.min(GRID_ROWS - (layout?.span_h || 0.5), Math.round(top / halfY) / 2))
+                      Math.min(placeRows(tab) - (layout?.span_h || 0.5), Math.round(top / halfY) / 2))
       };
     }
     const rawCell = getRawGridCellFromPointer(tab, clientX, clientY);
     if (!rawCell) return null;
     if (!dragSource || dragSource.tab !== tab) return rawCell;
-    const anchorCol = clampHalf(dragSource.grabCellCol, 0, GRID_COLS - 1, 0);
-    const anchorRow = clampHalf(dragSource.grabCellRow, 0, GRID_ROWS - 1, 0);
+    const anchorCol = clampHalf(dragSource.grabCellCol, 0, placeCols(tab) - 1, 0);
+    const anchorRow = clampHalf(dragSource.grabCellRow, 0, placeRows(tab) - 1, 0);
     return {
       col: rawCell.col - anchorCol,
       row: rawCell.row - anchorRow
@@ -238,7 +238,7 @@
 
   function captureLayoutSnapshot(tab) {
     const tiles = getTilesData(tab);
-    const count = Math.max(Array.isArray(tiles) ? tiles.length : 0, GRID_COLS * GRID_ROWS);
+    const count = Math.max(Array.isArray(tiles) ? tiles.length : 0, TILES_PER_GRID);
     const snapshot = [];
     for (let i = 0; i < count; i++) {
       const layout = getTileElementLayout(tab, i) || getTileLayoutFromData(tab, i);
@@ -272,7 +272,7 @@
     dragSource.previewKey = '';
     for (let i = 0; i < dragSource.baseLayouts.length; i++) {
       const tile = Array.isArray(tiles) ? tiles[i] : null;
-      if (!tile || Number(tile.type || 0) === 0) continue;
+      if (!tileTakesRoom(tile)) continue;
       const el = document.getElementById(tab + '-tile-' + i);
       const layout = dragSource.baseLayouts[i];
       if (!el || !layout) continue;
@@ -286,7 +286,7 @@
     const tiles = getTilesData(tab);
     for (let i = 0; i < previewResult.layouts.length; i++) {
       const tile = Array.isArray(tiles) ? tiles[i] : null;
-      if (!tile || Number(tile.type || 0) === 0) continue;
+      if (!tileTakesRoom(tile)) continue;
       const el = document.getElementById(tab + '-tile-' + i);
       if (!el) continue;
 

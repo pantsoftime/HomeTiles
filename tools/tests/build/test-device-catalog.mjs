@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { releaseProfiles, validateCatalog, getBuildProfile, getReleaseProfile,
-  installerProfiles, releaseFileVersion, releaseAssetNames, verifyReleaseAssets } from '../../device-catalog.js';
+  installerProfiles, releaseFileVersion, releaseAssetNames, iconFileNames, verifyReleaseAssets } from '../../device-catalog.js';
 import { DEVICE_PROFILES } from '../../../docs/assets/javascripts/installer-contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -94,6 +94,9 @@ try {
   const names = releaseAssetNames('v0.6.9');
   assert.equal(names.length, releaseProfiles.length * 2);
   for (const name of names) fs.writeFileSync(path.join(directory, name), 'fixture');
+  // The icon files of the release are required too.
+  assert.throws(() => verifyReleaseAssets(directory, 'v0.6.9'), /missing: hometiles-icons-32.bin/);
+  for (const name of iconFileNames) fs.writeFileSync(path.join(directory, name), 'fixture');
   verifyReleaseAssets(directory, 'v0.6.9');
   fs.renameSync(path.join(directory, names[0]), path.join(directory, 'unexpected.bin'));
   assert.throws(() => verifyReleaseAssets(directory, 'v0.6.9'), /release asset set mismatch/);

@@ -135,7 +135,7 @@ assert.match(geometry, /inline bool compact_switch\(int type, float w, float h\)
 const handler = readRepoFile('src/types/switch/web_handler.cpp');
 assert.match(handler, /raw >= 0 && raw <= switch_layout::kLayoutMax/);
 const layoutJs = readRepoFile('src/web/admin/tiles/layout.js');
-assert.match(layoutJs, /\[2, 4, 5, 7, 8, 9, 17, 18, 19, 24, 25, 26\]\.includes\(Number\(type\)\)/);
+assert.match(layoutJs, /\[2, 4, 5, 7, 8, 9, 10, 17, 18, 19, 24, 25, 26\]\.includes\(Number\(type\)\)/);
 const admin = readRepoFile('src/types/switch/admin.js');
 for (const marker of [
   'const endRadius = Math.floor(reference / 4);',
@@ -171,7 +171,7 @@ const livePreview = readRepoFile('src/web/admin/tiles/live-preview.js');
 assert.ok(livePreview.includes('!switchSensorLook(switchStyle, spanH));'),
           'The editor offers the value sizes of the tile size');
 assert.ok(tallRenderer.includes('switch_layout::Dimmer geometry{width, height, radius, base};') &&
-          tallRenderer.includes('level_bar::draw_fill(layer, view->bar, view->level, view->bar_base, accent, card);') &&
+          tallRenderer.includes('level_bar::draw_fill(layer, view->bar, view->level, view->bar_base, accent, notch);') &&
           tallRenderer.includes('draw_power_symbol(layer, thumb, symbol_color, view->on, view->bar_base);'),
           'A taller bar keeps its handle width, roundings and symbol size');
 // b148 regression: switching a dimmable light on showed 100 % until Home
@@ -179,10 +179,13 @@ assert.ok(tallRenderer.includes('switch_layout::Dimmer geometry{width, height, r
 assert.ok(tallRenderer.includes('const uint8_t unreported_level = dimmable ? view->last_on_level : 100;') &&
           tallRenderer.includes('if (dimmable && on && level > 0) view->last_on_level = level;') &&
           tallRenderer.includes('show_state_text(view, state, dimmable && level > 0, level, on);'));
-// The Light popup's brightness handle takes the tile's handle color.
+// The Light popup's brightness handle takes the tile's handle color: the handle line
+// on the fill like the tile's (user 2026-10-10, tone_color::notch_on).
 const popup = readRepoFile('src/ui/popups/light/light_popup.cpp');
-assert.ok(popup.includes('dash_dsc.bg_color = brightness_dash_color(ctx);') &&
+assert.ok(popup.includes('lv_color_hex(tone_color::notch_on(ctx->brightness_draw_color, lv_color_to_u32(brightness_dash_color(ctx))));') &&
           popup.includes('switch_tile_card_color(static_cast<GridType>(ctx->tile_grid), ctx->tile_index, rgb)'));
+assert.ok(tallRenderer.includes('level_bar::draw_fill(layer, view->bar, view->level, view->bar_base, accent, notch);'),
+  'The tile handle is the same handle line');
 // b149 regression: the resize preview copied the tile at its old size, so a
 // Switch kept its bar at half height and lost it (icon button look) at one
 // row; it now takes the parts of the new size.

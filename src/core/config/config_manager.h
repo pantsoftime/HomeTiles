@@ -52,7 +52,14 @@ struct SettingsTileSnapshot {
   float row;
   float span_w;
   float span_h;
+  // The parked tile's ID (TileConfig view IDs): back in the grid it keeps
+  // its places in the layouts (tile_layouts.h). 0 when unknown.
+  uint16_t view_id;
 };
+
+// Settings parked per layout (DeviceConfig::settings_parked): bit n for
+// layout n (grid_layout::Layout).
+constexpr uint8_t kSettingsParkedAll = 0x07;
 
 struct DeviceConfig {
   char wifi_ssid[CONFIG_WIFI_SSID_MAX];
@@ -75,7 +82,7 @@ struct DeviceConfig {
   char timezone[CONFIG_TIMEZONE_MAX];
   uint8_t global_time_format;
   uint8_t global_date_format;
-  uint8_t keyboard_layout;  // 0=Auto (language), 1=German QWERTZ, 2=English QWERTY
+  uint8_t keyboard_layout;  // 0=Auto (language), 1=German QWERTZ, 2=English QWERTY, 3=French AZERTY
   bool configured;  // Whether a configuration is stored.
 
   // Display & Power Settings
@@ -83,13 +90,32 @@ struct DeviceConfig {
   // One visible percentage for every device. Device::backlightRawFromPercent()
   // converts it to the range of the respective driver.
   uint8_t screensaver_brightness_pct;  // 1-100
-  uint16_t tile_radius = tile_radius::kDefault;
   bool tile_borders;           // Thin borders around normal dashboard tiles.
-  bool icon_discs = true;      // Background discs behind tile icons.
-  // Glow strength of colored icon discs in percent (icon_glow.h).
-  uint8_t icon_glow = icon_glow::kDefault;
-  // Background of tiles without their own color (and of reset/new tiles).
-  uint32_t default_tile_color = tile_color::kDefault;
+  // FORK: icon circles behind tile icons (upstream v0.9 always draws them).
+  // NVS key "icon_disc" is the one v0.7/v0.8 used, so a panel keeps its choice.
+  bool icon_discs = true;
+  // The layout (grid_layout::Layout): 0 classic, 1 head bar, 2 head bar
+  // upright. Read at boot; a change applies after a restart.
+  uint8_t layout = 0;
+  // With a bar layout: the gear in Home's head (Settings tile option and
+  // the Global tab's head bar section, user 2026-10-13: one setting).
+  bool head_gear = false;
+  // With a bar layout (user 2026-10-13, Global tab "Kopfleiste"): the time
+  // in every head, and the pages' overview on a tap on the head's dots
+  // (without it the dots only show the page: no press, no overview).
+  bool head_clock = true;
+  bool head_overview = true;
+  // Home's own title and icon in its head (the head bar tab, user
+  // 2026-10-13); empty = "Home" in the panel's language and the house.
+  char head_title[32];
+  char head_icon[32];
+  // The UI theme (ui_theme.h): 0 dark, 1 light, 2 automatic (light by day,
+  // dark by night, theme_schedule.h). Read at boot; a change applies while
+  // running (UIManager::processThemeChange).
+  uint8_t theme = 0;
+  // The theme Automatic showed last (0 dark, 1 light): a boot before the
+  // clock is set starts with it.
+  uint8_t theme_auto_last = 0;
   bool display_rotated_180;    // Display rotated by 180 degrees?
   uint8_t display_rotation_quarters; // 0=0°, 1=90°, 2=180°, 3=270°
   uint8_t display_rotation_mode; // 0=Normal, 1=180, 2=Auto
@@ -112,9 +138,18 @@ struct DeviceConfig {
   // Local parental-control settings. The hash remains authoritative; the
   // bounded recovery copy exists only so Web Admin can implement "Show".
   bool settings_pin_enabled;
+  // Parked in the layout this boot shows (applySettingsParking): the tile
+  // is off Home, the swipe and the gear reach Settings.
   bool settings_tile_hidden;
+  // Where Settings is parked (user 2026-10-13: each layout decides), bit n
+  // for layout n (kSettingsParkedAll).
+  uint8_t settings_parked;
   bool settings_swipe_enabled;
   uint8_t settings_reveal_edge;
+  // The other edge swipes (swipe_gestures.h): an edge 0..3 or kEdgeOff.
+  uint8_t home_swipe_edge;
+  uint8_t back_swipe_edge;
+  uint8_t screensaver_swipe_edge;
   uint8_t settings_pin_salt[pin_access::kSaltSize];
   uint8_t settings_pin_hash[pin_access::kHashSize];
   char settings_pin_value[pin_access::kUserPinMaxDigits + 1];
@@ -146,10 +181,19 @@ public:
   bool saveScreensaverTimeout(bool enabled, uint16_t seconds);
   bool saveScreensaverBrightness(uint8_t brightness_pct);
   bool saveTileBorders(bool enabled);
-  bool saveTileRadius(uint16_t radius);
-  bool saveIconDiscs(bool enabled);
-  bool saveIconGlow(uint8_t percent);
-  bool saveDefaultTileColor(uint32_t rgb);
+  bool saveIconDiscs(bool enabled);  // FORK
+  bool saveIconDiscs(bool enabled);  // FORK
+  bool saveLayout(uint8_t layout);
+  bool saveHeadGear(bool enabled);
+  bool saveHeadClock(bool enabled);
+  // Settings parked or shown in the layout this boot shows (grid_layout.h):
+  // its bit of settings_parked, set before the tiles load.
+  void applySettingsParking(uint8_t layout);
+  bool saveHeadOverview(bool enabled);
+  // Home's own head title and icon (empty = automatic), stored at once.
+  bool saveHomeHead(const String& title, const String& icon);
+  bool saveTheme(uint8_t theme);
+  bool saveThemeAutoLast(uint8_t theme);
   bool saveEthernetEnabled(bool enabled);
   bool saveStaticAddressingEnabled(bool enabled);
 

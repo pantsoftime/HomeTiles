@@ -8,6 +8,7 @@
 #include "src/core/power/power_manager.h"
 #include "src/devices/device.h"
 #include "src/network/mqtt/mqtt_topics.h"
+#include "src/tiles/config/grid_layout.h"
 #include "src/network/network_manager.h"
 #include "src/video/local_camera/local_camera_contract.h"
 #include "src/video/local_camera/local_camera_request.h"
@@ -55,7 +56,10 @@ constexpr char kPrefsEnabledKey[] = "local_cam_en";
 // Live-stream mode id (local_camera_stream::kModes, 0 = Auto), u8.
 constexpr char kPrefsStreamModeKey[] = "lcam_mode";
 constexpr char kPrefsMirrorKey[] = "lcam_mirror";
-// User rotation: clockwise quarter turns 0..3 (kRotationMax), u8.
+// User rotation: clockwise quarter turns 0..3 (kRotationMax), u8. One for
+// every layout (user 2026-10-11: set once, right in every orientation); an
+// upright layout adds its quarter turn itself (displayQuarterTurns()). The
+// upright one b298-b386 kept apart ("lcam_rot_up") is no longer read.
 constexpr char kPrefsRotationKey[] = "lcam_rot";
 // Red/blue swap for boards whose colours come out exchanged, bool.
 constexpr char kPrefsRbSwapKey[] = "lcam_rbswap";
@@ -130,13 +134,12 @@ constexpr bool kSupported = false;
 // Sensor name and JPEG size of the active board for the status payloads.
 #if defined(HOMETILES_LOCAL_CAMERA)
 constexpr const char* kSensorName = local_camera_board::kMode.name;
-constexpr uint16_t kStatusWidth = local_camera_board::kMode.image_width;
-constexpr uint16_t kStatusHeight = local_camera_board::kMode.image_height;
 #else
 constexpr const char* kSensorName = "";
-constexpr uint16_t kStatusWidth = 0;
-constexpr uint16_t kStatusHeight = 0;
 #endif
+// The JPEG size as sent (the sensor window of this boot, below).
+uint16_t statusWidth();
+uint16_t statusHeight();
 
 std::atomic<bool> g_enabled{false};
 std::atomic<uint8_t> g_state{static_cast<uint8_t>(ServiceState::Disabled)};
@@ -172,9 +175,10 @@ std::atomic<uint8_t> g_custom_quality{local_camera_stream::CustomMode{}.quality}
 // Horizontal mirror of the delivered image (Web Admin setting).
 std::atomic<bool> g_mirror{false};
 // User rotation in clockwise quarter turns, 0..kRotationMax (Web Admin
-// setting). The worker reads it per frame (applyOrientation()), the loop task
-// for the retained status.
+// setting), the same in every layout. The worker reads it per frame
+// (applyOrientation()), the loop task for the retained status.
 std::atomic<uint8_t> g_rotation{0};
+uint8_t userTurns() { return g_rotation.load(); }
 // Red and blue exchanged in the ISP Bayer order (Web Admin setting); read by
 // the worker when it builds the pipeline, i.e. from the next capture or stream
 // start on.
@@ -293,13 +297,39 @@ String deviceTopic(const char* leaf, const char* id = nullptr) {
   networkManager.mqttEnqueuePublish(topic.c_str(), payload, false);
 }
 
+// The panel shown upright (Hochkant, grid_layout::turned()): the camera turns
+// with the panel, a quarter from the landscape UI its mounting is given for,
+// so the image turns a quarter back. Every P4 panel turns the same way, but
+// a mirror reverses a turn and the sensors' pictures are mirrored
+// differently: clockwise on the V2 (OV02C10, hardware 2026-10-08: three
+// quarters stood upside down), counter-clockwise on the 8-inch (OV5647,
+// hardware 2026-10-08: one quarter, adding up to 180 with its mounting,
+// stood upside down). A panel that turns a turned layout the other way
+// round reverses it (grid_layout::turn_reversed: JC1060, Waveshare 7B,
+// JC4880). The user's mirror does not: desiredOrientation() already moves it
+// to the other sensor axis for a quarter turn, so it mirrors the turned
+// picture; reversing the turn as well stood the picture upside down (V2,
+// user 2026-10-11). Added to the user turns, so one user rotation is right
+// in both layouts.
+uint8_t displayQuarterTurns() {
+  if (!grid_layout::turned()) return 0u;
+#if defined(HOMETILES_LOCAL_CAMERA)
+  const bool counter_clockwise =
+      local_camera_board::Sensor::kUprightTurnCounterClockwise != grid_layout::turn_reversed();
+  return counter_clockwise ? 3u : 1u;
+#else
+  return grid_layout::turn_reversed() ? 3u : 1u;
+#endif
+}
+
 // Clockwise turn the Bridge applies to every JPEG: the quarter turn left from
-// the board mounting and the user rotation. The 180 degree part (and the
-// display rotation, which only adds 180 degree steps) is a sensor flip.
+// the board mounting, the upright panel and the user rotation. The 180 degree
+// part (and the display rotation, which only adds 180 degree steps) is a
+// sensor flip.
 uint16_t statusRotate() {
 #if defined(HOMETILES_LOCAL_CAMERA)
-  return statusRotateDegrees(
-      imageTurn(false, local_camera_board::kMode.quarter_turn, g_rotation.load()));
+  return statusRotateDegrees(imageTurn(false, local_camera_board::kMode.quarter_turn,
+                                       static_cast<uint8_t>(userTurns() + displayQuarterTurns())));
 #else
   return 0;
 #endif
@@ -307,8 +337,8 @@ uint16_t statusRotate() {
 
 StatusFields currentStatusFields() {
   StatusFields fields;
-  fields.width = kStatusWidth;
-  fields.height = kStatusHeight;
+  fields.width = statusWidth();
+  fields.height = statusHeight();
   fields.rotate = statusRotate();
   if (g_ended_session[0] != '\0') fields.ended_session = g_ended_session;
   if (!g_enabled.load()) {
@@ -370,39 +400,74 @@ constexpr UBaseType_t kWorkerPriority = tskIDLE_PRIORITY;
 constexpr uint32_t kPipelineIdleReleaseMs = 30000;
 
 constexpr uint32_t kIspClockHz = 80 * 1000 * 1000;
-constexpr uint32_t kFrameBytes =
-    uint32_t{kMode.frame_width} * kMode.frame_height * 2;  // RGB565
-constexpr uint32_t kImageWidth = kMode.image_width;
-constexpr uint32_t kImageHeight = kMode.image_height;
+// The sensor window follows the Bridge's turn (user 2026-10-08, drawn): a
+// sensor standing upright in the world - the Bridge turns its image a
+// quarter - sends a centred landscape strip, 4:3 once turned (the 8-inch's
+// 720x960, the other sensors' 544x720; user 2026-10-08: more picture); a lying one sends its whole image
+// (1280x960, 1280x720) unturned. Cropping on the sensor costs nothing and
+// sends less; the panel never turns. Every sensor has both windows: the
+// board's default one (the mode's frame, the strip when it is upright) and
+// the other (kTurnedWidth x kTurnedHeight). The turn - board mounting, an
+// upright layout, the camera rotation in the Web Admin - picks the window,
+// so a board whose mounting is guessed wrong is put right by the rotation
+// alone, crop included.
+constexpr bool kQuarterTurn = kMode.quarter_turn;
+constexpr bool kDefaultIsStrip = kMode.frame_height > kMode.frame_width;
+bool windowWanted() { return (statusRotate() != 0) != kDefaultIsStrip; }
+uint32_t windowWidth(bool turned) { return turned ? board::Sensor::kTurnedWidth : kMode.frame_width; }
+uint32_t windowHeight(bool turned) { return turned ? board::Sensor::kTurnedHeight : kMode.frame_height; }
+esp_err_t loadSensorMode(board::Sensor& sensor, bool turned) {
+  return sensor.loadDefaultMode(kMode.mirror, turned);
+}
+// The window the sensor and the pipeline have: set when the mode is loaded,
+// changed only at a capture or stream start (the sensor in standby).
+std::atomic<bool> g_window_turned{false};
+bool windowTurned() { return g_window_turned.load(); }
+uint32_t frameWidth() { return windowWidth(windowTurned()); }
+uint32_t frameHeight() { return windowHeight(windowTurned()); }
+uint32_t frameBytes() { return frameWidth() * frameHeight() * 2; }  // RGB565
 // This silicon has no ISP crop and the JPEG encoder has no stride: the sensor
 // window must be the JPEG size.
 static_assert(kMode.frame_width == kMode.image_width &&
                   kMode.frame_height == kMode.image_height,
               "the sensor must deliver the JPEG size");
+uint32_t imageWidthSent() { return frameWidth(); }
+uint32_t imageHeightSent() { return frameHeight(); }
+// As sent from the next start on (the status and its "rotate" follow a
+// change at once).
+uint16_t statusWidth() { return static_cast<uint16_t>(windowWidth(windowWanted())); }
+uint16_t statusHeight() { return static_cast<uint16_t>(windowHeight(windowWanted())); }
 // A sensor mounted a quarter turn from the landscape image: the JPEG leaves
 // the panel portrait and the receiver (the Bridge) turns it 90 degrees
 // clockwise, announced as "rotate" in the retained status. A PPA turn on the
 // panel held the 2D-DMA for ~29 ms per frame and made the display sluggish.
-constexpr bool kQuarterTurn = kMode.quarter_turn;
 // RAW8 or RAW10 from the sensor; the ISP output (RGB565) is the same.
 constexpr bool kRaw8 = kMode.raw_bits == 8;
 static_assert(kMode.raw_bits == 8 || kMode.raw_bits == 10, "RAW8 or RAW10 only");
 // The Bridge turns the JPEG losslessly (whole MCUs only). 4:2:2 (16x8 MCUs)
-// would turn into the uncommon 4:4:0; 4:2:0 (16x16 MCUs) stays 4:2:0.
-constexpr jpeg_down_sampling_type_t kJpegSubsampling =
-    kQuarterTurn ? JPEG_DOWN_SAMPLING_YUV420 : JPEG_DOWN_SAMPLING_YUV422;
-static_assert(!kQuarterTurn || (kMode.image_width % 16 == 0 && kMode.image_height % 16 == 0),
-              "a lossless quarter turn needs whole 16x16 MCUs");
+// would turn into the uncommon 4:4:0; 4:2:0 (16x16 MCUs) stays 4:2:0. Whether
+// the Bridge turns depends on the layout too (statusRotate()).
+jpeg_down_sampling_type_t jpegSubsampling() {
+  return statusRotate() != 0 ? JPEG_DOWN_SAMPLING_YUV420 : JPEG_DOWN_SAMPLING_YUV422;
+}
+static_assert(kMode.image_width % 16 == 0 && kMode.image_height % 16 == 0 &&
+                  board::Sensor::kTurnedWidth % 16 == 0 && board::Sensor::kTurnedHeight % 16 == 0,
+              "whole 16x16 MCUs (4:2:0 for a turn) in either window");
+static_assert((board::Sensor::kTurnedHeight > board::Sensor::kTurnedWidth) != kDefaultIsStrip,
+              "one window is the upright strip, the other the whole landscape image");
 constexpr size_t kFrameBufferAlign = 128;
-constexpr uint32_t kJpegInputBytes = kImageWidth * kImageHeight * 2;
+static_assert(uint32_t{kMode.frame_width} * kMode.frame_height * 2 % kFrameBufferAlign == 0 &&
+                  uint32_t{board::Sensor::kTurnedWidth} * board::Sensor::kTurnedHeight * 2 % kFrameBufferAlign == 0,
+              "frame size must fill cache lines");
+uint32_t jpegInputBytes() { return imageWidthSent() * imageHeightSent() * 2; }
 // ISP statistics see the frame as the sensor delivers it: 5x5 blocks over
 // the largest centred window whose sides are multiples of 5.
-constexpr uint32_t kStatsWidth = kMode.frame_width / 5 * 5;
-constexpr uint32_t kStatsHeight = kMode.frame_height / 5 * 5;
-constexpr uint32_t kStatsLeft = (kMode.frame_width - kStatsWidth) / 2;
-constexpr uint32_t kStatsTop = (kMode.frame_height - kStatsHeight) / 2;
+uint32_t statsWidth() { return frameWidth() / 5 * 5; }
+uint32_t statsHeight() { return frameHeight() / 5 * 5; }
+uint32_t statsLeft() { return (frameWidth() - statsWidth()) / 2; }
+uint32_t statsTop() { return (frameHeight() - statsHeight()) / 2; }
 // Generously sized: an undersized hardware JPEG output buffer is unsafe.
-constexpr size_t kJpegOutputCapacity = kJpegInputBytes / 2;
+size_t jpegOutputCapacity() { return jpegInputBytes() / 2; }
 constexpr uint32_t kFirstFrameTimeoutMs = 600;
 constexpr uint32_t kAutoExposureBudgetMs = 1800;
 constexpr uint8_t kAutoExposureMaxIterations = 10;
@@ -952,7 +1017,8 @@ bool stepDigitalGain(uint32_t mean_luma, bool sensor_at_brighter_limit, uint32_t
 // live: the sensor streams; the frames still in flight are dropped. Returns
 // false when the sensor did not confirm the registers.
 bool applyOrientation(bool live) {
-  const ImageTurn turn = imageTurn(imageRotated180(), kQuarterTurn, g_rotation.load());
+  const ImageTurn turn = imageTurn(imageRotated180(), kQuarterTurn,
+                                   static_cast<uint8_t>(userTurns() + displayQuarterTurns()));
   const SensorOrientation wanted =
       desiredOrientation(turn.rotated_180, g_mirror.load(), turn.quarter_turn);
   const uint8_t code = orientationCode(wanted);
@@ -1149,7 +1215,8 @@ bool ensureSensor(bool report_state) {
     return false;
   }
   g_sensor_identified = true;
-  err = g_sensor.loadDefaultMode(kMode.mirror);
+  const bool turned = windowWanted();
+  err = loadSensorMode(g_sensor, turned);
   if (err != ESP_OK) {
     Serial.printf("[LocalCam] Sensor %s mode setup failed: %s\n", kMode.name,
                   esp_err_to_name(err));
@@ -1157,6 +1224,7 @@ bool ensureSensor(bool report_state) {
     if (report_state) publishWorkerState(ServiceState::Error, Detail::SensorInitFailed);
     return false;
   }
+  g_window_turned.store(turned);
   g_exposure.lines = kMode.default_exposure_lines;
   g_exposure.gain_x16 = kMode.default_gain_x16;
   // The mode table reads out in orientation state 0.
@@ -1166,10 +1234,31 @@ bool ensureSensor(bool report_state) {
       "[LocalCam] Sensor %s detected (chip id 0x%04x), %ux%u RAW%u %u-lane "
       "mode loaded in %u ms, sensor in standby\n",
       kMode.name, static_cast<unsigned>(chip_id),
-      static_cast<unsigned>(kMode.frame_width), static_cast<unsigned>(kMode.frame_height),
+      static_cast<unsigned>(frameWidth()), static_cast<unsigned>(frameHeight()),
       static_cast<unsigned>(kMode.raw_bits), static_cast<unsigned>(kMode.data_lanes),
       static_cast<unsigned>(millis() - started_ms));
   if (report_state) publishWorkerState(ServiceState::Ready, Detail::None);
+  return true;
+}
+
+// A capture or stream starts with the window the Bridge's turn wants (the
+// sensor is in standby here): a change reloads the mode with it, the
+// pipeline is built for it next.
+bool ensureSensorWindow() {
+  const bool wanted = windowWanted();
+  if (wanted == windowTurned()) return true;
+  const esp_err_t err = loadSensorMode(g_sensor, wanted);
+  if (err != ESP_OK) {
+    Serial.printf("[LocalCam] Sensor %s window change failed: %s\n", kMode.name, esp_err_to_name(err));
+    return false;
+  }
+  g_window_turned.store(wanted);
+  g_exposure.lines = kMode.default_exposure_lines;
+  g_exposure.gain_x16 = kMode.default_gain_x16;
+  g_applied_orientation = 0;
+  Serial.printf("[LocalCam] Sensor window %ux%u for a Bridge turn of %u degrees\n",
+                static_cast<unsigned>(frameWidth()), static_cast<unsigned>(frameHeight()),
+                static_cast<unsigned>(statusRotate()));
   return true;
 }
 
@@ -1225,10 +1314,10 @@ bool createAutoExposure(isp_ae_sample_point_t sample_point, uint32_t target) {
   esp_isp_ae_config_t config = {};
   config.sample_point = sample_point;
   // The whole frame: 5x5 blocks of exactly (width / 5) x (height / 5).
-  config.window.top_left.x = kStatsLeft;
-  config.window.top_left.y = kStatsTop;
-  config.window.btm_right.x = kStatsLeft + kStatsWidth;
-  config.window.btm_right.y = kStatsTop + kStatsHeight;
+  config.window.top_left.x = statsLeft();
+  config.window.top_left.y = statsTop();
+  config.window.btm_right.x = statsLeft() + statsWidth();
+  config.window.btm_right.y = statsTop() + statsHeight();
   if (esp_isp_new_ae_controller(g_pipe.isp, &config, &g_pipe.ae) != ESP_OK) {
     g_pipe.ae = nullptr;
     return false;
@@ -1290,8 +1379,8 @@ bool ensurePipeline() {
     esp_cam_ctlr_csi_config_t csi_config = {};
     csi_config.ctlr_id = 0;
     csi_config.clk_src = MIPI_CSI_PHY_CLK_SRC_DEFAULT;
-    csi_config.h_res = kMode.frame_width;
-    csi_config.v_res = kMode.frame_height;
+    csi_config.h_res = frameWidth();
+    csi_config.v_res = frameHeight();
     csi_config.data_lane_num = kMode.data_lanes;
     csi_config.lane_bit_rate_mbps = kMode.lane_bit_rate_mbps;
     csi_config.input_data_color_type = kRaw8 ? CAM_CTLR_COLOR_RAW8 : CAM_CTLR_COLOR_RAW10;
@@ -1310,20 +1399,19 @@ bool ensurePipeline() {
       // esp_cam_ctlr_start() invalidates the buffer with an aligned-only
       // cache sync; esp_cam_ctlr_alloc_buffer() returned a 16-byte aligned
       // PSRAM block on the V2 (0x494eb050), which the sync rejects. Align to
-      // the largest P4 cache line (128 B; kFrameBytes is a multiple of it).
-      static_assert(kFrameBytes % kFrameBufferAlign == 0, "frame size must fill cache lines");
+      // the largest P4 cache line (128 B; both windows' frames are multiples of it).
       buffer = static_cast<uint8_t*>(
-          heap_caps_aligned_calloc(kFrameBufferAlign, 1, kFrameBytes, MALLOC_CAP_SPIRAM));
+          heap_caps_aligned_calloc(kFrameBufferAlign, 1, frameBytes(), MALLOC_CAP_SPIRAM));
       if (!buffer) {
         err = ESP_ERR_NO_MEM;
         break;
       }
       // Write back the zeroed lines so later evictions cannot overwrite DMA data.
-      esp_cache_msync(buffer, kFrameBytes,
+      esp_cache_msync(buffer, frameBytes(),
                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
     }
     if (err != ESP_OK) break;
-    g_isr.buffer_bytes = kFrameBytes;
+    g_isr.buffer_bytes = frameBytes();
 
     step = "CSI callbacks";
     esp_cam_ctlr_evt_cbs_t callbacks = {};
@@ -1347,8 +1435,8 @@ bool ensurePipeline() {
     isp_config.yuv_std = ISP_YUV_CONV_STD_BT601;
     isp_config.has_line_start_packet = kMode.line_sync_packets;
     isp_config.has_line_end_packet = kMode.line_sync_packets;
-    isp_config.h_res = kMode.frame_width;
-    isp_config.v_res = kMode.frame_height;
+    isp_config.h_res = frameWidth();
+    isp_config.v_res = frameHeight();
     isp_config.bayer_order = kMode.bayer_order;
     // User red/blue swap: the pipeline is built for every capture and stream
     // start (releaseUsedPipeline()), so a change applies from the next start.
@@ -1412,10 +1500,10 @@ bool ensurePipeline() {
     step = "white-balance statistics";
     esp_isp_awb_config_t awb = {};
     awb.sample_point = ISP_AWB_SAMPLE_POINT_BEFORE_CCM;
-    awb.window.top_left.x = kStatsLeft;
-    awb.window.top_left.y = kStatsTop;
-    awb.window.btm_right.x = kStatsLeft + kStatsWidth - 1;
-    awb.window.btm_right.y = kStatsTop + kStatsHeight - 1;
+    awb.window.top_left.x = statsLeft();
+    awb.window.top_left.y = statsTop();
+    awb.window.btm_right.x = statsLeft() + statsWidth() - 1;
+    awb.window.btm_right.y = statsTop() + statsHeight() - 1;
     awb.subwindow = awb.window;
     awb.white_patch.luminance.min = 30;
     awb.white_patch.luminance.max = 600;
@@ -1446,7 +1534,7 @@ bool ensurePipeline() {
     jpeg_encode_memory_alloc_cfg_t output = {};
     output.buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER;
     g_pipe.jpeg_out = static_cast<uint8_t*>(
-        jpeg_alloc_encoder_mem(kJpegOutputCapacity, &output, &g_pipe.jpeg_capacity));
+        jpeg_alloc_encoder_mem(jpegOutputCapacity(), &output, &g_pipe.jpeg_capacity));
     if (!g_pipe.jpeg_out || g_pipe.jpeg_capacity < kPanelMaxJpegBytes) {
       err = ESP_ERR_NO_MEM;
       break;
@@ -1470,8 +1558,8 @@ bool ensurePipeline() {
       "[LocalCam] Pipeline ready in %u ms: CSI %ux%u RAW%u %u lane @ %u Mbps, "
       "ISP RGB565, AE target %u, PSRAM free %u KB, internal free %u KB\n",
       static_cast<unsigned>(millis() - started_ms),
-      static_cast<unsigned>(kMode.frame_width),
-      static_cast<unsigned>(kMode.frame_height),
+      static_cast<unsigned>(frameWidth()),
+      static_cast<unsigned>(frameHeight()),
       static_cast<unsigned>(kMode.raw_bits),
       static_cast<unsigned>(kMode.data_lanes),
       static_cast<unsigned>(kMode.lane_bit_rate_mbps),
@@ -1517,6 +1605,10 @@ ErrorCode captureJpeg(uint32_t max_bytes, size_t* jpeg_bytes, CaptureStats* stat
   // updates the published state so the Bridge capability follows reality.
   if (!ensureSensor(true)) {
     *detail = static_cast<Detail>(g_detail.load());
+    return ErrorCode::SensorUnavailable;
+  }
+  if (!ensureSensorWindow()) {
+    *detail = Detail::SensorInitFailed;
     return ErrorCode::SensorUnavailable;
   }
   releaseUsedPipeline();
@@ -1674,7 +1766,7 @@ ErrorCode captureJpeg(uint32_t max_bytes, size_t* jpeg_bytes, CaptureStats* stat
       Serial.printf(
           "[LocalCam] No complete frame to keep: last transfer %u of %u bytes\n",
           static_cast<unsigned>(event.received),
-          static_cast<unsigned>(kFrameBytes));
+          static_cast<unsigned>(frameBytes()));
     }
     *detail = Detail::NoFrames;
     return ErrorCode::SensorUnavailable;
@@ -1697,12 +1789,12 @@ ErrorCode captureJpeg(uint32_t max_bytes, size_t* jpeg_bytes, CaptureStats* stat
         return ErrorCode::EncoderBusy;
       }
       jpeg_encode_cfg_t config = {};
-      config.width = kImageWidth;
-      config.height = kImageHeight;
+      config.width = imageWidthSent();
+      config.height = imageHeightSent();
       config.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
-      config.sub_sample = kJpegSubsampling;
+      config.sub_sample = jpegSubsampling();
       config.image_quality = quality;
-      err = jpeg_encoder_process(g_pipe.jpeg, &config, frame, kJpegInputBytes,
+      err = jpeg_encoder_process(g_pipe.jpeg, &config, frame, jpegInputBytes(),
                                  g_pipe.jpeg_out,
                                  static_cast<uint32_t>(g_pipe.jpeg_capacity), &size);
       if (err != ESP_OK) {
@@ -1916,12 +2008,12 @@ bool applyStreamSettings(StreamRun& run) {
   run.mode_generation = g_stream_mode_generation.load();
   StreamSettings settings;
   if (!local_camera_stream::resolveSettings(g_stream_mode.load(), currentStreamHints(),
-                                            kImageWidth, kImageHeight, &settings,
+                                            imageWidthSent(), imageHeightSent(), &settings,
                                             currentCustomMode())) {
     return false;
   }
   // The stream encodes the CSI frame directly: only the full image works.
-  if (settings.width != kImageWidth || settings.height != kImageHeight) return false;
+  if (settings.width != imageWidthSent() || settings.height != imageHeightSent()) return false;
   run.settings = settings;
   run.quality = settings.quality;
   run.stages.normal = ExposureLimits{
@@ -2379,7 +2471,7 @@ StreamEncode encodeStreamFrame(const uint8_t* input, uint32_t input_bytes, uint1
     config.width = width;
     config.height = height;
     config.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
-    config.sub_sample = kJpegSubsampling;
+    config.sub_sample = jpegSubsampling();
     config.image_quality = quality;
     err = jpeg_encoder_process(g_pipe.jpeg, &config, input, input_bytes, g_pipe.jpeg_out,
                                static_cast<uint32_t>(g_pipe.jpeg_capacity), size);
@@ -2490,7 +2582,7 @@ void streamCaptureFrame(StreamRun& run) {
     const uint32_t encode_started_ms = millis();
     // The sensor delivered the JPEG size in the wanted orientation: the
     // frozen CSI buffer is the encoder input as it is.
-    result = encodeStreamFrame(input, kJpegInputBytes, kImageWidth, kImageHeight, run.quality,
+    result = encodeStreamFrame(input, jpegInputBytes(), imageWidthSent(), imageHeightSent(), run.quality,
                                &size);
     encode_ms = millis() - encode_started_ms;
   }
@@ -2588,7 +2680,7 @@ uint32_t runStream() {
   const uint32_t frames_at_start = local_camera_upload::framesSentTotal();
 
   do {
-    if (!ensureSensor(true)) {
+    if (!ensureSensor(true) || !ensureSensorWindow()) {
       reason = StopReason::SensorUnavailable;
       break;
     }
@@ -3018,6 +3110,11 @@ void serviceStreamDisplay() {
 
 #endif  // defined(HOMETILES_LOCAL_CAMERA)
 
+#if !defined(HOMETILES_LOCAL_CAMERA)
+uint16_t statusWidth() { return 0; }
+uint16_t statusHeight() { return 0; }
+#endif
+
 }  // namespace
 
 bool supported() { return kSupported; }
@@ -3372,7 +3469,7 @@ void appendStatusJson(String& json) {
   json += ",\"mirror\":";
   json += g_mirror.load() ? "true" : "false";
   json += ",\"rotation\":";
-  json += String(static_cast<unsigned>(g_rotation.load()));
+  json += String(static_cast<unsigned>(userTurns()));
   json += ",\"rb_swap\":";
   json += g_rb_swap.load() ? "true" : "false";
   json += ",\"indicator\":";
@@ -3453,7 +3550,7 @@ uint8_t streamMode() { return g_stream_mode.load(); }
 // The picture Home Assistant shows: the JPEG as turned by the Bridge.
 uint16_t imageWidth() {
 #if defined(HOMETILES_LOCAL_CAMERA)
-  return static_cast<uint16_t>(statusRotate() != 0 ? kImageHeight : kImageWidth);
+  return static_cast<uint16_t>(statusRotate() != 0 ? statusHeight() : statusWidth());
 #else
   return 0;
 #endif
@@ -3461,7 +3558,7 @@ uint16_t imageWidth() {
 
 uint16_t imageHeight() {
 #if defined(HOMETILES_LOCAL_CAMERA)
-  return static_cast<uint16_t>(statusRotate() != 0 ? kImageWidth : kImageHeight);
+  return static_cast<uint16_t>(statusRotate() != 0 ? statusWidth() : statusHeight());
 #else
   return 0;
 #endif
@@ -3533,12 +3630,13 @@ bool setMirror(bool mirror) {
 #endif
 }
 
-uint8_t rotation() { return g_rotation.load(); }
+// The user rotation (the same in every layout).
+uint8_t rotation() { return userTurns(); }
 
 bool setRotation(uint8_t quarter_turns) {
 #if defined(HOMETILES_LOCAL_CAMERA)
   if (quarter_turns > kRotationMax) return false;
-  if (quarter_turns == g_rotation.load()) return true;
+  if (quarter_turns == userTurns()) return true;
   {
     Device::ScopedStorageWrite storage_write(BatchedNvsWrite::kNeedsDisplayGuard);
     BatchedNvsWrite::Preferences prefs;
@@ -3546,18 +3644,21 @@ bool setRotation(uint8_t quarter_turns) {
       Serial.println("[LocalCam] Could not open preferences");
       return false;
     }
-    const bool written = prefs.putUChar(kPrefsRotationKey, quarter_turns) > 0;
+    const bool written =
+        prefs.putUChar(kPrefsRotationKey, quarter_turns) > 0;
     if (!BatchedNvsWrite::finish(prefs) || !written) {
       Serial.println("[LocalCam] Could not save the rotation setting");
       return false;
     }
   }
   g_rotation.store(quarter_turns);
-  Serial.printf("[LocalCam] Rotation %u degrees, Bridge turn %u\n",
-                static_cast<unsigned>(quarter_turns) * 90u,
+  Serial.printf("[LocalCam] Rotation %u degrees, Bridge turn %u\n", static_cast<unsigned>(quarter_turns) * 90u,
                 static_cast<unsigned>(statusRotate()));
   // The quarter turn the Bridge applies may have changed; the sensor flips
-  // follow with the next frame (applyOrientation()).
+  // follow with the next frame (applyOrientation()). A running stream with
+  // the other window ends; the Bridge's keepalive starts it again with the
+  // new window (ensureSensorWindow()).
+  if (g_stream_running.load() && windowWanted() != windowTurned()) g_stream_wanted.store(false);
   publishStatus();
   return true;
 #else

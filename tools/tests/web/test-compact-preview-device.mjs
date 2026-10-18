@@ -56,7 +56,7 @@ class String:public std::string{public:using std::string::string;using std::stri
 constexpr int SCREEN_WIDTH=Device::kScreenWidth,SCREEN_HEIGHT=Device::kScreenHeight;
 ${radiusPolicyHost(root, 'Device::kGridCellH', 'Device::kGridGap')}
 #include "src/core/config/icon_glow.h"
-struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = true; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; const char* language = "en"; };
+struct TestConfig { int tile_radius = tile_radius::kMinimum; bool tile_borders = true; bool icon_discs = true; uint8_t icon_glow = icon_glow::kDefault; uint32_t default_tile_color = 0x1A1A1A; const char* language = "en"; };
 struct TestConfigManager { TestConfig config; const TestConfig& getConfig() const { return config; } } configManager;
 ${surfaceStyleHost(root)}
 ${strip(read('src/tiles/runtime/tile_renderer_fonts.h'))}
@@ -64,15 +64,22 @@ constexpr int TILES_PER_GRID=1,GRID_CELL_W=Device::kGridCellW,GRID_CELL_H=Device
 struct Tile{String title,icon_name;float col=0,row=0,span_w=1,span_h=0.5f;uint8_t sensor_value_font=0;int type=1;};
 ${read('src/tiles/config/tile_config.h').match(/static constexpr uint8_t SENSOR_VALUE_FONT_MAX = \d+;/)[0]}
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'),'apply_fractional_tile_geometry')}
+#include "src/types/climate/layout.h"
+#include "src/tiles/runtime/tile_press.h"
 ${strip(read('src/tiles/runtime/tile_icon_disc.h'))}
 ${strip(read('src/tiles/runtime/compact_sensor_layout.h'))}
 uint32_t tileDefaultBgColor(){return 0x1A1A1A;}
 constexpr int GRID_COLS=Device::kGridCols,GRID_ROWS=Device::kGridRows;
 constexpr int GRID_PAD=Device::kGridPad;
-${read('src/tiles/config/tile_config.h').match(/static constexpr int GRID_EXTRA_X =[^]*?GRID_PAD_BOTTOM = [^;]+;/)[0]}
+#include "src/tiles/config/grid_layout.h"
+${read('src/tiles/config/tile_config.h').match(/static const int& GRID_PAD_LEFT =[^]*?GRID_SHOWN_ROWS = [^;]+;/)[0]}
 #include "src/types/climate/layout.h"
 ${fn(read('src/fonts/ui_fonts.h'),'ui_font_for_size')}
 ${strip(read('src/ui/screensaver/screensaver_tile_shadow.h'))}
+${strip(read('src/ui/shared/tabular_digits.h'))}
+${strip(read('src/ui/shared/tabular_digits.cpp'))}
+${strip(read('src/types/clock/clock_face.h'))}
+${strip(read('src/types/text/text_options.h'))}
 ${strip(read('src/web/server/render/web_admin_styles.cpp').split('void appendAdminStyles(')[0])}
 static void line(std::ostream&o,const char*name,lv_obj_t*label,lv_obj_t*card,bool&first){
  if(!label)return;
@@ -91,7 +98,9 @@ int main(){
  // from the card corner, header.disc wide.
  const auto header=tile_icon_disc::corner_header(tile_layout::scale_480(24),tile_layout::scale_480(20),tile_layout::scale_480(-8),
    lv_font_get_glyph_width(FONT_MDI_ICONS,tile_icon_disc::kMdiReferenceGlyph,0),lv_font_get_line_height(FONT_MDI_ICONS));
- std::cout<<"DISC "<<tile_icon_disc::inset()<<" "<<header.disc<<"\n";
+ // Drawn smaller around its middle (shrink_corner_disc: the bar pill's
+ // distance to the card edge); the box stays.
+ std::cout<<"DISC "<<tile_icon_disc::inset()+tile_icon_disc::corner_shrink()<<" "<<header.disc-2*tile_icon_disc::corner_shrink()<<"\n";
  // The tile radius slider ends and what the preview gets for them; the card
  // and the disc take the radius with the half-height rule (radius()).
  // (unrounded, like emit_scaled).

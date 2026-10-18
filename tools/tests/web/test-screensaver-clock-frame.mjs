@@ -1,8 +1,8 @@
 // The screensaver clock sits on the image frame like on the panel's screen
 // (user 2026-10-02: the preview clock touched the top-right image edge while
-// the panel kept a margin). The grid around the frame is wider than the
-// screen (editor padding and gaps), so placing and scaling the clock on the
-// grid moved it up and right and made it slightly too large.
+// the panel kept a margin). Since the preview lost its bezel (2026-10-10) the
+// image frame is the whole screen inside the grid's border; the clock is
+// still placed and scaled on that frame.
 import {readAdminDeliverySource,readRepoFile,inlineScriptSafe} from '../../lib/admin-source.mjs';
 import {runDomHarness} from '../../lib/headless-dom.mjs';
 
@@ -30,7 +30,7 @@ ${inlineScriptSafe(readAdminDeliverySource())}
  grid.style.width='679px';grid.style.height='429px';
  const frame=grid.querySelector('.screensaver-grid-image-frame').getBoundingClientRect();
  const gridRect=grid.getBoundingClientRect();
- check(frame.width<gridRect.width-10,'The frame is narrower than the grid, so the test can tell them apart');
+ check(Math.abs(frame.width-grid.clientWidth)<0.6,'The image frame fills the whole screen (no bezel): '+frame.width+'/'+grid.clientWidth);
  const clock=document.getElementById('screensaverClock');
  const center=()=>{const r=clock.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};};
  screensaverDraft={screen_width:1280,screen_height:800,clock_x:1000,clock_y:0,show_time:true,show_date:true,show_weekday:false,

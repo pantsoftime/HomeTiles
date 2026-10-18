@@ -24,6 +24,7 @@
 
 #include "src/devices/common/p4_dsi_ui_ppa.h"
 #include "src/devices/common/p4_dsi_camera_presenter.h"
+#include "src/devices/common/p4_dsi_cpu_rotate.h"
 #include "src/devices/guition_jc8012p4a1/vendor/displays_config.h"
 #include "src/devices/guition_jc8012p4a1/vendor/gsl3680_touch.h"
 #include "src/devices/guition_jc8012p4a1/vendor/guition_sdmmc.h"
@@ -444,6 +445,19 @@ bool draw_landscape_area(int32_t x, int32_t y, int32_t w, int32_t h, const uint1
   }
   if (ppa_result == p4_dsi_ui_ppa::Result::Failed) return false;
 
+  // Small regions: rotate straight into the panel framebuffer
+  // (p4_dsi_cpu_rotate.h) instead of through the PSRAM rotate buffer.
+  if (g_panel_fb_ready) {
+    if (uint16_t* fb = panel_fb()) {
+      p4_dsi_cpu_rotate::rotate_into(fb, display_cfg.width, dst_x, dst_y, w, h,
+                                     data, (g_rotation & 0x02) != 0);
+      flush_framebuffer_rect(fb, dst_x, dst_y, dst_w, dst_h);
+      mark_dirty_rect(dst_x, dst_y, dst_w, dst_h);
+      g_camera_presenter.noteUiWrite(dst_x, dst_y, dst_w, dst_h, false);
+      return true;
+    }
+  }
+
   const size_t pixel_count = static_cast<size_t>(w) * static_cast<size_t>(h);
   if (!ensure_rotate_buffer(pixel_count)) {
     return false;
@@ -735,7 +749,6 @@ void ensure_storage_layout() {
   }
   LittleFS.mkdir("/_tile_grids");
   LittleFS.mkdir("/_tile_links");
-  LittleFS.mkdir("/icons");
 }
 
 }  // namespace
@@ -779,12 +792,17 @@ bool DeviceGuitionJC8012P4A1::ppaCooldownActive() {
 
 void DeviceGuitionJC8012P4A1::displayPushPixels(int32_t x, int32_t y, int32_t w, int32_t h,
                                          const uint16_t* data) {
+  // The upright layout: straight into the panel (the shared way).
+  if (g_camera_presenter.upright()) {
+    g_camera_presenter.drawUpright(x, y, w, h, data, g_rotation);
+    return;
+  }
   draw_landscape_area(x, y, w, h, data);
 }
 
 void DeviceGuitionJC8012P4A1::displayPushPixelsDMA(int32_t x, int32_t y, int32_t w, int32_t h,
                                             const uint16_t* data) {
-  draw_landscape_area(x, y, w, h, data);
+  displayPushPixels(x, y, w, h, data);
 }
 
 bool DeviceGuitionJC8012P4A1::displayTryFullFramePreview(
@@ -801,6 +819,29 @@ bool DeviceGuitionJC8012P4A1::displayTryFullFramePreview(
 
 void DeviceGuitionJC8012P4A1::displayEndFullFramePreview() {
   g_camera_presenter.end();
+}
+
+bool DeviceGuitionJC8012P4A1::displayFullFrameInfo(uint16_t& width, uint16_t& height,
+                                                   uint16_t& turn_cw) {
+  return g_panel_fb_ready &&
+         g_camera_presenter.fullFrameInfo(g_rotation, width, height, turn_cw);
+}
+
+bool DeviceGuitionJC8012P4A1::displayBeginFullFrames() {
+  return g_panel_fb_ready && g_camera_presenter.beginFullFrames();
+}
+
+uint16_t* DeviceGuitionJC8012P4A1::displayAcquireFullFrame(size_t& bytes) {
+  bytes = 0;
+  return g_panel_fb_ready ? g_camera_presenter.acquireFullFrame(bytes) : nullptr;
+}
+
+bool DeviceGuitionJC8012P4A1::displaySubmitFullFrame() {
+  return g_panel_fb_ready && g_camera_presenter.submitFullFrame();
+}
+
+void DeviceGuitionJC8012P4A1::displayEndFullFrames() {
+  if (g_panel_fb_ready) g_camera_presenter.endFullFrames();
 }
 
 void DeviceGuitionJC8012P4A1::displayWaitDMA() {
@@ -847,6 +888,11 @@ void DeviceGuitionJC8012P4A1::displayFillScreen(uint16_t color) {
 
 void DeviceGuitionJC8012P4A1::displaySetRotation(uint8_t rotation) {
   g_rotation = rotation & 0x03;
+}
+
+void DeviceGuitionJC8012P4A1::displaySetUpright(bool upright) {
+  // The UI and the camera popup's frames without the quarter turn.
+  g_camera_presenter.setUpright(upright);
 }
 
 void DeviceGuitionJC8012P4A1::setBrightness(uint8_t value) {
@@ -1161,13 +1207,11 @@ void DeviceGuitionJC8012P4A1::migrateStorageFromSD() {
 
   LittleFS.mkdir("/_tile_grids");
   LittleFS.mkdir("/_tile_links");
-  LittleFS.mkdir("/icons");
 
   if (initSDCard()) {
     Serial.println("[Storage] Migrating data from SD to LittleFS...");
     copy_sd_directory_to_littlefs("/_tile_grids");
     copy_sd_directory_to_littlefs("/_tile_links");
-    copy_sd_directory_to_littlefs("/icons");
     Serial.println("[Storage] Migration complete");
   } else {
     Serial.println("[Storage] No SD card, starting fresh");

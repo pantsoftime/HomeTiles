@@ -84,6 +84,9 @@ struct Command { std::string entity; float value; };
 static std::vector<Command> volumes, seeks;
 static void mqttPublishMediaVolume(const char* entity, float value) { volumes.push_back({entity, value}); }
 static void mqttPublishMediaSeek(const char* entity, float value) { seeks.push_back({entity, value}); }
+${fs.readFileSync(path.join(repoRoot, 'src/ui/shared/ui_theme.h'), 'utf8')}
+// The open popup's surface (popup_surface.h) without its LVGL color helpers.
+namespace popup_surface { inline ui_theme::SurfaceScope scope() { return ui_theme::SurfaceScope(ui_theme::kThemeSurface); } }
 ${productionStruct(header, 'MediaPopupInit')}
 ${productionStruct(popup, 'MediaPopupContext')}
 static MediaPopupContext* g_media_popup_ctx = nullptr;

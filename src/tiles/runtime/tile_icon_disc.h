@@ -5,6 +5,123 @@
 #include "src/core/config/icon_glow.h"
 #include "src/ui/shared/ui_surface_style.h"
 #include "src/ui/shared/tone_color.h"
+#include "src/types/climate/layout.h"
+#include "src/ui/shared/ui_theme.h"
+
+// The surface a tile card draws on (user 2026-10-10: "the tile decides"). A
+// tile in its own color follows that color's lightness - its text, icons and
+// circles take the dark theme's rules on a dark color and the light theme's on
+// a light one, in either theme - and a tinted tile in the light theme is
+// filled with its icon's color (kJewel: the dark theme's recipe, lighter;
+// tone_color::jewel_card).
+// tile_renderer::render_tile marks the card; every later color path opens a
+// ui_theme::SurfaceScope for it (scope()), so state updates draw like the
+// first render.
+namespace tile_surface {
+
+// kJewel: a tinted tile in the light theme while it is tinted; it draws with
+// ui_theme::kDarkTinted.
+enum : uint8_t { kNone = 0, kDark = 1, kLight = 2, kJewel = 3 };
+
+// Kept as a local style value in a state selector the card never takes. Every
+// tile card carries it (kNone too), so its scopes know their card.
+inline constexpr lv_style_selector_t kStore = LV_PART_MAIN | LV_STATE_USER_1 | LV_STATE_USER_4;
+
+inline bool marked(lv_obj_t* obj) {
+  lv_style_value_t value;
+  return obj && lv_obj_get_local_style_prop(obj, LV_STYLE_BG_OPA, &value, kStore) == LV_STYLE_RES_FOUND;
+}
+
+inline uint8_t get(lv_obj_t* card) {
+  lv_style_value_t value;
+  if (!card || lv_obj_get_local_style_prop(card, LV_STYLE_BG_OPA, &value, kStore) != LV_STYLE_RES_FOUND) return kNone;
+  return static_cast<uint8_t>(value.num);
+}
+
+inline void set(lv_obj_t* card, uint8_t surface) {
+  if (!card || (marked(card) && get(card) == surface)) return;
+  lv_obj_set_style_bg_opa(card, surface, kStore);
+}
+
+// The card `obj` sits in (or is): the first one carrying a surface.
+inline lv_obj_t* card_of(lv_obj_t* obj) {
+  for (int depth = 0; obj && depth < 5; ++depth, obj = lv_obj_get_parent(obj)) {
+    if (marked(obj)) return obj;
+  }
+  return nullptr;
+}
+
+// The surface marked on `obj` or the card it sits in.
+inline uint8_t find(lv_obj_t* obj) {
+  for (int depth = 0; obj && depth < 5; ++depth, obj = lv_obj_get_parent(obj)) {
+    const uint8_t surface = get(obj);
+    if (surface != kNone) return surface;
+  }
+  return kNone;
+}
+
+// The theme a surface draws with (ui_theme::g_surface): 0 dark, 1 light,
+// 2 dark for a tinted tile, -1 the theme.
+inline int8_t theme_of(uint8_t surface) {
+  if (surface == kJewel) return ui_theme::kDarkTintedSurface;
+  return surface == kLight ? 1 : surface == kDark ? 0 : -1;
+}
+
+
+// Opens the surface of `obj`'s card for the colors computed while it lives;
+// a card on the theme opens the theme explicitly, also inside a popup's
+// scope (a popup command updating its tile).
+inline ui_theme::SurfaceScope scope(lv_obj_t* obj) {
+  lv_obj_t* card = card_of(obj);
+  const int8_t theme = theme_of(card ? get(card) : find(obj));
+  return ui_theme::SurfaceScope(theme >= 0 ? theme : ui_theme::kThemeSurface, card);
+}
+
+// The rule of a card whose surface changes while it runs (render_tile): the
+// surface it shows without a tint (BORDER_OPA) and its flags (OUTLINE_OPA).
+// kFollowTint: filled (kJewel) while tinted. kNeutralIdle: without a tint
+// the neutral grey fill (a Media tile, tone_color::jewel_card of white).
+inline constexpr uint8_t kFollowTint = 1;
+inline constexpr uint8_t kNeutralIdle = 2;
+
+inline void set_rule(lv_obj_t* card, uint8_t base, uint8_t flags) {
+  if (!card) return;
+  lv_obj_set_style_border_opa(card, base, kStore);
+  lv_obj_set_style_outline_opa(card, flags, kStore);
+}
+
+inline bool rule_of(lv_obj_t* card, uint8_t& base, uint8_t& flags) {
+  lv_style_value_t b, f;
+  if (!card || lv_obj_get_local_style_prop(card, LV_STYLE_BORDER_OPA, &b, kStore) != LV_STYLE_RES_FOUND ||
+      lv_obj_get_local_style_prop(card, LV_STYLE_OUTLINE_OPA, &f, kStore) != LV_STYLE_RES_FOUND) {
+    return false;
+  }
+  base = static_cast<uint8_t>(b.num);
+  flags = static_cast<uint8_t>(f.num);
+  return true;
+}
+
+// The surface a card with a rule shows now.
+inline uint8_t wanted(uint8_t base, uint8_t flags, bool tinted) {
+  return (flags & kFollowTint) && tinted ? kJewel : base;
+}
+
+// The tint strength of a filled card (tile color "From icon" percent): its
+// card's and circle's chroma (tone_color::jewel_card, jewel_fill).
+inline void set_strength(lv_obj_t* card, uint8_t percent) {
+  if (card) lv_obj_set_style_shadow_opa(card, percent, kStore);
+}
+inline uint8_t strength(lv_obj_t* obj) {
+  for (int depth = 0; obj && depth < 5; ++depth, obj = lv_obj_get_parent(obj)) {
+    lv_style_value_t value;
+    if (lv_obj_get_local_style_prop(obj, LV_STYLE_SHADOW_OPA, &value, kStore) == LV_STYLE_RES_FOUND) {
+      return static_cast<uint8_t>(value.num);
+    }
+  }
+  return 0;
+}
+
+}  // namespace tile_surface
 
 // One translucent disc behind every tile icon. Half-height tiles hold the icon
 // in a disc that is concentric with the tile corner. Taller tiles keep their
@@ -24,6 +141,20 @@ inline int round_diameter() { return diameter() + inset(); }
 // Tile radius baseline minus the inset keeps the half-height disc concentric
 // with the tile corner; the shared radius style follows global radius changes.
 inline int radius_baseline() { return tile_layout::scale_480(22) - inset(); }
+// The corner circle keeps the same distance to the card edge as the bar
+// pill (climate_layout::kOuterInset, user 2026-10-07): it is drawn smaller
+// around its own middle by the difference, concentric with the tile corner;
+// its box, the icon and the labels beside it stay where they were.
+inline int corner_shrink() {
+  const int extra = climate_layout::kOuterInset - inset();
+  return extra > 0 ? extra : 0;
+}
+inline void shrink_corner_disc(lv_obj_t* disc) {
+  if (!disc || !corner_shrink()) return;
+  lv_obj_set_style_transform_width(disc, -corner_shrink(), 0);
+  lv_obj_set_style_transform_height(disc, -corner_shrink(), 0);
+  ui_surface_style::apply_radius(disc, radius_baseline() - corner_shrink(), 0);
+}
 // With glow, a colored icon tints its disc with its hue (tone_color.h: a
 // fixed lightness step above the tile); the global Circle strength
 // (icon_glow.h) sets the step of every disc, glowing and white. The tile
@@ -72,6 +203,15 @@ inline void mark_surface(lv_obj_t* obj) {
 inline bool is_control(lv_obj_t* obj) { return obj && lv_obj_get_user_data(obj) == &kControlTags[0]; }
 inline bool is_surface(lv_obj_t* obj) { return obj && lv_obj_get_user_data(obj) == &kControlTags[1]; }
 
+// A label drawn as a cut-out in its card's color (the Media play glyph on its
+// circle): tile_icon_source::refresh_discs gives it the card's current color
+// after every tint.
+inline constexpr char kCutoutTag[1] = {};
+inline void mark_cutout(lv_obj_t* label) {
+  if (label) lv_obj_set_user_data(label, const_cast<char*>(&kCutoutTag[0]));
+}
+inline bool is_cutout(lv_obj_t* obj) { return obj && lv_obj_get_user_data(obj) == &kCutoutTag[0]; }
+
 inline void set_tag(lv_obj_t* disc, Mode mode, bool glow) {
   lv_obj_set_user_data(
       disc, const_cast<char*>(&kTags[static_cast<uint8_t>(mode) * 2 + (glow ? 1 : 0)]));
@@ -104,28 +244,13 @@ inline uint32_t card_state_color(lv_obj_t* card, bool pressed) {
   return lv_color_to_u32(lv_obj_get_style_bg_color(card, LV_PART_MAIN)) & 0xFFFFFF;
 }
 
-// A pressed tile fades to its lighter pressed color with the theme's press
-// transition. Circles and resting controls take the card's pressed state
-// (follow_card_state) with the same timing (LV_THEME_DEFAULT_TRANSITION_TIME,
-// back after the theme's 70 ms delay), so they keep their step above the card
-// during the whole fade; an instant recolor ran ahead of the card and flashed.
-inline void fade_with_card(lv_obj_t* obj) {
-  if (!obj) return;
-  static const lv_style_prop_t kProps[] = {LV_STYLE_BG_COLOR, static_cast<lv_style_prop_t>(0)};
-  static lv_style_transition_dsc_t down, back;
-  static bool ready = false;
-  if (!ready) {
-    lv_style_transition_dsc_init(&down, kProps, lv_anim_path_linear, LV_THEME_DEFAULT_TRANSITION_TIME, 0, nullptr);
-    lv_style_transition_dsc_init(&back, kProps, lv_anim_path_linear, LV_THEME_DEFAULT_TRANSITION_TIME, 70, nullptr);
-    ready = true;
-  }
-  lv_style_value_t value;
-  if (lv_obj_get_local_style_prop(obj, LV_STYLE_TRANSITION, &value, LV_PART_MAIN | LV_STATE_PRESSED) !=
-      LV_STYLE_RES_FOUND) {
-    lv_obj_set_style_transition(obj, &back, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_transition(obj, &down, LV_PART_MAIN | LV_STATE_PRESSED);
-  }
-}
+// A pressed tile takes its lighter pressed color the way its card does
+// (tile_press.h: at once, back after the theme's delay, at once when a
+// swipe took the press over). Circles and resting controls take the card's
+// pressed state (follow_card_state) with the very same transitions, so they
+// keep their step above the card the whole time; a recolor apart from the
+// card flashed.
+inline void fade_with_card(lv_obj_t* obj) { tile_press::apply(obj); }
 
 // Sets the resting and pressed fill of a circle or resting control; only a
 // change touches the styles.
@@ -212,34 +337,80 @@ inline lv_obj_t* icon_of(lv_obj_t* disc) {
 }
 
 // Called at the end of apply_fill(), which every icon color change reaches:
-// tile_icon_source registers it so the "Tint tile" option of the icon color
-// follows the icon. Stays null in host tests.
+// tile_icon_source registers it so "Fill" follows the icon. Stays null in
+// host tests.
 inline void (*g_icon_color_hook)(lv_obj_t* disc) = nullptr;
 
-// tile_icon_source keeps a card's tile color "From icon" strength (BG_OPA)
-// in this unused selector, and "From cover" (Media) its permission (BG_OPA)
-// and the cover color (BG_COLOR) in the next.
+// tile_icon_source keeps a card's "Fill" strength (BG_OPA) in this unused
+// selector, and "From cover" (Media) its icon permission (BORDER_OPA) and the
+// cover color (BG_COLOR) in the next.
 inline constexpr lv_style_selector_t kCardTintStore = LV_PART_MAIN | LV_STATE_USER_4;
 inline constexpr lv_style_selector_t kCardCoverStore = LV_PART_MAIN | LV_STATE_USER_3;
 
-// Whether a card shows the tile color "From icon" (or "From cover"): it then
-// already is the card its circle belongs to.
-inline bool card_follows_icon(lv_obj_t* card) {
-  for (int depth = 0; card && depth < 3; ++depth, card = lv_obj_get_parent(card)) {
+// The fill the matching rule row decides ("Fuellen" per row, user
+// 2026-10-11; tile_icon_colors RowFill), kept beside the "Fill" strength:
+// none (the row follows "Ausfuellen"), off or on. A card whose rules were
+// read keeps the value, also none, so a fill a row gave is cleared again.
+enum : uint8_t { kRuleFillNone = 0, kRuleFillOff = 1, kRuleFillOn = 2 };
+// The strength a row fills a tile without "Ausfuellen" at
+// (tile_icon_colors::kTintDefault, checked in tile_icon_source.cpp).
+inline constexpr uint8_t kRuleFillStrength = 20;
+
+inline bool has_rule_fill(lv_obj_t* card, uint8_t& value) {
+  lv_style_value_t stored;
+  if (!card || lv_obj_get_local_style_prop(card, LV_STYLE_BORDER_OPA, &stored, kCardTintStore) != LV_STYLE_RES_FOUND) {
+    return false;
+  }
+  value = static_cast<uint8_t>(stored.num);
+  return true;
+}
+
+inline uint8_t rule_fill(lv_obj_t* card) {
+  uint8_t value = kRuleFillNone;
+  return has_rule_fill(card, value) ? value : kRuleFillNone;
+}
+
+// Stores the rule row's fill; true when it changed.
+inline bool set_rule_fill(lv_obj_t* card, uint8_t value) {
+  uint8_t current = kRuleFillNone;
+  if (!card || (has_rule_fill(card, current) && current == value)) return false;
+  lv_obj_set_style_border_opa(card, value, kCardTintStore);
+  return true;
+}
+
+// The card `obj` belongs to that carries "Fill" or a rule row's fill (`obj`
+// or up to two of its parents), else null.
+inline lv_obj_t* fill_card_of(lv_obj_t* obj) {
+  for (int depth = 0; obj && depth < 3; ++depth, obj = lv_obj_get_parent(obj)) {
     lv_style_value_t value;
-    if (lv_obj_get_local_style_prop(card, LV_STYLE_BG_OPA, &value, kCardTintStore) == LV_STYLE_RES_FOUND) {
-      return value.num > 0;
-    }
-    lv_style_value_t cover;
-    if (lv_obj_get_local_style_prop(card, LV_STYLE_BG_OPA, &value, kCardCoverStore) == LV_STYLE_RES_FOUND &&
-        value.num > 0 &&
-        lv_obj_get_local_style_prop(card, LV_STYLE_BG_COLOR, &cover, kCardCoverStore) == LV_STYLE_RES_FOUND &&
-        icon_color_tints(lv_color_to_u32(cover.color) & 0xFFFFFF)) {
-      return true;
+    uint8_t rule = kRuleFillNone;
+    if (lv_obj_get_local_style_prop(obj, LV_STYLE_BG_OPA, &value, kCardTintStore) == LV_STYLE_RES_FOUND ||
+        has_rule_fill(obj, rule)) {
+      return obj;
     }
   }
-  return false;
+  return nullptr;
 }
+
+// The fill strength a card shows now: the matching rule row decides when it
+// has its own mark (on: "Fill" or the default strength, off: none), else
+// "Ausfuellen" (0 without it).
+inline uint8_t shown_fill(lv_obj_t* card) {
+  if (!card) return 0;
+  lv_style_value_t value;
+  const uint8_t marker =
+      lv_obj_get_local_style_prop(card, LV_STYLE_BG_OPA, &value, kCardTintStore) == LV_STYLE_RES_FOUND
+          ? static_cast<uint8_t>(value.num)
+          : 0;
+  const uint8_t rule = rule_fill(card);
+  if (rule == kRuleFillOff) return 0;
+  if (rule == kRuleFillOn) return marker ? marker : kRuleFillStrength;
+  return marker;
+}
+
+// Whether a card is filled now ("Fill" or a rule row): it then already is
+// the card its circle belongs to.
+inline bool card_follows_icon(lv_obj_t* card) { return shown_fill(fill_card_of(card)) > 0; }
 
 // "Circle in icon color" always shows the circle of the tile color "From
 // icon" (user 2026-10-01): card, circle and icon stay one family of colors.
@@ -254,18 +425,64 @@ inline uint32_t circle_card(lv_obj_t* host, uint32_t card, uint32_t rgb, bool ti
   return tone_color::g_from_icon_card(rgb, pressed, 0);
 }
 
+// The fill of a tile's circle and controls over `card` (at rest or pressed):
+// in the light theme the shown icon color over the card itself
+// (tone_color::tile_fill, lab 2026-10-10, like Home Assistant; a colored icon
+// without "Circle in icon color" takes the neutral icon grey), else the steps
+// of the "From icon" circle (circle_card, tone_color::fill). See-through
+// screensaver tiles keep the steps' veil.
+inline tone_color::Fill tile_fill(lv_obj_t* host, uint32_t card, uint32_t rgb, bool tinted, bool pressed,
+                                  bool see_through_card, uint8_t percent) {
+  // A filled tile in the light theme: one step above its card in the icon's
+  // hue (tone_color::jewel_fill).
+  if (tinted && !see_through_card && tile_surface::find(host) == tile_surface::kJewel) {
+    return tone_color::jewel_fill(card, rgb, percent, tile_surface::strength(host));
+  }
+  if (ui_theme::light() && !see_through_card) {
+    const uint32_t shown = tone_color::readable_icon(rgb);
+    const uint32_t over = tone_color::circle_source(tinted || !icon_color_tints(shown) ? shown : ui_theme::icon());
+    return tone_color::tile_fill(card, over, tinted, percent);
+  }
+  return tone_color::fill(circle_card(host, card, rgb, tinted, pressed, see_through_card), rgb, tinted, percent,
+                          see_through_card);
+}
+
+// The color an icon was given, read on the surface that is open: a role of
+// the theme (the icon grey, an off grey, set by an update outside the card's
+// surface) is that role of this surface (user 2026-10-10: a dark icon on a
+// grey tile). Other colors stay.
+inline uint32_t surface_icon_color(lv_obj_t* icon) {
+  const uint32_t rgb = icon ? icon_color(icon) : ui_theme::text();
+  return ui_theme::map_role(rgb, ui_theme::roles_of(ui_theme::kThemeSurface), ui_theme::roles(), true);
+}
+
 // The fill of a disc for the card behind it (at rest or pressed) and its
-// icon's color (tone_color::fill, circle_card); `card` and
-// `see_through_card` report that card.
+// icon's color (tile_fill); `card` and `see_through_card` report that card.
 inline tone_color::Fill disc_fill(lv_obj_t* disc, bool pressed, uint32_t& card, bool& see_through_card) {
   lv_obj_t* icon = icon_of(disc);
-  const uint32_t rgb = icon ? icon_color(icon) : 0xFFFFFF;
+  const uint32_t rgb = surface_icon_color(icon);
   const bool tinted = glow_of(disc) && icon_color_tints(rgb);
   lv_obj_t* host = card_of(disc);
   card = card_state_color(host, pressed);
   see_through_card = see_through(host);
-  return tone_color::fill(circle_card(host, card, rgb, tinted, pressed, see_through_card), rgb, tinted,
-                          ui_surface_style::icon_glow_percent(), see_through_card);
+  return tile_fill(host, card, rgb, tinted, pressed, see_through_card, ui_surface_style::icon_glow_percent());
+}
+
+// The cut-outs of a card take its current resting color (mark_cutout).
+inline void refresh_cutouts(lv_obj_t* card) {
+  if (!card) return;
+  const lv_color_t color = lv_color_hex(card_state_color(card, false));
+  const uint32_t count = lv_obj_get_child_count(card);
+  for (uint32_t i = 0; i < count; ++i) {
+    lv_obj_t* child = lv_obj_get_child(card, static_cast<int32_t>(i));
+    const uint32_t inner = lv_obj_get_child_count(child);
+    for (uint32_t j = 0; j < inner; ++j) {
+      lv_obj_t* label = lv_obj_get_child(child, static_cast<int32_t>(j));
+      if (is_cutout(label) && !lv_color_eq(lv_obj_get_style_text_color(label, LV_PART_MAIN), color)) {
+        lv_obj_set_style_text_color(label, color, 0);
+      }
+    }
+  }
 }
 
 // Color and opacity of a disc from its mode, glow option, the card (at rest
@@ -274,9 +491,11 @@ inline tone_color::Fill disc_fill(lv_obj_t* disc, bool pressed, uint32_t& card, 
 // discs stay transparent. The icon is shown readable (show_readable).
 inline void apply_fill(lv_obj_t* disc) {
   if (!is_disc(disc)) return;
+  // The circle and its icon follow the card's surface (tile_surface, tile_icon_disc.h).
+  const ui_theme::SurfaceScope surface = tile_surface::scope(disc);
   const Mode mode = mode_of(disc);
   lv_obj_t* icon = icon_of(disc);
-  const uint32_t rgb = icon ? icon_color(icon) : 0xFFFFFF;
+  const uint32_t rgb = surface_icon_color(icon);
   uint32_t card = 0, card_pressed = 0;
   bool see_through_card = false;
   const tone_color::Fill fill = disc_fill(disc, false, card, see_through_card);
@@ -381,7 +600,7 @@ inline void release_icon_color(lv_obj_t* icon) {
   lv_color_t forced;
   if (!forced_color(icon, forced)) return;
   lv_style_value_t value;
-  lv_color_t requested = lv_color_white();
+  lv_color_t requested = lv_color_hex(ui_theme::text());
   if (lv_obj_get_local_style_prop(icon, LV_STYLE_TEXT_COLOR, &value, kIconRequested) == LV_STYLE_RES_FOUND) {
     requested = value.color;
   }
@@ -412,7 +631,7 @@ inline lv_obj_t* create(lv_obj_t* card, Shape shape) {
   // Both shapes follow the global radius with the half-height rule. The shape
   // decides the placement (corner or behind the icon) and the diameter.
   ui_surface_style::apply_radius(disc, radius_baseline(), 0);
-  lv_obj_set_style_bg_color(disc, lv_color_white(), 0);
+  lv_obj_set_style_bg_color(disc, lv_color_hex(ui_theme::icon()), 0);
   // New discs follow the global option until the tile's own mode is applied.
   ui_surface_style::apply_icon_disc(disc, false, true);
   fade_with_card(disc);
@@ -433,18 +652,6 @@ inline void apply_tile_options(lv_obj_t* card, uint8_t mode, bool glow) {
     follow_card_states(card);
     set_tag(child, disc_mode, glow);
     apply_fill(child);
-    // The tile border takes a hint of a glowing icon's hue when the tile is
-    // built, only on a card in the tile color "From icon": a Global or
-    // Custom card keeps the neutral hairline (user 2026-10-01). Icon color
-    // changes do not touch it: a border change redraws the whole tile and
-    // any popup above it, which made a dragged Light color stutter.
-    lv_obj_t* icon = icon_of(child);
-    const uint32_t rgb = icon ? icon_color(icon) : 0xFFFFFF;
-    if (glow && disc_mode != Mode::Off && icon_color_tints(rgb) && card_follows_icon(card)) {
-      ui_surface_style::set_tile_border_tint(card, lv_color_hex(rgb));
-    } else {
-      ui_surface_style::clear_tile_border_tint(card);
-    }
   }
 }
 
@@ -468,6 +675,7 @@ inline void place_in_corner(lv_obj_t* card, lv_obj_t* disc) {
   lv_obj_align(disc, LV_ALIGN_TOP_LEFT,
                tile_icon_disc::inset() - lv_obj_get_style_space_left(card, LV_PART_MAIN),
                tile_icon_disc::inset() - lv_obj_get_style_space_top(card, LV_PART_MAIN));
+  shrink_corner_disc(disc);
 }
 
 // Offset that moves a box of `size` so its center matches a box of
@@ -495,6 +703,35 @@ inline int header_diameter(int icon_width) {
   const int around_icon =
       icon_width + 2 * (tile_layout::scale_480(20) + tile_layout::scale_480(-8) - inset());
   return around_icon > diameter() ? around_icon : diameter();
+}
+
+// An icon over its title (Folder, Settings, Back, Scene, Camera, the Switch
+// icon button): the disc, a gap of 30 % of the disc and the title's capitals
+// are one group in the card's middle; descenders hang below it (user
+// 2026-10-12: the title sat high and close under the icon, the gap 6 to
+// 20 px by the panel: fixed offsets of -20 / +35 while the disc follows the
+// cell height). The offsets from the card's middle (LV_ALIGN_CENTER) of the
+// icon (the disc's middle) and of a one-line title. The preview reads them as
+// --icon-title-icon-dy / --icon-title-title-dy (web_admin_styles.cpp).
+struct IconTitleOffsets {
+  int icon = 0;
+  int title = 0;
+};
+inline IconTitleOffsets icon_title_offsets(const lv_font_t* icon_font, const lv_font_t* title_font) {
+  IconTitleOffsets out;
+  if (!icon_font || !title_font) return out;
+  const int disc = header_diameter(lv_font_get_glyph_width(icon_font, kMdiReferenceGlyph, 0));
+  const int gap = (disc * 3 + 5) / 10;
+  lv_font_glyph_dsc_t capital{};
+  const int caps = lv_font_get_glyph_dsc(title_font, &capital, 'H', 0) ? capital.box_h : 0;
+  const int group = disc + gap + caps;
+  const int top = -(group / 2);
+  out.icon = top + disc / 2;
+  // The title's baseline at the group's bottom: its label middle lies half
+  // a line above the baseline plus the font's base line.
+  const int line = lv_font_get_line_height(title_font);
+  out.title = top + group - line / 2 + title_font->base_line;
+  return out;
 }
 
 // Taller tiles with the icon in the top-left corner place the disc like the
@@ -574,6 +811,7 @@ inline lv_obj_t* add_round(lv_obj_t* card, lv_obj_t* icon) {
     const CornerHeader header = corner_header(pad_top, pad_left, icon_y, icon_size.x, icon_size.y);
     lv_obj_set_size(disc, header.disc, header.disc);
     lv_obj_align(disc, LV_ALIGN_TOP_LEFT, inset() - pad_left, inset() - pad_top);
+    shrink_corner_disc(disc);
     if (header.shift != 0) {
       const int header_bottom = icon_y + icon_size.y;
       const uint32_t count = lv_obj_get_child_count(card);

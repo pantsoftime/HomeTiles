@@ -35,7 +35,7 @@ assert.match(fn(screensaver, 'remember_shown_grid'), /st->built_opacity = screen
 
 // Web Admin: the slider sits in the screensaver footer, not in the tile settings.
 const html = read('src/web/server/render/web_admin_html.cpp');
-assert.match(html, /<input id=\\"screensaverTileOpacity\\" type=\\"range\\" min=\\"0\\" max=\\"255\\" step=\\"1\\" value=\\""/);
+assert.match(html, /<span class=\\"screensaver-opacity-control\\"><input id=\\"screensaverTileOpacity\\" type=\\"range\\" "\s*"min=\\"0\\" max=\\"255\\" step=\\"1\\" value=\\""/);
 assert.doesNotMatch(html, /screensaver_tile_opacity|has-opacity/);
 assert.match(html, /String\(screensaverConfig\.get\(\)\.tile_opacity \* 100\.0f \/ 255\.0f, 2\)/);
 for (const file of ['autosave', 'clipboard', 'drafts', 'editor', 'grid-preview', 'live-preview', 'snapshots', 'type-selection']) {
@@ -54,9 +54,12 @@ const i18n = read('src/core/i18n/i18n.cpp');
 for (const label of ['"Kachel-Deckkraft",', '"Tile opacity",', '"Opacité des tuiles",']) assert.ok(i18n.includes(label), label);
 console.log('Screensaver tile opacity: one global value, taken over from the tiles, used by panel and previews');
 
-// The footer (user 2026-10-02): checkboxes in one column, the sliders with
-// aligned labels and values in the next.
-assert.match(html, /<div class="folder-footer-options screensaver-tile-options">/);
+// The screensaver's Global tab (user 2026-10-11: Tile | Slideshow | Global):
+// borders, shadow, the opacity in one row and the design, in the tile page's
+// Global style; nothing stays under the preview but its hint.
+assert.ok(html.includes('html += "<div class=\\"panel-options\\"><section class=\\"global-settings-panel\\"><h3>";'));
+assert.ok(html.includes('<div class=\\"global-settings-field screensaver-opacity-field\\"><label for=\\"screensaverTileOpacity\\">'));
+assert.doesNotMatch(html, /screensaver-tile-options/);
 const css = read('src/web/assets/admin.css');
-assert.match(css, /\.folder-footer-options\.screensaver-tile-options \{\n\s*display:grid;\n\s*grid-template-columns:max-content max-content 120px max-content;/);
-assert.match(css, /\.screensaver-tile-options > \.tile-radius-control \{ display:contents; \}/);
+assert.ok(css.includes('.screensaver-opacity-field input[type="range"] { flex:1 1 auto;'));
+assert.doesNotMatch(css, /screensaver-tile-options/);

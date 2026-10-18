@@ -37,7 +37,8 @@ for (const size of [20, 24, 32, 40]) {
   assert.match(css, new RegExp(`\\.tile\\.text \\.tile-text\\.sensor-value-size-${size} \\{ font-size:var\\(--fs${size}, \\d+px\\); line-height:var\\(--lh${size}`));
 }
 assert.match(styles, /emit_right_header\("text-header", tile_layout::scale_480\(16\), tile_layout::scale_480\(18\)\);/);
-assert.match(readRepoFile('src/types/text/renderer.cpp'), /lv_obj_set_style_pad_hor\(card, tile_layout::scale_480\(18\), 0\);\s*lv_obj_set_style_pad_ver\(card, tile_layout::scale_480\(16\), 0\);/);
+// A half-height Text tile pads less above and below (text_options.h).
+assert.match(readRepoFile('src/types/text/renderer.cpp'), /lv_obj_set_style_pad_hor\(card, tile_layout::scale_480\(18\), 0\);\s*lv_obj_set_style_pad_ver\(card, tile_layout::scale_480\(compact \? text_tile::kCompactPadV480 : 16\), 0\);/);
 
 // Screensaver tile shadow: a box shadow from the shared constants; the old
 // drop-shadow filter also shadowed the text, which looked bold.

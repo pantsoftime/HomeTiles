@@ -1,4 +1,5 @@
 #include "src/ui/popups/popup_shell.h"
+#include "src/ui/popups/popup_surface.h"
 #include "src/ui/popups/popup_nav_style.h"
 #include "src/ui/popups/popup_open.h"
 #include "src/types/value/value_control.h"
@@ -35,6 +36,7 @@
 #include <string.h>
 #include <time.h>
 #include <vector>
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -428,7 +430,7 @@ static void apply_popup_icon_color(SensorPopupContext* ctx, bool known, const ch
 static void apply_editable_icon_color(SensorPopupContext* ctx, const EditableValue& value) {
   const bool known = value.valid && value.has_state && value.available && value.state != "unknown";
   apply_popup_icon_color(ctx, known, value.state.c_str(), editable_display_value(value).c_str(),
-                         lv_color_white());
+                         lv_color_hex(ui_theme::text()));
 }
 
 static void update_value_label(SensorPopupContext* ctx, const String& value, const String& unit) {
@@ -439,7 +441,7 @@ static void update_value_label(SensorPopupContext* ctx, const String& value, con
   set_label_text_if_changed(ctx->value_label, display.c_str());
   if (!ctx->binary_mode && !ctx->editable) {
     apply_popup_icon_color(ctx, popup_icon_state_known(value), value.c_str(), nullptr,
-                           lv_color_white());
+                           lv_color_hex(ui_theme::text()));
   }
   String display_unit = unit;
   display_unit.trim();
@@ -478,9 +480,9 @@ static String sensor_value_display(const String& value, const String& unit,
 static void style_range_button(SensorPopupContext* ctx, lv_obj_t* btn, bool active) {
   if (!ctx || !btn) return;
   const lv_color_t popup =
-      ctx->card ? lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN) : lv_color_hex(0x2A2A2A);
+      ctx->card ? lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN) : lv_color_hex(ui_theme::popup_card());
   const lv_color_t icon =
-      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_white();
+      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_hex(ui_theme::text());
   lv_obj_t* label = lv_obj_get_child(btn, 0);
   if (label) {
     lv_obj_set_style_text_font(label, popup_layout::font24(), 0);
@@ -501,6 +503,7 @@ static void update_range_buttons(SensorPopupContext* ctx) {
 // While open, the popup follows its tile's current background (a rules tint
 // that changes with the entity state); tile_icon_source calls this.
 void sensor_popup_follow_tile_color(uint32_t color) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   SensorPopupContext* ctx = g_sensor_popup_ctx;
   if (!ctx || !ctx->card || lv_obj_has_flag(ctx->card, LV_OBJ_FLAG_HIDDEN) || ctx->bg_color == color) return;
   ctx->bg_color = color;
@@ -544,7 +547,7 @@ static bool extract_numeric(JsonVariant v, float& out) {
 static void apply_sensor_header(SensorPopupContext* ctx, const SensorPopupInit& init) {
   if (!ctx) return;
   if (ctx->card) {
-    uint32_t color = init.bg_color ? init.bg_color : 0x2A2A2A;
+    uint32_t color = init.bg_color ? init.bg_color : ui_theme::popup_card();
     lv_obj_set_style_bg_color(ctx->card, lv_color_hex(color), 0);
   }
   if (ctx->title_label) {
@@ -571,7 +574,7 @@ static void apply_sensor_header(SensorPopupContext* ctx, const SensorPopupInit& 
   ctx->forced_icon = init.forced_icon;
   ctx->forced_icon_color = init.forced_icon_color;
   if (ctx->icon_label) {
-    lv_obj_set_style_text_color(ctx->icon_label, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(ui_theme::text()), 0);
   }
   popup_layout::alignHeader(ctx->card, ctx->title_label, ctx->icon_label);
 }
@@ -1228,6 +1231,7 @@ static String format_binary_activity_time(uint64_t epoch_seconds,
 }
 
 static void on_binary_timeline_draw(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(event) != LV_EVENT_DRAW_MAIN) return;
   SensorPopupContext* ctx = static_cast<SensorPopupContext*>(
       lv_event_get_user_data(event));
@@ -1481,6 +1485,7 @@ static void refresh_binary_activity_rows(SensorPopupContext* ctx,
 }
 
 static void on_binary_activity_scroll(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(event) != LV_EVENT_SCROLL) return;
   SensorPopupContext* ctx = static_cast<SensorPopupContext*>(
       lv_event_get_user_data(event));
@@ -1750,7 +1755,7 @@ static void apply_sensor_header_value(SensorPopupContext* ctx,
       sensor_value_display(init.value, init.unit, init.decimals,
                            init.state_history_mode).c_str());
   apply_popup_icon_color(ctx, popup_icon_state_known(init.value), init.value.c_str(), nullptr,
-                         lv_color_white());
+                         lv_color_hex(ui_theme::text()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1841,6 +1846,7 @@ static void invalidate_readout_cursor(SensorPopupContext* ctx) {
 // Drawn after the graph's children, so the cursor needs no objects that move
 // or change layout while dragging.
 static void on_readout_cursor_draw(lv_event_t* event) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   auto* ctx = static_cast<SensorPopupContext*>(lv_event_get_user_data(event));
   auto* target = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
   if (!ctx || !target || readout_target(ctx) != target) return;
@@ -1853,7 +1859,7 @@ static void on_readout_cursor_draw(lv_event_t* event) {
   lv_draw_rect_dsc_t line;
   lv_draw_rect_dsc_init(&line);
   line.base.layer = layer;
-  line.bg_color = lv_color_white();
+  line.bg_color = lv_color_hex(ui_theme::text());
   line.bg_opa = LV_OPA_COVER;
   line.radius = 0;
   const int32_t line_x = x - kReadoutLineWidth / 2;
@@ -1865,7 +1871,7 @@ static void on_readout_cursor_draw(lv_event_t* event) {
   lv_draw_rect_dsc_t dot;
   lv_draw_rect_dsc_init(&dot);
   dot.base.layer = layer;
-  dot.bg_color = lv_color_white();
+  dot.bg_color = lv_color_hex(ui_theme::text());
   dot.bg_opa = LV_OPA_COVER;
   dot.radius = LV_RADIUS_CIRCLE;
   dot.border_color = lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN);
@@ -2287,7 +2293,7 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
       popup_layout::kBodyHeight - activity_rows_y);
 
   ctx->binary_history_title = lv_label_create(body);
-  set_label_style(ctx->binary_history_title, lv_color_white(),
+  set_label_style(ctx->binary_history_title, lv_color_hex(ui_theme::text()),
                   popup_layout::font24());
   lv_obj_set_pos(ctx->binary_history_title, 0, 0);
 
@@ -2310,7 +2316,7 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
   attach_timeline_readout(ctx);
 
   ctx->binary_history_status = lv_label_create(body);
-  set_label_style(ctx->binary_history_status, lv_color_white(),
+  set_label_style(ctx->binary_history_status, lv_color_hex(ui_theme::text()),
                   popup_layout::font20());
   lv_obj_set_style_text_opa(ctx->binary_history_status, LV_OPA_70, 0);
   lv_obj_set_width(ctx->binary_history_status, LV_PCT(100));
@@ -2323,7 +2329,7 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
   for (int index = 0; index < kTimeAxisMarkerCount; ++index) {
     lv_obj_t* label = lv_label_create(body);
     ctx->binary_time_labels[index] = label;
-    set_label_style(label, lv_color_white(), popup_layout::font20());
+    set_label_style(label, lv_color_hex(ui_theme::text()), popup_layout::font20());
     lv_label_set_text(label, "");
     lv_obj_set_style_text_opa(label, LV_OPA_COVER, 0);
     lv_obj_set_y(label, axis_y);
@@ -2331,12 +2337,12 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
   }
 
   ctx->binary_activity_title = lv_label_create(body);
-  set_label_style(ctx->binary_activity_title, lv_color_white(),
+  set_label_style(ctx->binary_activity_title, lv_color_hex(ui_theme::text()),
                   popup_layout::font24());
   lv_obj_set_pos(ctx->binary_activity_title, 0, activity_title_y);
 
   ctx->binary_activity_date = lv_label_create(body);
-  set_label_style(ctx->binary_activity_date, lv_color_white(),
+  set_label_style(ctx->binary_activity_date, lv_color_hex(ui_theme::text()),
                   popup_layout::font20());
   lv_obj_set_pos(ctx->binary_activity_date, 0, activity_date_y);
   lv_obj_set_width(ctx->binary_activity_date, LV_PCT(100));
@@ -2344,7 +2350,7 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
   lv_obj_add_flag(ctx->binary_activity_date, LV_OBJ_FLAG_HIDDEN);
 
   ctx->binary_activity_status = lv_label_create(body);
-  set_label_style(ctx->binary_activity_status, lv_color_white(),
+  set_label_style(ctx->binary_activity_status, lv_color_hex(ui_theme::text()),
                   popup_layout::font20());
   lv_obj_set_style_text_opa(ctx->binary_activity_status, LV_OPA_60, 0);
   lv_obj_set_width(ctx->binary_activity_status, LV_PCT(100));
@@ -2421,14 +2427,14 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
 
     lv_obj_t* state_label = lv_label_create(row);
     ctx->binary_activity_states[index] = state_label;
-    set_label_style(state_label, lv_color_white(), popup_layout::font20());
+    set_label_style(state_label, lv_color_hex(ui_theme::text()), popup_layout::font20());
     lv_label_set_long_mode(state_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(state_label, LV_PCT(50));
     lv_obj_align(state_label, LV_ALIGN_LEFT_MID, state_x, 0);
 
     lv_obj_t* time_label = lv_label_create(row);
     ctx->binary_activity_times[index] = time_label;
-    set_label_style(time_label, lv_color_white(), popup_layout::font20());
+    set_label_style(time_label, lv_color_hex(ui_theme::text()), popup_layout::font20());
     lv_obj_set_style_text_opa(time_label, LV_OPA_60, 0);
     lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_width(time_label, LV_PCT(42));
@@ -2441,7 +2447,7 @@ static void ensure_binary_view(SensorPopupContext* ctx) {
     lv_obj_set_size(divider, LV_PCT(94), 1);
     lv_obj_align(divider, LV_ALIGN_BOTTOM_RIGHT,
                  -popup_layout::scale(12), 0);
-    lv_obj_set_style_bg_color(divider, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(divider, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(divider, LV_OPA_10, 0);
     lv_obj_clear_flag(divider, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
@@ -3277,6 +3283,7 @@ static void schedule_state_history_refresh(SensorPopupContext* ctx) {
 }
 
 static void on_overlay_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   (void)e;
 }
@@ -3306,6 +3313,7 @@ static void set_sensor_popup_visible(SensorPopupContext* ctx, bool visible) {
 }
 
 static void on_close_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   lv_event_code_t code = lv_event_get_code(e);
   if (code != LV_EVENT_CLICKED && code != LV_EVENT_RELEASED) return;
   SensorPopupContext* ctx = static_cast<SensorPopupContext*>(lv_event_get_user_data(e));
@@ -3316,6 +3324,7 @@ static void on_close_click(lv_event_t* e) {
 }
 
 static void on_overlay_delete(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_DELETE) return;
   SensorPopupContext* ctx = static_cast<SensorPopupContext*>(lv_event_get_user_data(e));
   if (!ctx) return;
@@ -3334,6 +3343,7 @@ static void on_overlay_delete(lv_event_t* e) {
 }
 
 static void on_range_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   SensorPopupContext* ctx = static_cast<SensorPopupContext*>(lv_event_get_user_data(e));
   lv_obj_t* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
@@ -3364,7 +3374,7 @@ static void on_range_click(lv_event_t* e) {
 }
 
 static void build_popup_shell(SensorPopupContext* ctx, const SensorPopupInit& init) {
-  const auto parts = create_popup_body(on_close_click, ctx, init.bg_color ? init.bg_color : 0x2A2A2A);
+  const auto parts = create_popup_body(on_close_click, ctx, init.bg_color ? init.bg_color : ui_theme::popup_card());
   ctx->overlay = parts.overlay;
   ctx->card = parts.card;
   ctx->title_label = parts.title;
@@ -3416,7 +3426,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_t* label = lv_label_create(btn);
-    set_label_style(label, lv_color_white(), popup_layout::font24());
+    set_label_style(label, lv_color_hex(ui_theme::text()), popup_layout::font24());
     lv_label_set_text(label, text);
     lv_obj_center(label);
     return btn;
@@ -3483,7 +3493,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
   // Max label: vertically centered on top guide line (at y = kLabelOverhang)
   lv_obj_t* y_max = lv_label_create(chart_wrap);
   ctx->y_max_label = y_max;
-  set_label_style(y_max, lv_color_white(), y_font);
+  set_label_style(y_max, lv_color_hex(ui_theme::text()), y_font);
   lv_obj_set_style_text_align(y_max, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_width(y_max, kYAxisWidth - 10);
   lv_label_set_text(y_max, "");
@@ -3492,7 +3502,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
   // Min label: vertically centered on bottom guide line (at y = kLabelOverhang + kChartHeight - 1)
   lv_obj_t* y_min = lv_label_create(chart_wrap);
   ctx->y_min_label = y_min;
-  set_label_style(y_min, lv_color_white(), y_font);
+  set_label_style(y_min, lv_color_hex(ui_theme::text()), y_font);
   lv_obj_set_style_text_align(y_min, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_width(y_min, kYAxisWidth - 10);
   lv_label_set_text(y_min, "");
@@ -3506,7 +3516,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
     lv_obj_t* line = lv_obj_create(chart_wrap);
     lv_obj_remove_style_all(line);
     lv_obj_set_size(line, kLineWidth, 1);
-    lv_obj_set_style_bg_color(line, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(line, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(line, LV_OPA_30, 0);
     lv_obj_remove_flag(line, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE);
@@ -3523,7 +3533,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
     lv_obj_t* vline = lv_obj_create(chart_wrap);
     lv_obj_remove_style_all(vline);
     lv_obj_set_size(vline, 1, kChartHeight);
-    lv_obj_set_style_bg_color(vline, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(vline, lv_color_hex(ui_theme::icon()), 0);
     lv_obj_set_style_bg_opa(vline, LV_OPA_30, 0);
     lv_obj_remove_flag(vline, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(vline, LV_OBJ_FLAG_SCROLLABLE);
@@ -3532,7 +3542,7 @@ static void build_popup_body(SensorPopupContext* ctx) {
     ctx->time_lines[i] = vline;
 
     lv_obj_t* tlbl = lv_label_create(chart_wrap);
-    set_label_style(tlbl, lv_color_white(), popup_layout::font20());
+    set_label_style(tlbl, lv_color_hex(ui_theme::text()), popup_layout::font20());
     lv_obj_set_style_text_align(tlbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(tlbl, LV_SIZE_CONTENT);
     lv_label_set_text(tlbl, "");
@@ -3555,11 +3565,11 @@ static void build_popup_body(SensorPopupContext* ctx) {
   lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
   lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
   lv_obj_set_style_line_width(chart, kChartLineWidth, LV_PART_ITEMS);
-  lv_obj_set_style_line_color(chart, lv_color_white(), LV_PART_ITEMS);
+  lv_obj_set_style_line_color(chart, lv_color_hex(ui_theme::text()), LV_PART_ITEMS);
   lv_obj_set_style_line_rounded(chart, true, LV_PART_ITEMS);
   lv_obj_set_style_size(chart, 0, 0, LV_PART_INDICATOR);
 
-  ctx->series = lv_chart_add_series(chart, lv_color_white(), LV_CHART_AXIS_PRIMARY_Y);
+  ctx->series = lv_chart_add_series(chart, lv_color_hex(ui_theme::text()), LV_CHART_AXIS_PRIMARY_Y);
   clear_chart(ctx, get_history_range_config(ctx->history_range).points);
 
   lv_obj_move_foreground(ctx->icon_label);
@@ -3651,6 +3661,7 @@ static void finish_sensor_popup_open() {
 }
 
 void show_sensor_popup(const SensorPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   hide_pin_popup();
   hide_camera_popup();
   hide_climate_popup();
@@ -3691,6 +3702,7 @@ void show_sensor_popup(const SensorPopupInit& init) {
 }
 
 void preload_sensor_popup() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (g_sensor_popup_ctx && g_sensor_popup_ctx->overlay && g_sensor_popup_ctx->card) return;
   SensorPopupInit init;
   init.entity_id = "__preload__";
@@ -3785,6 +3797,7 @@ void queue_sensor_popup_binary_state(const String& entity_id,
 }
 
 void process_sensor_popup_queue() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!g_sensor_popup_ctx || !g_sensor_popup_ctx->card) {
     g_pending_value.valid = false;
     g_pending_history.valid = false;

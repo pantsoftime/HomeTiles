@@ -40,6 +40,7 @@
       if (tileSpecific) {
         tileSpecific.classList.remove('hidden');
       }
+      setSettingsPane(tab, 'tile');
     }
     // Bind the live handlers right away. This used to happen only after the
     // asynchronous GET of the tile data, and until then size, position and style
@@ -66,6 +67,7 @@
     if (specific) {
       specific.classList.remove('hidden');
     }
+    setSettingsPane('folder0', 'tile');
     applyFolderTypeLock('folder0', false);
     const snapshot = normalizeHiddenSettingsSnapshot();
     if (!applyDraft('folder0', HIDDEN_SETTINGS_TILE_INDEX)) {
@@ -84,18 +86,6 @@
     updateTileSettingsMaxHeight();
   }
 
-  function titleFromOption(option) {
-    if (!option) return '';
-    // The first option is the translated "No selection" placeholder.  It is
-    // not an entity name and must never become a persisted tile title.
-    if (!String(option.value || '').trim().length) return '';
-    const label = String(option.textContent || option.innerText || '').trim();
-    if (!label.length) return '';
-    const sep = label.indexOf(' - ');
-    if (sep > 0) return label.substring(0, sep).trim();
-    return label;
-  }
-
   function titleFromEntity(entity) {
     let name = String(entity || '').trim();
     if (!name.length) return '';
@@ -112,8 +102,8 @@
     const selectEl = document.getElementById(prefix + selectSuffix);
     if (!titleInput || !selectEl) return;
     if (titleInput.value && titleInput.value.trim().length) return;
-    const opt = selectEl.selectedOptions && selectEl.selectedOptions[0];
-    let title = titleFromOption(opt);
+    if (!String(selectEl.value || '').trim()) return;
+    let title = entityPickerName(selectEl);
     if (!title.length) title = titleFromEntity(selectEl.value);
     if (title.length) titleInput.value = title;
   }
@@ -171,6 +161,8 @@
       const sceneInput = document.getElementById(prefix + '_scene_alias');
     const textInput = document.getElementById(prefix + '_text_value');
     const textFontInput = document.getElementById(prefix + '_text_value_font');
+    const textAlignInput = document.getElementById(prefix + '_text_align');
+    const textValignInput = document.getElementById(prefix + '_text_valign');
     const navigateSelect = document.getElementById(prefix + '_navigate_target');
     const folderPinToggle = document.getElementById(prefix + '_folder_pin_enabled');
     const folderPinApply = document.getElementById(prefix + '_folder_pin_apply');
@@ -209,8 +201,6 @@
       updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
     });
     bindLive(iconInput, 'input', 'tileIcon', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
-    bindLive(document.getElementById(prefix + '_tile_icon_disc'), 'change', 'tileIconDisc', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
-    bindLive(document.getElementById(prefix + '_tile_icon_glow'), 'change', 'tileIconGlow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colorInput, 'input', 'tileColor', () => { markTileColorInputExplicit(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(colInput, 'input', 'tileCol', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(rowInput, 'input', 'tileRow', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
@@ -242,14 +232,25 @@
           tab, 0, nextMeta.defaultBg || '#2A2A2A');
       }
       updateTileType(tab);
-      // New tiles start in the HomeTiles look: a type with icon colors tints
-      // the tile with the color its icon shows at 20 % (Tile color "From
-      // icon"). Existing tiles and the screensaver keep their own style.
+      // New Clocks and Texts sit on the screen: Transparent, without a frame
+      // line (user 2026-10-12).
+      if (previousType === 0 && tileTypeBlackIsTransparent(String(nextType)) && !isScreensaverTileTab(tab)) {
+        const color = document.getElementById(tab + '_tile_color');
+        if (color) {
+          color.value = '#000000';
+          color.dataset.bgColorDefault = '0';
+          color.dataset.colorMode = 'transparent';
+        }
+        const border = document.getElementById(tab + (Number(nextType) === 9 ? '_clock_tile_border' : '_text_tile_border'));
+        if (border) border.checked = false;
+        syncTileColorMode(tab);
+      }
+      // New tiles start in the HomeTiles look: a type with icon colors is
+      // filled with the color its icon shows ("Fill"). Existing tiles and the
+      // screensaver keep their own style.
       if (previousType === 0 && nextType !== 0 && !isScreensaverTileTab(tab) &&
           typeof tileTypeHasIconColors === 'function' &&
           tileTypeHasIconColors(String(nextType))) {
-        const strength = document.getElementById(tab + '_tile_icon_fill_strength');
-        if (strength) strength.value = '20';
         const fill = document.getElementById(tab + '_tile_icon_fill');
         if (fill) fill.checked = true;
         syncTileColorMode(tab);
@@ -265,8 +266,6 @@
     for (const kind of ['number', 'select', 'datetime']) {
       const select = document.getElementById(prefix + '_' + kind + '_entity');
       bindLive(select, 'change', kind + 'Entity', () => {
-        if (select.value) select.dataset.configuredValue = select.value;
-        else delete select.dataset.configuredValue;
         maybeFillTitleFromEntity(tab, '_' + kind + '_entity');
         updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
       });
@@ -278,11 +277,6 @@
       });
     }
     bindLive(binarySensorSelect, 'change', 'binarySensorEntity', () => {
-      if (binarySensorSelect.value) {
-        binarySensorSelect.dataset.configuredValue = binarySensorSelect.value;
-      } else {
-        delete binarySensorSelect.dataset.configuredValue;
-      }
       maybeFillTitleFromEntity(tab, '_binary_sensor_entity');
       updateTilePreview(tab);
       updateDraft(tab);
@@ -295,10 +289,16 @@
       scheduleAutoSave(tab);
     });
     bindLive(weatherSelect, 'change', 'weatherEntity', () => { maybeFillTitleFromWeather(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    // Temperature/humidity sensors replace the weather entity's current values.
+    for (const [field, name] of [['weather_temperature_sensor', 'weatherTemperatureSensor'],
+                                 ['weather_humidity_sensor', 'weatherHumiditySensor']]) {
+      bindLive(document.getElementById(prefix + '_' + field), 'change', name, () => {
+        updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
+      });
+    }
     bindLive(weatherPopupModeSelect, 'change', 'weatherPopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(weatherColoredIconsCheck, 'change', 'weatherColoredIcons', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(energySelect, 'change', 'energyEntity', () => {
-      energySelect.dataset.configuredValue = energySelect.value || '';
       maybeFillTitleFromEnergy(tab);
       updateTilePreview(tab);
       updateEnergyValuePreview(tab);
@@ -322,9 +322,11 @@
     bindLive(gaugeYOffsetInput, 'input', 'sensorGaugeYOffset', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(valueYOffsetInput, 'input', 'sensorValueYOffset', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(graphHeightInput, 'input', 'sensorGraphHeight', () => { updateDraft(tab); scheduleAutoSave(tab); });
-    bindLive(sceneInput, 'input', 'sceneAlias', () => { maybeFillTitleFromScene(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(sceneInput, 'change', 'sceneAlias', () => { maybeFillTitleFromScene(tab); updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(textInput, 'input', 'textValue', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(textFontInput, 'change', 'textFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(textAlignInput, 'change', 'textAlign', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
+    bindLive(textValignInput, 'change', 'textValign', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(navigateSelect, 'change', 'navigateTarget', () => {
       syncFolderPinControls(tab);
       updateTilePreview(tab);
@@ -348,11 +350,6 @@
     bindLive(switchPopupModeSelect, 'change', 'switchPopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(mediaSelect, 'change', 'mediaEntity', () => { maybeFillTitleFromMedia(tab); updateTilePreview(tab); updateMediaValuePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(climateSelect, 'change', 'climateEntity', () => {
-      if (climateSelect.value) {
-        climateSelect.dataset.configuredValue = climateSelect.value;
-      } else {
-        delete climateSelect.dataset.configuredValue;
-      }
       maybeFillTitleFromEntity(tab, '_climate_entity');
       updateTilePreview(tab);
       updateDraft(tab);
@@ -366,11 +363,6 @@
     });
     bindLive(document.getElementById(prefix + '_cover_value_font'), 'change', 'coverValueFont', () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(coverSelect, 'change', 'coverEntity', () => {
-      if (coverSelect.value) {
-        coverSelect.dataset.configuredValue = coverSelect.value;
-      } else {
-        delete coverSelect.dataset.configuredValue;
-      }
       maybeFillTitleFromEntity(tab, '_cover_entity');
       updateTilePreview(tab);
       updateDraft(tab);
@@ -387,8 +379,6 @@
         updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
       });
       bindLive(select, 'change', kind + 'Entity', () => {
-        if (select.value) select.dataset.configuredValue = select.value;
-        else delete select.dataset.configuredValue;
         maybeFillTitleFromEntity(tab, '_' + kind + '_entity');
         updateTilePreview(tab);
         updateDraft(tab);
@@ -400,16 +390,23 @@
       });
     }
     bindLive(cameraSelect, 'change', 'cameraEntity', () => {
-      if (cameraSelect.value) {
-        cameraSelect.dataset.configuredValue = cameraSelect.value;
-      } else {
-        delete cameraSelect.dataset.configuredValue;
-      }
       maybeFillTitleFromEntity(tab, '_camera_entity');
+      syncCameraFields(tab);
       updateTilePreview(tab);
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
+    // The picture options (types/camera/admin.js); the slider follows live.
+    for (const [field, eventName] of [['camera_display', 'change'], ['camera_fit', 'change'],
+                                      ['camera_every', 'change'], ['camera_transparency', 'input'],
+                                      ['camera_head', 'change'], ['camera_tap', 'change']]) {
+      bindLive(document.getElementById(prefix + '_' + field), eventName, field, () => {
+        syncCameraFields(tab);
+        updateTilePreview(tab);
+        updateDraft(tab);
+        scheduleAutoSave(tab);
+      });
+    }
     climateSlotSelects.forEach((select, index) => {
       bindLive(select, 'change', 'climateSlot' + index, () => {
         syncClimateSlotFields(tab);
@@ -470,8 +467,14 @@
         if (!target || !target.id) return;
         if (
           target.id === (prefix + '_clock_show_time') ||
-          target.id === (prefix + '_clock_show_date')
+          target.id === (prefix + '_clock_show_date') ||
+          target.id === (prefix + '_clock_weekday') ||
+          target.id === (prefix + '_clock_align') ||
+          target.id === (prefix + '_clock_style') ||
+          target.id === (prefix + '_clock_dial') ||
+          target.id === (prefix + '_clock_hands')
         ) {
+          if (target.id === (prefix + '_clock_style') && typeof syncClockStyleFields === 'function') syncClockStyleFields(prefix);
           ensureClockSelection(prefix);
           updateTilePreview(tab);
           updateDraft(tab);
@@ -482,7 +485,8 @@
           target.id === (prefix + '_clock_time_font') ||
           target.id === (prefix + '_clock_date_font') ||
           target.id === (prefix + '_clock_time_format') ||
-          target.id === (prefix + '_clock_date_format')
+          target.id === (prefix + '_clock_date_format') ||
+          target.id === (prefix + '_clock_roll')
         ) {
           updateClockValuePreview(tab);
           updateDraft(tab);

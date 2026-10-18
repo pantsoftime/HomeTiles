@@ -25,3 +25,15 @@ export function surfaceStyleHost(root) {
     strip(read(root, 'src/ui/shared/ui_surface_style.h')) + '\n' +
     strip(read(root, 'src/ui/shared/ui_surface_style.cpp'));
 }
+
+// The open popup's surface (popup_surface.h): every popup entry opens its
+// scope. Harnesses that compile popup code without tile_icon_source.cpp take
+// a no-op recolor for popup_shell.cpp's popup_follow_surface.
+// `surface: false` when the harness already includes popup_surface.h itself.
+export function popupSurfaceHost(root, {recolor = true, surface = true} = {}) {
+  return '#ifndef HOMETILES_POPUP_SURFACE_HOST\n#define HOMETILES_POPUP_SURFACE_HOST\n' +
+    (surface ? strip(read(root, 'src/ui/popups/popup_surface.h')) : '') +
+    (recolor ? '\nnamespace tile_icon_source { inline void recolor_surface(lv_obj_t*, int8_t, int8_t) {}\n' +
+      'inline bool popup_tile_circle(uint32_t, uint32_t&, uint8_t&, uint32_t&) { return false; } }\n' : '\n') +
+    '#endif\n';
+}

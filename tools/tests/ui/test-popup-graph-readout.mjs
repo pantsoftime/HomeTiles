@@ -17,7 +17,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {cppFunctionDefinitions} from '../../lib/cpp-source.mjs';
 import {lvglHost} from '../../lib/lvgl-host.mjs';
-import {toneColorHost} from '../../lib/surface-style-host.mjs';
+import {radiusPolicyHost, toneColorHost, popupSurfaceHost} from '../../lib/surface-style-host.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n?/g, '\n');
@@ -88,7 +88,7 @@ assert.match(timelineReadout, /i18n::binary_sensor_state_label\([\s\S]*binary_st
 assert.match(timelineReadout, /write_state_history_label\(/, 'Textual states read like the Activity list');
 assert.match(timelineReadout, /kRangeSeparator/, 'Timeline segments read as a time range');
 const cursor = code(fn(sensor, 'on_readout_cursor_draw'));
-for (const marker of ['line.bg_color = lv_color_white();', 'dot.bg_color = lv_color_white();',
+for (const marker of ['line.bg_color = lv_color_hex(ui_theme::text());', 'dot.bg_color = lv_color_hex(ui_theme::text());',
   'dot.radius = LV_RADIUS_CIRCLE;', 'dot.border_color = lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN);'])
   assert.ok(cursor.includes(marker), `Cursor: ${marker}`);
 const chartAttach = code(fn(sensor, 'attach_chart_readout'));
@@ -259,9 +259,12 @@ void set_label_style(lv_obj_t*obj,lv_color_t color,const lv_font_t*font){lv_obj_
 ${fn(read('src/tiles/runtime/tile_renderer_shared.h'), 'disable_pressed_button_animation')}
 void hide_pin_popup(){}void hide_camera_popup(){}void hide_climate_popup(){}void hide_cover_popup(){}void hide_light_popup(){}void hide_sensor_popup(){}void hide_weather_popup(){}void hide_media_popup(){}void hide_device_popup(){}
 void viewNavigationPopupShown(lv_obj_t*,const char*){}
+${radiusPolicyHost(root)}
+namespace Device { constexpr int kGridGap = SCREEN_WIDTH == 480 ? 10 : 16; }  // the profile's grid gap (popup header rule)
 ${strip(read('src/ui/popups/popup_layout.h'))}
 ${strip(read('src/ui/popups/popup_open.h'))}
 ${strip(read('src/ui/popups/popup_shell.h'))}
+${popupSurfaceHost(root, {surface: false})}
 ${strip(read('src/ui/popups/popup_open.cpp'))}
 ${strip(read('src/ui/shared/ui_pulse.h'))}
 ${strip(read('src/tiles/icons/mdi_bar_icons.h'))}

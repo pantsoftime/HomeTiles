@@ -17,7 +17,9 @@
 #include "src/tiles/icons/mdi_icons.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/ui/popups/binary_sensor/binary_sensor_popup.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -219,6 +221,9 @@ void apply_state(GridType grid_type, uint8_t index,
 
   widgets.last_payload_hash = payload_hash;
   tile_renderer_get_binary_sensor_states(grid_type)[index] = state;
+  // State colors follow the tile's surface (tile_surface, tile_icon_disc.h).
+  const ui_theme::SurfaceScope surface =
+      tile_surface::scope(widgets.icon_label ? widgets.icon_label : widgets.state_label);
   const String label = state_label(state);
   if (widgets.state_label) {
     lv_label_set_text(widgets.state_label, label.c_str());
@@ -454,7 +459,7 @@ uint32_t binary_sensor_visual_color(const BinarySensorState& state) {
   return state.valid && state.available &&
                  state.value == BinarySensorValue::On
              ? 0xFFC107
-             : 0x9E9E9E;
+             : ui_theme::icon_rest();
 }
 
 bool binary_sensor_init_storage() {
@@ -514,7 +519,7 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
       card, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(
       card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
-  const uint32_t pressed_color = brighten_rgb_color(color, 0x10);
+  const uint32_t pressed_color = tone_color::pressed_card(color);
   lv_obj_set_style_bg_color(
       card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_color(
@@ -560,6 +565,10 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
     const uint32_t icon_color = tile_icon_colors::state_icon_color(
         tile.icon_colors.c_str(), rule_state_known(state), binary_sensor_state_name(state.value),
         initial_label.c_str(), binary_sensor_visual_color(state));
+    // The matching row's own "Fuellen" from the first frame on (refresh_card
+    // in render_tile shows it).
+    tile_icon_color_rules::note_fill(card, tile.icon_colors.c_str(), rule_state_known(state),
+                                     binary_sensor_state_name(state.value), initial_label.c_str());
     widgets.icon_label = lv_label_create(card);
     set_label_style(widgets.icon_label, lv_color_hex(icon_color), FONT_MDI_ICONS);
     lv_label_set_text(widgets.icon_label, getMdiChar(icon).c_str());
@@ -570,7 +579,7 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
 
   if (tile.title.length()) {
     widgets.title_label = lv_label_create(card);
-    set_label_style(widgets.title_label, lv_color_white(),
+    set_label_style(widgets.title_label, lv_color_hex(ui_theme::text()),
                     tile_layout::header_title_font());
     lv_obj_set_width(widgets.title_label, LV_PCT(70));
     lv_obj_set_style_text_align(widgets.title_label, LV_TEXT_ALIGN_RIGHT, 0);
@@ -581,7 +590,7 @@ lv_obj_t* render_binary_sensor_tile(lv_obj_t* parent, int col, int row,
   }
 
   widgets.state_label = lv_label_create(card);
-  set_label_style(widgets.state_label, lv_color_white(),
+  set_label_style(widgets.state_label, lv_color_hex(ui_theme::text()),
                   tile_layout::value_font_for_choice(tile.sensor_value_font, tile_layout::header_title_font()));
   lv_label_set_long_mode(widgets.state_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(widgets.state_label, LV_PCT(100));

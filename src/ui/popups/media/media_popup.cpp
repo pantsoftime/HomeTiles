@@ -1,4 +1,5 @@
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/ui/popups/popup_surface.h"
 #include "src/tiles/runtime/tile_renderer.h"
 #include "src/ui/popups/popup_shell.h"
 #include "src/ui/popups/popup_open.h"
@@ -29,10 +30,12 @@
 #include "src/ui/popups/popup_nav_style.h"
 #include "src/ui/popups/sensor/sensor_popup.h"
 #include "src/ui/popups/weather/weather_popup.h"
+#include "src/ui/shared/text_scroll.h"
 
 // lvgl.h no longer exports lv_image_cache_drop() in 9.5; its declaration
 // is available only in the instance header.
 #include <misc/cache/instance/lv_image_cache.h>
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -91,7 +94,7 @@ struct MediaPopupContext {
   lv_obj_t* next_label = nullptr;
   lv_image_dsc_t* cover_dsc = nullptr;
   uint32_t cover_hash = 0;
-  uint32_t bg_color = 0x2A2A2A;
+  uint32_t bg_color = ui_theme::popup_card();
   bool has_media_position = false;
   bool is_playing = false;
   bool available = true;
@@ -149,27 +152,6 @@ static lv_image_dsc_t* clone_cover_dsc(const lv_image_dsc_t* src) {
   memcpy(clone, src, sizeof(lv_image_dsc_t));
   clone->data = data;
   return clone;
-}
-
-static const lv_anim_t* media_popup_text_scroll_anim() {
-  static lv_anim_t anim;
-  static bool initialized = false;
-  if (!initialized) {
-    lv_anim_init(&anim);
-    lv_anim_set_delay(&anim, 2000);
-    lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_repeat_delay(&anim, 2000);
-    lv_anim_set_reverse_delay(&anim, 2000);
-    lv_anim_set_path_cb(&anim, lv_anim_path_linear);
-    initialized = true;
-  }
-  return &anim;
-}
-
-static void apply_popup_scroll_style(lv_obj_t* label) {
-  if (!label) return;
-  lv_obj_set_style_anim(label, media_popup_text_scroll_anim(), LV_PART_MAIN);
-  lv_obj_set_style_anim_duration(label, lv_anim_speed_clamped(18, 300, 12000), LV_PART_MAIN);
 }
 
 static void update_cover(MediaPopupContext* ctx, const lv_image_dsc_t* cover_dsc, uint32_t cover_hash) {
@@ -350,6 +332,7 @@ static void update_seek(MediaPopupContext* ctx, const MediaPopupInit& init) {
 }
 
 static void media_progress_timer_cb(lv_timer_t* timer) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   MediaPopupContext* ctx = timer ? static_cast<MediaPopupContext*>(lv_timer_get_user_data(timer)) : nullptr;
   if (!ctx || !ctx->card || lv_obj_has_flag(ctx->card, LV_OBJ_FLAG_HIDDEN) || ctx->seek_dragging) return;
   set_seek_widgets(ctx, current_media_position(ctx), true);
@@ -362,7 +345,7 @@ static void apply_control_colors(MediaPopupContext* ctx) {
   if (!ctx || !ctx->card) return;
   const lv_color_t popup = lv_obj_get_style_bg_color(ctx->card, LV_PART_MAIN);
   const lv_color_t icon =
-      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_white();
+      ctx->icon_label ? lv_obj_get_style_text_color(ctx->icon_label, LV_PART_MAIN) : lv_color_hex(ui_theme::text());
   lv_obj_t* const labels[] = {ctx->previous_label, ctx->next_label, ctx->volume_icon_label};
   for (lv_obj_t* label : labels) {
     if (label) popup_nav_style::style_press(lv_obj_get_parent(label), popup, icon);
@@ -387,12 +370,37 @@ static void apply_availability(MediaPopupContext* ctx) {
   }
 }
 
+// The song title and artist under the cover.
+static void apply_media_text(MediaPopupContext* ctx, const MediaPopupInit& init) {
+  String media_title = init.media_title;
+  media_title.trim();
+  if (!media_title.length()) {
+    media_title = i18n::strings(configManager.getConfig().language).media_no_playback;
+  }
+  set_popup_label(ctx->media_title_label, media_title);
+
+  String subtitle = init.media_subtitle;
+  subtitle.trim();
+  if (popup_text_same(subtitle, media_title)) {
+    subtitle = "";
+  }
+  if (ctx->media_subtitle_label) {
+    if (subtitle.length()) {
+      lv_label_set_text(ctx->media_subtitle_label, subtitle.c_str());
+      lv_obj_clear_flag(ctx->media_subtitle_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_label_set_text(ctx->media_subtitle_label, "");
+      lv_obj_add_flag(ctx->media_subtitle_label, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+}
+
 static void apply_init_to_context(MediaPopupContext* ctx, const MediaPopupInit& init) {
   if (!ctx) return;
   ctx->entity_id = init.entity_id;
   ctx->available = init.available;
   if (!ctx->available) ctx->seek_dragging = false;
-  ctx->bg_color = init.bg_color != 0 ? init.bg_color : 0x2A2A2A;
+  ctx->bg_color = init.bg_color ? init.bg_color : ui_theme::popup_card();
 
   if (ctx->card) {
     lv_obj_set_style_bg_color(ctx->card, lv_color_hex(ctx->bg_color), 0);
@@ -422,27 +430,7 @@ static void apply_init_to_context(MediaPopupContext* ctx, const MediaPopupInit& 
   if (ctx->fallback_icon) lv_label_set_text(ctx->fallback_icon, icon_char.c_str());
   popup_layout::alignHeader(ctx->card, ctx->title_label, ctx->icon_label);
 
-  String media_title = init.media_title;
-  media_title.trim();
-  if (!media_title.length()) {
-    media_title = i18n::strings(configManager.getConfig().language).media_no_playback;
-  }
-  set_popup_label(ctx->media_title_label, media_title);
-
-  String subtitle = init.media_subtitle;
-  subtitle.trim();
-  if (popup_text_same(subtitle, media_title)) {
-    subtitle = "";
-  }
-  if (ctx->media_subtitle_label) {
-    if (subtitle.length()) {
-      lv_label_set_text(ctx->media_subtitle_label, subtitle.c_str());
-      lv_obj_clear_flag(ctx->media_subtitle_label, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_label_set_text(ctx->media_subtitle_label, "");
-      lv_obj_add_flag(ctx->media_subtitle_label, LV_OBJ_FLAG_HIDDEN);
-    }
-  }
+  apply_media_text(ctx, init);
 
   if (ctx->play_pause_label) {
     String play_icon = getMdiChar(init.is_playing ? "pause" : "play");
@@ -459,6 +447,7 @@ static void apply_init_to_context(MediaPopupContext* ctx, const MediaPopupInit& 
 }
 
 static void on_close_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   lv_event_code_t code = lv_event_get_code(e);
   if (code != LV_EVENT_CLICKED && code != LV_EVENT_RELEASED) return;
   MediaPopupContext* ctx = static_cast<MediaPopupContext*>(lv_event_get_user_data(e));
@@ -471,11 +460,13 @@ static void on_close_click(lv_event_t* e) {
 }
 
 static void on_overlay_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   (void)e;
 }
 
 static void on_overlay_delete(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_DELETE) return;
   MediaPopupContext* ctx = static_cast<MediaPopupContext*>(lv_event_get_user_data(e));
   if (!ctx) return;
@@ -489,6 +480,7 @@ static void on_overlay_delete(lv_event_t* e) {
 }
 
 static void on_media_command(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   MediaCommandData* data = static_cast<MediaCommandData*>(lv_event_get_user_data(e));
   if (!data || !data->ctx || !data->ctx->entity_id.length() || !data->ctx->available) return;
@@ -513,12 +505,14 @@ static void on_media_command(lv_event_t* e) {
 }
 
 static void on_media_command_delete(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_DELETE) return;
   MediaCommandData* data = static_cast<MediaCommandData*>(lv_event_get_user_data(e));
   delete data;
 }
 
 static void on_volume_slider_event(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   lv_event_code_t code = lv_event_get_code(e);
   const bool released = code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST;
   if (code != LV_EVENT_VALUE_CHANGED && !released) return;
@@ -535,6 +529,7 @@ static void on_volume_slider_event(lv_event_t* e) {
 }
 
 static void on_seek_slider_event(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const lv_event_code_t code = lv_event_get_code(e);
   const bool released = code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST;
   if (code != LV_EVENT_VALUE_CHANGED && !released) return;
@@ -558,6 +553,7 @@ static void on_seek_slider_event(lv_event_t* e) {
 }
 
 static void on_volume_mute_click(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   MediaPopupContext* ctx = static_cast<MediaPopupContext*>(lv_event_get_user_data(e));
   if (!ctx || !ctx->entity_id.length() || !ctx->volume_slider || !ctx->available) return;
@@ -582,9 +578,9 @@ static lv_obj_t* create_control_button(lv_obj_t* parent,
   lv_obj_set_size(btn, kControlButtonSize, kControlButtonSize);
   lv_obj_align(btn, LV_ALIGN_TOP_MID, x_ofs, kControlsTop);
   lv_obj_set_style_opa(btn, LV_OPA_30, LV_PART_MAIN | LV_STATE_DISABLED);
-  lv_obj_set_style_bg_color(btn, primary ? lv_color_white() : lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn, primary ? lv_color_hex(ui_theme::icon()) : lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_opa(btn, primary ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
-  lv_obj_set_style_bg_color(btn, primary ? lv_color_hex(0xD8D8D8) : lv_color_white(), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(btn, primary ? lv_color_hex(ui_theme::text_soft()) : lv_color_hex(ui_theme::icon()), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(btn, primary ? LV_OPA_COVER : LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_width(btn, 0, 0);
@@ -594,7 +590,7 @@ static lv_obj_t* create_control_button(lv_obj_t* parent,
   disable_pressed_button_animation(btn);
 
   lv_obj_t* label = lv_label_create(btn);
-  set_label_style(label, primary ? lv_color_hex(bg_color) : lv_color_white(), FONT_MDI_ICONS);
+  set_label_style(label, primary ? lv_color_hex(bg_color) : lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
   lv_label_set_text(label, getMdiChar(icon_name).c_str());
   lv_obj_center(label);
   lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
@@ -629,16 +625,29 @@ static void prepare_media_popup_open(const MediaPopupInit& init) {
   lv_label_set_text(ctx->icon_label, icon.c_str());
   lv_obj_set_style_text_color(ctx->icon_label, lv_color_hex(init.icon_color), 0);
   lv_obj_set_style_bg_color(ctx->card,
-      lv_color_hex(init.bg_color ? init.bg_color : 0x2A2A2A), 0);
+      lv_color_hex(init.bg_color ? init.bg_color : ui_theme::popup_card()), 0);
+  const bool same_entity = ctx->entity_id == init.entity_id;
+  if (same_entity) {
+    // The kept body shows in the first frame: a song that changed while the
+    // popup was closed showed the previous cover and title until the body
+    // was applied (user 2026-10-08, every device). The tile's current cover
+    // is decoded already; take it and the song's text now (a 240x240 copy).
+    // Applying the body later leaves them as they are.
+    uint32_t cover_hash = 0;
+    const lv_image_dsc_t* cover = tile_renderer_find_media_cover(init.entity_id, cover_hash);
+    update_cover(ctx, cover, cover_hash);
+    apply_media_text(ctx, init);
+  }
   MediaPopupInit pending = init;
   pending.cover_dsc = nullptr;
   if (!defer_popup_body(ctx->card, ctx->title_label, ctx->icon_label,
                         ctx->close_button, pending, finish_media_popup_open,
-                        ctx->entity_id == init.entity_id))
+                        same_entity))
     apply_init_to_context(ctx, init);
 }
 
 void show_media_popup(const MediaPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   hide_pin_popup();
   hide_camera_popup();
   hide_device_popup();
@@ -662,7 +671,7 @@ void show_media_popup(const MediaPopupInit& init) {
   MediaPopupContext* ctx = new MediaPopupContext();
   g_media_popup_ctx = ctx;
 
-  const auto parts = create_popup_body(on_close_click, ctx, init.bg_color ? init.bg_color : 0x2A2A2A);
+  const auto parts = create_popup_body(on_close_click, ctx, init.bg_color ? init.bg_color : ui_theme::popup_card());
   ctx->overlay = parts.overlay;
   ctx->card = parts.card;
   ctx->title_label = parts.title;
@@ -692,25 +701,23 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_add_flag(ctx->cover_image, LV_OBJ_FLAG_HIDDEN);
 
   ctx->fallback_icon = lv_label_create(ctx->cover_clip);
-  set_label_style(ctx->fallback_icon, lv_color_white(), FONT_MDI_ICONS);
+  set_label_style(ctx->fallback_icon, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
   lv_obj_set_style_text_font(ctx->fallback_icon, FONT_MDI_ICONS, 0);
   lv_obj_center(ctx->fallback_icon);
 
   const lv_coord_t text_width = kCardWidth - (kCardPad * 2) - 72;
   ctx->media_title_label = lv_label_create(card);
-  set_label_style(ctx->media_title_label, lv_color_white(), popup_layout::font32());
+  set_label_style(ctx->media_title_label, lv_color_hex(ui_theme::text()), popup_layout::font32());
   lv_obj_set_width(ctx->media_title_label, text_width);
   lv_obj_set_style_text_align(ctx->media_title_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_long_mode(ctx->media_title_label, LV_LABEL_LONG_SCROLL);
-  apply_popup_scroll_style(ctx->media_title_label);
+  ui_text_scroll::apply(ctx->media_title_label);
   lv_obj_align(ctx->media_title_label, LV_ALIGN_TOP_MID, 0, kTitleTop);
 
   ctx->media_subtitle_label = lv_label_create(card);
-  set_label_style(ctx->media_subtitle_label, lv_color_hex(0xD8DEE9), popup_layout::font24());
+  set_label_style(ctx->media_subtitle_label, lv_color_hex(ui_theme::text_secondary()), popup_layout::font24());
   lv_obj_set_width(ctx->media_subtitle_label, text_width);
   lv_obj_set_style_text_align(ctx->media_subtitle_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_long_mode(ctx->media_subtitle_label, LV_LABEL_LONG_SCROLL);
-  apply_popup_scroll_style(ctx->media_subtitle_label);
+  ui_text_scroll::apply(ctx->media_subtitle_label);
   lv_obj_align_to(ctx->media_subtitle_label, ctx->media_title_label,
                   LV_ALIGN_OUT_BOTTOM_MID, 0, popup_layout::scale480(8));
 
@@ -722,13 +729,13 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_set_style_width(ctx->seek_slider, kSeekSliderKnobSize, LV_PART_KNOB);
   lv_obj_set_style_height(ctx->seek_slider, kSeekSliderKnobSize, LV_PART_KNOB);
   lv_obj_set_ext_click_area(ctx->seek_slider, kSeekSliderClickPad);
-  lv_obj_set_style_bg_color(ctx->seek_slider, lv_color_white(), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(ctx->seek_slider, lv_color_hex(ui_theme::icon()), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(ctx->seek_slider, LV_OPA_30, LV_PART_MAIN);
   lv_obj_set_style_radius(ctx->seek_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(ctx->seek_slider, lv_color_white(), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(ctx->seek_slider, lv_color_hex(ui_theme::icon()), LV_PART_INDICATOR);
   lv_obj_set_style_bg_opa(ctx->seek_slider, LV_OPA_COVER, LV_PART_INDICATOR);
   lv_obj_set_style_radius(ctx->seek_slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(ctx->seek_slider, lv_color_white(), LV_PART_KNOB);
+  lv_obj_set_style_bg_color(ctx->seek_slider, lv_color_hex(ui_theme::icon()), LV_PART_KNOB);
   lv_obj_set_style_bg_opa(ctx->seek_slider, LV_OPA_COVER, LV_PART_KNOB);
   lv_obj_set_style_radius(ctx->seek_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
   lv_obj_clear_flag(ctx->seek_slider, LV_OBJ_FLAG_SCROLLABLE);
@@ -737,7 +744,7 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_add_event_cb(ctx->seek_slider, on_seek_slider_event, LV_EVENT_PRESS_LOST, ctx);
 
   ctx->seek_current_label = lv_label_create(card);
-  set_label_style(ctx->seek_current_label, lv_color_hex(0xD8DEE9), popup_layout::font20());
+  set_label_style(ctx->seek_current_label, lv_color_hex(ui_theme::text_secondary()), popup_layout::font20());
   lv_obj_set_width(ctx->seek_current_label, 80);
   lv_obj_set_style_text_align(ctx->seek_current_label, LV_TEXT_ALIGN_RIGHT, 0);
   lv_label_set_text(ctx->seek_current_label, "--:--");
@@ -748,7 +755,7 @@ void show_media_popup(const MediaPopupInit& init) {
                   0);
 
   ctx->seek_duration_label = lv_label_create(card);
-  set_label_style(ctx->seek_duration_label, lv_color_hex(0xD8DEE9), popup_layout::font20());
+  set_label_style(ctx->seek_duration_label, lv_color_hex(ui_theme::text_secondary()), popup_layout::font20());
   lv_obj_set_width(ctx->seek_duration_label, 80);
   lv_obj_set_style_text_align(ctx->seek_duration_label, LV_TEXT_ALIGN_LEFT, 0);
   lv_label_set_text(ctx->seek_duration_label, "--:--");
@@ -773,7 +780,7 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_align(volume_btn, LV_ALIGN_CENTER, -kVolumeSideOffset, 0);
   lv_obj_set_style_bg_color(volume_btn, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_opa(volume_btn, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
-  lv_obj_set_style_bg_color(volume_btn, lv_color_white(), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(volume_btn, lv_color_hex(ui_theme::icon()), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(volume_btn, LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_radius(volume_btn, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_width(volume_btn, 0, 0);
@@ -784,7 +791,7 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_add_event_cb(volume_btn, on_volume_mute_click, LV_EVENT_CLICKED, ctx);
 
   ctx->volume_icon_label = lv_label_create(volume_btn);
-  set_label_style(ctx->volume_icon_label, lv_color_white(), FONT_MDI_ICONS);
+  set_label_style(ctx->volume_icon_label, lv_color_hex(ui_theme::icon()), FONT_MDI_ICONS);
   lv_label_set_text(ctx->volume_icon_label, getMdiChar("volume-high").c_str());
   lv_obj_center(ctx->volume_icon_label);
   lv_obj_clear_flag(ctx->volume_icon_label, LV_OBJ_FLAG_CLICKABLE);
@@ -797,13 +804,13 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_set_style_width(ctx->volume_slider, kVolumeSliderKnobSize, LV_PART_KNOB);
   lv_obj_set_style_height(ctx->volume_slider, kVolumeSliderKnobSize, LV_PART_KNOB);
   lv_obj_set_ext_click_area(ctx->volume_slider, kVolumeSliderClickPad);
-  lv_obj_set_style_bg_color(ctx->volume_slider, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(ctx->volume_slider, lv_color_hex(ui_theme::text()), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(ctx->volume_slider, LV_OPA_20, LV_PART_MAIN);
   lv_obj_set_style_radius(ctx->volume_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(ctx->volume_slider, lv_color_white(), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(ctx->volume_slider, lv_color_hex(ui_theme::icon()), LV_PART_INDICATOR);
   lv_obj_set_style_bg_opa(ctx->volume_slider, LV_OPA_COVER, LV_PART_INDICATOR);
   lv_obj_set_style_radius(ctx->volume_slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(ctx->volume_slider, lv_color_white(), LV_PART_KNOB);
+  lv_obj_set_style_bg_color(ctx->volume_slider, lv_color_hex(ui_theme::icon()), LV_PART_KNOB);
   lv_obj_set_style_bg_opa(ctx->volume_slider, LV_OPA_COVER, LV_PART_KNOB);
   lv_obj_set_style_radius(ctx->volume_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
   lv_obj_clear_flag(ctx->volume_slider, LV_OBJ_FLAG_SCROLLABLE);
@@ -812,7 +819,7 @@ void show_media_popup(const MediaPopupInit& init) {
   lv_obj_add_event_cb(ctx->volume_slider, on_volume_slider_event, LV_EVENT_PRESS_LOST, ctx);
 
   ctx->volume_label = lv_label_create(ctx->volume_row);
-  set_label_style(ctx->volume_label, lv_color_hex(0xD8DEE9), popup_layout::font20());
+  set_label_style(ctx->volume_label, lv_color_hex(ui_theme::text_secondary()), popup_layout::font20());
   lv_label_set_text(ctx->volume_label, "0%");
   lv_obj_set_width(ctx->volume_label, kControlButtonSize);
   lv_obj_set_style_text_align(ctx->volume_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -823,21 +830,21 @@ void show_media_popup(const MediaPopupInit& init) {
                                               "previous",
                                               "skip-previous",
                                               -kControlSideOffset,
-                                              init.bg_color != 0 ? init.bg_color : 0x2A2A2A,
+                                              init.bg_color ? init.bg_color : ui_theme::popup_card(),
                                               false);
   ctx->play_pause_label = create_control_button(card,
                                                 ctx,
                                                 "play_pause",
                                                 "play",
                                                 0,
-                                                init.bg_color != 0 ? init.bg_color : 0x2A2A2A,
+                                                init.bg_color ? init.bg_color : ui_theme::popup_card(),
                                                 true);
   ctx->next_label = create_control_button(card,
                                           ctx,
                                           "next",
                                           "skip-next",
                                           kControlSideOffset,
-                                          init.bg_color != 0 ? init.bg_color : 0x2A2A2A,
+                                          init.bg_color ? init.bg_color : ui_theme::popup_card(),
                                           false);
 
   lv_obj_move_foreground(ctx->icon_label);
@@ -853,6 +860,7 @@ void show_media_popup(const MediaPopupInit& init) {
 }
 
 void preload_media_popup() {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (g_media_popup_ctx && g_media_popup_ctx->overlay && g_media_popup_ctx->card) return;
   MediaPopupInit init;
   init.entity_id = "__preload__";
@@ -860,7 +868,7 @@ void preload_media_popup() {
   init.icon_name = "television";
   init.media_title = "";
   init.media_subtitle = "";
-  init.bg_color = 0x2A2A2A;
+  init.bg_color = ui_theme::popup_card();
   show_media_popup(init);
   if (g_media_popup_ctx && g_media_popup_ctx->card && g_media_popup_ctx->overlay) {
     hide_popup_shell(g_media_popup_ctx->card);
@@ -878,11 +886,13 @@ bool media_popup_showing(const String& entity_id) {
 }
 
 void update_media_popup(const MediaPopupInit& init) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!media_popup_showing(init.entity_id)) return;
   apply_init_to_context(g_media_popup_ctx, init);
 }
 
 void update_media_popup_cover(const char* entity_id, const lv_image_dsc_t* cover_dsc, uint32_t cover_hash) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!entity_id || !g_media_popup_ctx || !g_media_popup_ctx->card) return;
   if (!g_media_popup_ctx->entity_id.equalsIgnoreCase(entity_id)) return;
   if (lv_obj_has_flag(g_media_popup_ctx->card, LV_OBJ_FLAG_HIDDEN)) return;

@@ -24,6 +24,11 @@
 
 
   async function switchTab(tabName) {
+    // I/O became a Settings page; a remembered or linked I/O tab opens it.
+    if (tabName === 'tab-hardware') {
+      tabName = 'tab-network';
+      showSettingsPage('io');
+    }
     const sequence = ++tabSwitchSequence;
     let target = document.getElementById(tabName);
     if (!target) {
@@ -97,14 +102,7 @@
         }
       }, 0));
     }
-    if (tabName === 'tab-network') {
-      window.setTimeout(() => {
-        if (typeof loadFileManager === 'function' && !fileManagerLoaded) loadFileManager();
-      }, 0);
-    }
-    if (tabName === 'tab-hardware') {
-      window.setTimeout(initHardwareIo, 0);
-    }
+    if (tabName === 'tab-network') runSettingsPageWork();
   }
 
   // The Tile settings panel takes the height of the tile editor row, which
@@ -137,13 +135,13 @@
     document.querySelectorAll('.tile-clock-time').forEach(el => {
       if (el.dataset.autoClock === '1' || el.textContent.trim() === '--:--') {
         el.dataset.autoClock = '1';
-        el.textContent = getClockPreviewTime(0);
+        setClockDigits(el, getClockPreviewTime(0));
       }
     });
     document.querySelectorAll('.tile-clock-date').forEach(el => {
       if (el.dataset.autoClock === '1' || el.textContent.trim() === '--.--.----') {
         el.dataset.autoClock = '1';
-        el.textContent = getClockPreviewDate(0);
+        setClockDigits(el, getClockPreviewDate(0));
       }
     });
     if (typeof fitCompactClockPreview === 'function') {
@@ -152,7 +150,7 @@
     if (screensaverDraft) {
       const time = document.getElementById('screensaverClockTime');
       const date = document.getElementById('screensaverClockDate');
-      if (time) time.textContent = getClockPreviewTime(screensaverDraft.time_format);
-      if (date) date.textContent = getScreensaverClockPreviewDate(screensaverDraft);
+      if (time) setClockDigits(time, getClockPreviewTime(screensaverDraft.time_format));
+      if (date) setClockDigits(date, getScreensaverClockPreviewDate(screensaverDraft));
     }
   }

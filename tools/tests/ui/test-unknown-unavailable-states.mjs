@@ -14,10 +14,14 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\
 const visuals = read('src/types/climate/visuals.h');
 const modeColor = visuals.slice(visuals.indexOf('inline uint32_t mode_foreground_color(const char* mode)'),
   visuals.indexOf('inline uint32_t mode_ring_color(const char* mode)'));
-assert.match(modeColor, /if \(equals\(mode, "unknown"\)\) return 0x9E9E9E;\s*return 0xFFFFFF;/);
+assert.match(modeColor, /if \(equals\(mode, "unknown"\)\) return ui_theme::icon_rest\(\);\s*return 0xFFFFFF;/);
 assert.match(visuals, /!equals\(mode, "unknown"\)/, 'unknown stays inactive (no tile tint)');
-assert.match(read('src/types/climate/admin-preview.js'),
-  /state\?\.available === false \|\| mode === 'unavailable' \|\| mode === 'unknown'\) \{\s*return '#9e9e9e';/);
+// Unavailable: the light theme's fainter grey (user 2026-10-10); unknown and
+// the dark theme keep the inactive grey.
+const climatePreview = read('src/types/climate/admin-preview.js');
+assert.match(climatePreview,
+  /state\?\.available === false \|\| mode === 'unavailable'\) \{\s*return panelLight\(\) \? panelRoleHex\('icon-unavailable', '#bdbdbd'\) : panelRoleHex\('icon-rest', '#9e9e9e'\);/);
+assert.ok(climatePreview.includes("if (mode === 'unknown') return panelRoleHex('icon-rest', '#9e9e9e');"));
 
 // Media tile: the state label and disabled controls.
 const renderer = read('src/tiles/runtime/tile_renderer.cpp');

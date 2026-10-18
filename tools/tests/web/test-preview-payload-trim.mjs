@@ -72,7 +72,8 @@ const runtime = readRepoFile('src/tiles/runtime/tile_renderer.cpp').replace(/\r\
 assert.match(runtime, /bool tile_renderer_media_cover_color\(const String& entity_id, uint32_t& rgb\) \{[\s\S]*?lv_obj_has_flag\(clip, LV_OBJ_FLAG_HIDDEN\)[\s\S]*?tile_icon_source::card_cover_color\(lv_obj_get_parent\(clip\), rgb\)/);
 assert.match(readRepoFile('src/web/admin/tiles/state.js'), /mediaCoverColors: payload\.media_cover_colors/);
 assert.match(readRepoFile('src/web/admin/tiles/grid-preview.js').replace(/\r\n/g, '\n'),
-  /applyTileRulesTint\(el,[^\n]*\n\s*\}\s*if \(previewKind === 'media'\) \{\s*applyMediaCoverTint\(el, tile\.icon_colors, sensorMeta\?\.mediaCoverColors\?\.\[tile\.sensor_entity \|\| ''\] \|\| ''\);\s*\}\s*applyIconDiscTint\(el\);/);
+  /applyTileRulesTint\(el,[^\n]*\n\s*\}\s*if \(previewKind === 'media'\) \{\s*applyMediaCoverTint\(el, tile\.icon_colors, sensorMeta\?\.mediaCoverColors\?\.\[tile\.sensor_entity \|\| ''\] \|\| ''\);[^\n]*\n[^\n]*\n\s*\}\s*applyIconDiscTint\(el\);/);
 const media = readRepoFile('src/types/media/admin.js').replace(/\r\n/g, '\n');
-assert.match(media, /if \(cover\.tile && !parsed\.fill && el\.dataset\.ruleTint !== '1' && typeof setTileTintBackground === 'function'\)/);
+// The reported cover color reaches the preview icon; "Fill" follows the icon.
+assert.match(media, /if \(\(cover\.icon \|\| cover\.tile > 0\) && !ruleIcon\) \{\s*const icon = el\.querySelector\(':scope > \.tile-icon'\);\s*if \(icon\) icon\.style\.color = coverColor;/);
 console.log('Preview payloads: hourly forecast and artwork data cut out, the rest valid and unchanged; cover colors reported');

@@ -84,21 +84,20 @@ function maybeFillTitleFromMedia(tab) {
             subtitleY: titleY + titleHeight + gap};
   }
 
-  // "From cover" (tile_icon_source.cpp apply_cover): the icon color and the
-  // tile tint take the color the panel sampled from the cover it shows. A
-  // rule's tile tint and "From icon" win over the cover tint, a rule's icon
-  // color over the cover icon color.
+  // "From cover" (tile_icon_source.cpp apply_cover): the icon takes the color
+  // the panel sampled from the cover it shows (a former cover tile tint too,
+  // tile_icon_colors::cover_colors_icon); a rule's icon color wins. "Fill"
+  // then follows the icon (applyIconDiscTint), the cover never tints the
+  // tile itself (user 2026-10-11).
   function applyMediaCoverTint(el, record, coverColor) {
     if (!el || !coverColor || typeof parseIconColorRecord !== 'function') return;
     const parsed = parseIconColorRecord(record || '');
     const cover = parsed.cover || {icon: false, tile: 0};
     const layer = typeof iconColorRecordSource === 'function' ? iconColorRecordSource(record || '') : null;
-    if (cover.icon && !(layer && layer.enabled && layer.icon)) {
+    const ruleIcon = layer && layer.enabled && typeof iconColorRuleColorsIcon === 'function' && iconColorRuleColorsIcon(layer);
+    if ((cover.icon || cover.tile > 0) && !ruleIcon) {
       const icon = el.querySelector(':scope > .tile-icon');
       if (icon) icon.style.color = coverColor;
-    }
-    if (cover.tile && !parsed.fill && el.dataset.ruleTint !== '1' && typeof setTileTintBackground === 'function') {
-      setTileTintBackground(el, coverColor, cover.tile);
     }
   }
 
@@ -119,7 +118,9 @@ function maybeFillTitleFromMedia(tab) {
   function applyMediaPreview(el, state, tile, iconName, displayName) {
     if (!el || typeof MEDIA_TILE_LAYOUT === 'undefined') return;
     const L = MEDIA_TILE_LAYOUT;
-    const rootStyle = getComputedStyle(document.documentElement);
+    // The tile's own grid sizes (inherited variables), not the page's: a grid
+    // such as the screensaver's has its own cells.
+    const rootStyle = getComputedStyle(el.isConnected ? el : document.documentElement);
     const scale = parseFloat(rootStyle.getPropertyValue('--radius-preview-scale')) || 0.5;
     const entity = String(tile?.sensor_entity || '');
 
@@ -177,18 +178,27 @@ function maybeFillTitleFromMedia(tab) {
       fontCss(f) + 'margin-top:' + f.shift.toFixed(2) + 'px;';
 
     let html = '';
-    if (state?.cover && /^(https?:|data:image\/)/i.test(state.cover)) {
-      const side = (plain.side * scale).toFixed(2) + 'px';
-      html += '<div class="media-preview-cover" hidden style="' + at(L.coverLeft, plain.top) + 'width:' + side +
-        ';height:' + side + ';border-radius:' + (L.coverRadius * scale).toFixed(2) + 'px">' +
+    const hasCover = !!state?.cover && /^(https?:|data:image\/)/i.test(state.cover);
+    // The artwork already shown stays: a re-render (sensor refresh, layout)
+    // only moves it, so it never blinks away until a new copy has loaded
+    // (user 2026-10-08). A new artwork shows once it loaded.
+    const shownCover = hasCover ? [...el.querySelectorAll(':scope > .media-preview-cover:not([hidden])')]
+      .find(node => node.querySelector('img')?.getAttribute('src') === state.cover &&
+        node.querySelector('img')?.complete) : null;
+    const coverStyle = hasCover ? at(L.coverLeft, plain.top) + 'width:' + (plain.side * scale).toFixed(2) + 'px;height:' +
+      (plain.side * scale).toFixed(2) + 'px;border-radius:' + (L.coverRadius * scale).toFixed(2) + 'px' : '';
+    if (hasCover && !shownCover) {
+      html += '<div class="media-preview-cover" hidden style="' + coverStyle + '">' +
         '<img src="' + escapeHtml(state.cover) + '" alt="" referrerpolicy="no-referrer" ' +
         'onload="mediaPreviewCoverLoaded(this)" onerror="this.parentElement.remove()"></div>';
     }
+    const titleLayout = shownCover ? covered : plain;
     html += '<div class="media-preview-title' + (titleText ? '' : ' media-preview-state') + '" style="' +
-      textStyle(plain, plain.titleY, titleFont) + '" data-cover-style="' +
+      textStyle(titleLayout, titleLayout.titleY, titleFont) + '" data-cover-style="' +
       escapeHtml(textStyle(covered, covered.titleY, titleFont)) + '">' + escapeHtml(mainText) + '</div>';
     if (subtitle) {
-      html += '<div class="media-preview-subtitle" style="' + textStyle(plain, plain.subtitleY, subtitleFont) +
+      html += '<div class="media-preview-subtitle" style="' +
+        textStyle(titleLayout, titleLayout.subtitleY, subtitleFont) +
         '" data-cover-style="' + escapeHtml(textStyle(covered, covered.subtitleY, subtitleFont)) + '">' +
         escapeHtml(subtitle) + '</div>';
     }
@@ -198,7 +208,6 @@ function maybeFillTitleFromMedia(tab) {
     if (entity) {
       const unavailable = String(state?.state || '').trim().toLowerCase() === 'unavailable';
       const playing = String(state?.state || '').trim().toLowerCase() === 'playing';
-      const cardColor = el.style.background || 'var(--tile-default-bg, #1A1A1A)';
       const buttonY = height - L.button + L.buttonBottom;
       const iconTop = (Math.trunc((L.button - L.iconLine) / 2) + L.iconEmDy) * scale;
       for (const [offset, icon, primary] of [[-L.buttonSide, 'skip-previous', false],
@@ -207,12 +216,13 @@ function maybeFillTitleFromMedia(tab) {
         html += '<div class="media-preview-control' + (primary ? ' media-preview-play' : '') +
           (unavailable ? ' media-preview-disabled' : '') + '" style="' + at(x, buttonY) +
           'width:' + (L.button * scale).toFixed(2) + 'px;height:' + (L.button * scale).toFixed(2) + 'px;' +
-          (primary ? 'color:' + escapeHtml(cardColor) + ';' : '') + '">' +
+          '">' +
           '<i class="mdi mdi-' + icon + '" style="top:' + iconTop.toFixed(2) + 'px"></i></div>';
       }
     }
     el.querySelectorAll(':scope > :is(.media-preview-cover, .media-preview-title, .media-preview-subtitle, ' +
-      '.media-preview-control)').forEach(node => node.remove());
+      '.media-preview-control)').forEach(node => { if (node !== shownCover) node.remove(); });
+    if (shownCover) shownCover.setAttribute('style', coverStyle);
     const handles = el.querySelector(':scope > .tile-resize-handle');
     if (handles) handles.insertAdjacentHTML('beforebegin', html);
     else el.insertAdjacentHTML('beforeend', html);

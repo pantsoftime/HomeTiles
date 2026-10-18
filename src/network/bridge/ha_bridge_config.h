@@ -55,6 +55,8 @@ struct HaBridgeConfigData {
   String alarm_panels_text;
   String fans_text;
   String cameras_text;
+  // Image entities released for the screensaver picture (Bridge "images").
+  String images_text;
   String scene_alias_text;
   String sensor_slots[HA_SENSOR_SLOT_COUNT];
   String scene_slots[HA_SCENE_SLOT_COUNT];
@@ -78,8 +80,32 @@ public:
   bool save(const HaBridgeConfigData& data);
   bool applyJson(const char* json_payload, bool* out_reload = nullptr, bool* out_icons_changed = nullptr);
 
-  const HaBridgeConfigData& get() const { return data; }
+  // Live sensor values update only values_index_ (updateSensorValue());
+  // the "key=value" blob read by Web Admin is rebuilt from it here, at most
+  // once per batch of updates.
+  const HaBridgeConfigData& get() const {
+    if (values_blob_dirty_) materializeValuesBlob();
+    return data;
+  }
   bool hasData() const;
+  // The Bridge sends an "energy" section only when its entry enables Energy
+  // and Home Assistant has an Energy dashboard; without one it never answers
+  // energy requests (all Bridge versions).
+  bool hasEnergyEntries() const { return data.energy_text.length() > 0; }
+  // The live Bridge configuration announced "entity_search"
+  // (network/bridge/entity_search.h): 1 = the picker searches through the
+  // Bridge, 2 = also entity declarations, 3 = also the Energy dashboard's
+  // sources (picker list "energy"), 4 = also scenes, scripts and buttons
+  // (picker list "scenes", run by their entity id). Not stored: 0 until the
+  // Bridge's configuration arrived after a start.
+  bool supportsEntitySearch() const { return entity_search_ >= 1; }
+  bool supportsEntityDeclarations() const { return entity_search_ >= 2; }
+  bool supportsEnergySearch() const { return entity_search_ >= 3; }
+  bool supportsSceneSearch() const { return entity_search_ >= 4; }
+  // The live Bridge configuration announced "push": 1. Such a Bridge sends
+  // name, unit and icon changes by itself, so the panel's periodic refresh is
+  // only a slow safety net. Not stored: 0 until the configuration arrived.
+  bool bridgePushesChanges() const { return push_ >= 1; }
   String findSensorUnit(const String& entity_id) const;
   String findSensorName(const String& entity_id) const;
   String findSensorInitialValue(const String& entity_id) const;
@@ -130,9 +156,14 @@ private:
   HaEntityKeyMap detail_values_index_;
   HaEntityKeyMap state_kinds_index_;
   HaEntityKeyMap icons_index_;
+  uint8_t entity_search_ = 0;
+  uint8_t push_ = 0;
   // Call after every complete blob swap (load/save/applyJson). The single-value
-  // updates such as updateSensorValue() maintain blob and index together.
+  // updates maintain blob and index together, except updateSensorValue(),
+  // which marks the values blob stale until materializeValuesBlob().
   void rebuildEntityIndexes();
+  void materializeValuesBlob() const;
+  mutable bool values_blob_dirty_ = false;
   void pruneEditableValues();
 
   static void appendJsonEscaped(String& out, const String& value);
@@ -142,5 +173,9 @@ private:
 };
 
 extern HaBridgeConfig haBridgeConfig;
+
+// The icon of an Energy dashboard source: its category's (costs: currency).
+// The Bridge's energy search gives its rows the same icons.
+const char* energySourceIcon(const String& category, const String& id, const String& unit);
 
 #endif // HA_BRIDGE_CONFIG_H

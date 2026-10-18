@@ -46,7 +46,7 @@ assert.match(fn(energy, 'energy_popup_follow_tile_color'), /update_period_button
 // One control fill for the footer controls and the pressed close button.
 const shell = read('src/ui/popups/popup_shell.cpp');
 const tint = fn(shell, 'apply_header_disc_tint');
-assert.match(tint, /const tone_color::Fill fill = header_fill\(options, card, rgb\);/);
+assert.match(tint, /tone_color::Fill fill = header_fill\(options, card, rgb\);/);
 assert.match(tint, /const tone_color::Fill controls = controls_fill\(options, card, rgb\);/);
 assert.match(tint, /lv_obj_set_style_bg_color\(shell\.close, press, LV_STATE_PRESSED\);\s*lv_obj_set_style_bg_opa\(shell\.close, press_opa, LV_STATE_PRESSED\);\s*lv_obj_set_style_color_filter_opa\(shell\.close, LV_OPA_TRANSP, LV_STATE_PRESSED\);/);
 assert.match(fn(shell, 'control_fill'), /const tone_color::Fill fill = controls_fill\(options, card, rgb\);\s*color = lv_color_hex\(fill\.control_color\);\s*opa = fill\.control_opa;/);
@@ -84,6 +84,7 @@ const cpp = String.raw`
 #include <lvgl.h>
 #include <cstdint>
 #include <cstdio>
+#include "src/ui/shared/ui_theme.h"
 static lv_color_t g_disc_color = lv_color_white();
 static lv_opa_t g_disc_opa = 40;
 static uint32_t g_card = 0, g_icon = 0;

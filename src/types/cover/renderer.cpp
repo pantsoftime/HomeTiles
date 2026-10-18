@@ -18,9 +18,11 @@
 #include "src/tiles/runtime/tile_icon_source.h"
 #include "src/tiles/runtime/tile_renderer_fonts.h"
 #include "src/tiles/runtime/tile_renderer_shared.h"
+#include "src/ui/shared/tone_color.h"
 #include "src/ui/popups/cover/cover_popup.h"
 #include "src/ui/shared/command_pacer.h"
 #include "src/ui/shared/ui_pulse.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -35,7 +37,8 @@ struct CoverEventData {
 // included, and the second for unknown and unavailable (stateColorCss), like
 // the Cover popup's sliders.
 constexpr uint32_t kCoverActive = 0x926BC7;
-constexpr uint32_t kCoverInactive = 0x9E9E9E;
+// A closed cover: the resting grey of the theme (ui_theme::icon_rest).
+inline uint32_t cover_inactive() { return ui_theme::icon_rest(); }
 
 struct CoverUpdate {
   GridType grid_type = GridType::TAB0;
@@ -255,7 +258,8 @@ bool cover_icon_active(const CoverState& state) {
 }
 
 uint32_t cover_icon_color(const CoverState& state) {
-  return cover_icon_active(state) ? kCoverActive : kCoverInactive;
+  if (state.valid && !state.available) return ui_theme::unavailable_icon(cover_inactive());
+  return cover_icon_active(state) ? kCoverActive : cover_inactive();
 }
 
 String cover_value_text(const CoverState& state) {
@@ -502,6 +506,9 @@ void apply_state(GridType grid_type, uint8_t index, const char* payload) {
   if (!state.valid) return;
   widget.last_payload_hash = hash;
   states[index] = state;
+  // State colors follow the tile's surface (tile_surface, tile_icon_disc.h).
+  const ui_theme::SurfaceScope surface =
+      tile_surface::scope(widget.icon_label ? widget.icon_label : widget.title_label);
 
   show_view(grid_type, index);
   if (widget.icon_label) {
@@ -589,7 +596,7 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
       card, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_bg_grad_dir(
       card, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
-  const uint32_t pressed_color = brighten_rgb_color(color, 0x10);
+  const uint32_t pressed_color = tone_color::pressed_card(color);
   lv_obj_set_style_bg_color(
       card, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_style_bg_grad_color(
@@ -688,7 +695,7 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
 
   if (!header && tile.title.length()) {
     widget.title_label = lv_label_create(card);
-    set_label_style(widget.title_label, lv_color_white(),
+    set_label_style(widget.title_label, lv_color_hex(ui_theme::text()),
                     tile_layout::header_title_font());
     lv_obj_set_width(widget.title_label, LV_PCT(70));
     lv_obj_set_style_text_align(widget.title_label, LV_TEXT_ALIGN_RIGHT, 0);
@@ -705,7 +712,7 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
     // Same value block as a Sensor tile, but with the HA Cover state and
     // position on two lines (for example "Open\n40%").
     widget.value_label = lv_label_create(card);
-    set_label_style(widget.value_label, lv_color_white(),
+    set_label_style(widget.value_label, lv_color_hex(ui_theme::text()),
                     tile_layout::header_title_font());
     lv_label_set_long_mode(widget.value_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(widget.value_label, LV_PCT(100));

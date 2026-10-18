@@ -45,7 +45,7 @@
         }
         const meta = colorMeta;
         callTypeHandler(meta, 'load', prefix, data);
-        loadIconDiscFields(prefix, data);
+        syncIconDiscFields(prefix);
         refreshEntityOptionLists(prefix);
         syncGaugeUi(tab);
         const tileElem = document.getElementById(tab + '-tile-' + index);
@@ -105,7 +105,8 @@
     const typeValue = typeEl ? String(typeEl.value) : '0';
     const meta = getTileTypeMeta(typeValue);
     const locked = !!meta.locked;
-    if (typeEl) typeEl.disabled = locked;
+    // Fixed types (Settings, Back) and a folder with tiles (applyFolderTypeLock).
+    if (typeEl) typeEl.disabled = locked || typeEl.dataset.folderLocked === '1';
     if (navSelect) navSelect.disabled = (!meta.fields || meta.fields !== 'navigate' || locked);
     if (noteEl) {
       if (typeValue === '7') noteEl.textContent = t('settingsTileFixed');
@@ -122,15 +123,15 @@
     const spanWEl = document.getElementById(prefix + '_tile_span_w');
     const spanHEl = document.getElementById(prefix + '_tile_span_h');
     if (spanWEl) {
-      spanWEl.min = String(mediaType ? Math.min(MEDIA_TILE_MIN_SPAN, GRID_COLS) : 1);
-      spanWEl.max = String(mediaType ? Math.min(MEDIA_TILE_MAX_SPAN, GRID_COLS) : GRID_COLS);
+      spanWEl.min = String(mediaType ? Math.min(MEDIA_TILE_MIN_SPAN, placeCols(tab)) : 1);
+      spanWEl.max = String(mediaType ? Math.min(MEDIA_TILE_MAX_SPAN, placeCols(tab)) : placeCols(tab));
     }
     if (spanHEl) {
-      const availableRows = GRID_ROWS - firstAllowedGridRow(tab);
+      const availableRows = placeRows(tab) - firstAllowedGridRow(tab);
       spanHEl.min = String(mediaType ? Math.min(MEDIA_TILE_MIN_SPAN, availableRows) : 1);
       spanHEl.max = String(mediaType
         ? Math.min(MEDIA_TILE_MAX_SPAN, availableRows)
-        : GRID_ROWS);
+        : placeRows(tab));
     }
     document.querySelectorAll('#' + prefix + 'Settings .type-fields').forEach(f => f.classList.remove('show'));
     const meta = getTileTypeMeta(typeValue);
@@ -149,12 +150,31 @@
     syncFolderPinControls(tab);
     syncTileSizePolicy(tab);
     syncIconDiscFields(tab);
+    placeTileEntityField(tab);
+    syncTileAdvancedCaption(tab);
+  }
+
+  // "Advanced" only above options the type shows (user 2026-10-11): its
+  // visible fields, or the half-size note.
+  function syncTileAdvancedCaption(tab) {
+    const prefix = tab;
+    const caption = document.getElementById(prefix + '_tile_group_advanced');
+    if (!caption) return;
+    const note = document.getElementById(prefix + '_tile_size_note');
+    const fields = document.querySelector('#' + prefix + 'Settings .type-fields.show');
+    const shown = el => !el.hidden && el.type !== 'hidden' && !el.closest('.hidden, [hidden]') &&
+      (!el.isConnected || !el.offsetParent || el.getClientRects().length > 0);
+    const any = (note && !note.hidden) ||
+      !!fields && [...fields.querySelectorAll('input, select, textarea, button')].some(shown);
+    caption.classList.toggle('hidden', !any);
   }
 
   function syncTileSizePolicy(tab) {
     const typeEl = document.getElementById(tab + '_tile_type');
     if (!typeEl) return;
-    const h = Number(document.getElementById(tab + '_tile_span_h')?.value || 1);
+    // A page's tile is one cell (page-fields.js).
+    const h = typeof selectedPageTile === 'function' && selectedPageTile(tab)
+      ? 1 : Number(document.getElementById(tab + '_tile_span_h')?.value || 1);
     // Half a row high only suits the half-size types.
     const halfHeight = h < 1;
     // A new half-height tile may still take a larger type when it can grow.
@@ -174,7 +194,7 @@
       if (input) input.step = '0.5';
     }
     const row = document.getElementById(tab + '_tile_row');
-    if (row) row.max = String(GRID_ROWS + (compact && h === 0.5 ? 0.5 : 0));
+    if (row) row.max = String(placeRows(tab) + (compact && h === 0.5 ? 0.5 : 0));
     const height = document.getElementById(tab + '_tile_span_h');
     if (height && compact) height.min = '0.5';
     const note = document.getElementById(tab + '_tile_size_note');

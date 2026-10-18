@@ -35,6 +35,7 @@
 #include "src/ui/shared/tone_color.h"
 #include "src/ui/shared/ui_pulse.h"
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/ui/shared/ui_theme.h"
 
 namespace {
 
@@ -75,8 +76,8 @@ struct Popup {
   lv_obj_t* value = nullptr;
   lv_obj_t* body = nullptr;
   DevicePopupTarget target;
-  uint32_t card_rgb = popup_surface::kDefaultCard;
-  uint32_t icon_rgb = device_visual::kGrey;
+  uint32_t card_rgb = popup_surface::default_card();
+  uint32_t icon_rgb = device_visual::grey();
   bool open = false;
   // Lock Open like Home Assistant: "Really open?" for 5 s, "Door open" 2 s.
   uint32_t open_confirm_until = 0;
@@ -145,6 +146,7 @@ int content_height() { return popup_layout::kCardHeight - 2 * lv_obj_get_style_p
 void refresh(bool show);
 
 void expiry_timer_cb(lv_timer_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   pop.expiry_timer = nullptr;
   if (pop.open) refresh(false);
 }
@@ -239,7 +241,7 @@ lv_obj_t* pill(int x, int y, int w, int h, const char* icon, const char* label, 
   lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_column(button, popup_layout::scale(10), 0);
-  const lv_color_t fg = lit ? lv_color_hex(pop.card_rgb) : lv_color_white();
+  const lv_color_t fg = lit ? lv_color_hex(pop.card_rgb) : lv_color_hex(ui_theme::text());
   make_icon(button, fg, icon);
   make_label(button, fg, popup_layout::font24(), label);
   if (!enabled) {
@@ -254,7 +256,7 @@ lv_obj_t* pill(int x, int y, int w, int h, const char* icon, const char* label, 
 // Why the panel may not operate the device, or the last answer, centered.
 lv_obj_t* hint(int y, const char* value) {
   const int content_w = content_width();
-  lv_obj_t* label = make_label(pop.body, lv_color_hex(tone_color::kOffIcon), popup_layout::font20(), value);
+  lv_obj_t* label = make_label(pop.body, lv_color_hex(tone_color::off_icon()), popup_layout::font20(), value);
   lv_obj_set_width(label, content_w - 2 * popup_layout::scale(40));
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
@@ -267,13 +269,16 @@ lv_obj_t* value_label(const char* value) {
   lv_obj_t* box = make_box(pop.body);
   lv_obj_set_size(box, content_width(), popup_layout::kValueHeight);
   lv_obj_set_pos(box, 0, popup_layout::kValueY);
-  lv_obj_t* label = make_label(box, lv_color_white(), popup_layout::font40(), value);
+  lv_obj_t* label = make_label(box, lv_color_hex(ui_theme::text()), popup_layout::font40(), value);
   lv_obj_center(label);
   return label;
 }
 
 const char* hint_text(const Detail& d) {
   if (time_before(pop.notice_until)) return pop.notice.c_str();
+  // An unavailable entity says so in its value; the Bridge reports no
+  // unlock/disarm permission for it, so "unlock is off" would be wrong.
+  if (d.valid && !d.available) return nullptr;
   return device_control::blocked_reason(pop.target.type, d, nullptr);
 }
 
@@ -302,6 +307,7 @@ void set_notice(const char* value) {
 // Lock
 
 void lock_open_tapped(lv_event_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (time_before(pop.open_confirm_until)) {
     pop.open_confirm_until = 0;
     device_request(pop.target, "open", false);
@@ -314,11 +320,13 @@ void lock_open_tapped(lv_event_t*) {
 }
 
 void lock_toggle_tapped(lv_event_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const Detail d = device_control::detail(pop.target.entity);
   device_request(pop.target, device_visual::lock_on(d) ? "unlock" : "lock", false);
 }
 
 void lock_button_tapped(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   device_request(pop.target, lv_event_get_user_data(e) ? "lock" : "unlock", false);
 }
 
@@ -427,6 +435,7 @@ void build_lock(const Detail& d, const Visual& v) {
 // Alarm panel
 
 void alarm_key_tapped(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const int mode = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
   device_request(pop.target,
                  mode < 0 ? "disarm" : device_control::alarm_mode(static_cast<size_t>(mode)).action, false);
@@ -528,7 +537,7 @@ void build_alarm(const Detail& d, const Visual& v) {
     lv_obj_set_flex_flow(key, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(key, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(key, kh / 16, 0);
-    const lv_color_t fg = selected ? lv_color_hex(pop.card_rgb) : lv_color_white();
+    const lv_color_t fg = selected ? lv_color_hex(pop.card_rgb) : lv_color_hex(ui_theme::text());
     make_icon(key, fg, mode < 0 ? "shield-off" : device_control::alarm_mode(static_cast<size_t>(mode)).icon);
     // The Disarm key names the action unless the alarm is disarmed.
     const char* label =
@@ -608,6 +617,7 @@ void send_fan_level(uint8_t value) {
 }
 
 void fan_live_cb(lv_timer_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   g_live_timer = nullptr;
   if (pop.fan_dragging && pop.fan_moved) send_fan_level(pop.fan_drag);
 }
@@ -629,6 +639,7 @@ uint8_t fan_level_at(lv_obj_t* track, const Detail& d) {
 }
 
 void on_fan_track(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const lv_event_code_t code = lv_event_get_code(e);
   lv_obj_t* track = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
   const Detail d = device_control::detail(pop.target.entity);
@@ -690,6 +701,7 @@ void on_fan_track(lv_event_t* e) {
 }
 
 void fan_power(lv_event_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const Detail d = device_control::detail(pop.target.entity);
   const bool on = device_visual::fan_on(d);
   if (!(d.features & (on ? device_detail::kFanTurnOff : device_detail::kFanTurnOn))) return;
@@ -721,6 +733,7 @@ void choose_fan_option(FanMenu menu, int index) {
 }
 
 void on_fan_option(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const int index = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
   const int pill_index = pop.fan_menu_index;
   close_fan_menu();
@@ -783,7 +796,7 @@ void open_fan_menu(int index) {
   lv_color_t fill;
   lv_opa_t opa;
   control_fill(fill, opa);
-  const lv_color_t pressed = lv_color_mix(lv_color_white(), fill, 40);
+  const lv_color_t pressed = lv_color_mix(lv_color_hex(ui_theme::text()), fill, 40);
   pop.fan_menu = make_box(pop.body);
   lv_obj_set_pos(pop.fan_menu, x, y + pill_h - menu_h);
   lv_obj_set_size(pop.fan_menu, w, menu_h);
@@ -800,13 +813,13 @@ void open_fan_menu(int index) {
     const bool selected = i == source.selected;
     lv_obj_t* option = make_button(pop.fan_menu, 0, i * option_h, w, option_h, option_h / 2);
     lv_obj_set_style_radius(option, option_h / 2, 0);
-    lv_obj_set_style_bg_color(option, selected ? lv_color_white() : fill, 0);
+    lv_obj_set_style_bg_color(option, selected ? lv_color_hex(ui_theme::icon()) : fill, 0);
     lv_obj_set_style_bg_opa(option, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(option, pressed, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(option, LV_OPA_COVER, LV_STATE_PRESSED);
     popup_nav_style::no_press_filter(option, LV_PART_MAIN | LV_STATE_PRESSED);
     const String label_text = fan_option_text(d, source.menu, i);
-    lv_obj_t* label = make_label(option, selected ? lv_color_hex(pop.card_rgb) : lv_color_white(),
+    lv_obj_t* label = make_label(option, selected ? lv_color_hex(pop.card_rgb) : lv_color_hex(ui_theme::text()),
                                  popup_layout::font24(), label_text.c_str());
     lv_obj_set_width(label, w - 8);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
@@ -817,7 +830,7 @@ void open_fan_menu(int index) {
   lv_obj_t* line = make_box(pop.fan_menu);
   lv_obj_set_size(line, w - 24, 1);
   lv_obj_set_pos(line, 12, choices_h + separator_area - 1 - separator_inset);
-  lv_obj_set_style_bg_color(line, lv_color_mix(lv_color_white(), fill, 62), 0);
+  lv_obj_set_style_bg_color(line, lv_color_mix(lv_color_hex(ui_theme::icon()), fill, 62), 0);
   lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
   // The current pill closes the menu.
   lv_obj_t* current = make_button(pop.fan_menu, 0, choices_h + separator_area, w, pill_h, pill_h / 2);
@@ -828,10 +841,11 @@ void open_fan_menu(int index) {
   popup_nav_style::no_press_filter(current, LV_PART_MAIN | LV_STATE_PRESSED);
   lv_obj_set_flex_flow(current, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(current, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  pill_texts(current, source.caption, source.value.c_str(), lv_color_white());
+  pill_texts(current, source.caption, source.value.c_str(), lv_color_hex(ui_theme::text()));
   lv_obj_add_event_cb(
       current,
       [](lv_event_t*) {
+        const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
         close_fan_menu();
         if (pop.refresh_due) refresh(false);
       },
@@ -849,7 +863,7 @@ void build_fan(const Detail& d) {
   const bool usable = d.valid && d.available;
   // On: the fan color; off or unavailable: the grey off color, like the
   // Light popup.
-  const lv_color_t accent = lv_color_hex(on && usable ? device_visual::kCyan : device_visual::kGrey);
+  const lv_color_t accent = lv_color_hex(on && usable ? device_visual::kCyan : device_visual::grey());
   pop.fan_segment_count = 0;
   pop.fan_accent = accent;
   control_fill(pop.fan_rest, pop.fan_rest_opa);
@@ -921,7 +935,7 @@ void build_fan(const Detail& d) {
     // Off: the Light popup switch's off thumb, one step above the rail.
     lv_obj_set_style_bg_color(pop.fan_fill,
                               on ? accent : lv_color_hex(tone_color::switch_thumb_off(lv_color_to_u32(pop.fan_rest) & 0xFFFFFF)), 0);
-    lv_obj_t* symbol = make_icon(pop.fan_fill, on ? lv_color_hex(pop.card_rgb) : lv_color_hex(tone_color::kOffIcon),
+    lv_obj_t* symbol = make_icon(pop.fan_fill, on ? lv_color_hex(pop.card_rgb) : lv_color_hex(tone_color::off_icon()),
                                  on ? "fan" : "fan-off");
     lv_obj_center(symbol);
   }
@@ -973,7 +987,7 @@ void build_fan(const Detail& d) {
   lv_obj_set_style_radius(power, LV_RADIUS_CIRCLE, 0);
   popup_nav_style::set_bg(power, on ? accent : fill, on ? LV_OPA_COVER : opa, LV_PART_MAIN);
   control_pressed(power, on, accent);
-  lv_obj_t* power_icon = make_icon(power, on ? lv_color_hex(pop.card_rgb) : lv_color_white(), "power");
+  lv_obj_t* power_icon = make_icon(power, on ? lv_color_hex(pop.card_rgb) : lv_color_hex(ui_theme::text()), "power");
   lv_obj_center(power_icon);
   const uint32_t power_feature = on ? device_detail::kFanTurnOff : device_detail::kFanTurnOn;
   if (!usable || !(d.features & power_feature)) {
@@ -991,14 +1005,14 @@ void build_fan(const Detail& d) {
     control_pressed(item, false, fill);
     lv_obj_set_flex_flow(item, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(item, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    pill_texts(item, pop.pills[i].caption, pop.pills[i].value.c_str(), lv_color_white());
+    pill_texts(item, pop.pills[i].caption, pop.pills[i].value.c_str(), lv_color_hex(ui_theme::text()));
     pop.pill_objects[i] = item;
     if (!usable) {
       lv_obj_add_state(item, LV_STATE_DISABLED);
       continue;
     }
     lv_obj_add_event_cb(
-        item, [](lv_event_t* e) { open_fan_menu(static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)))); },
+        item, [](lv_event_t* e) { const ui_theme::SurfaceScope popup_scope = popup_surface::scope(); open_fan_menu(static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)))); },
         LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
   }
 }
@@ -1007,13 +1021,26 @@ void build_fan(const Detail& d) {
 // Popup object
 
 void on_close(lv_event_t* e) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) hide_device_popup();
+}
+
+// A theme change deletes the popup (popup_shell_delete_popups): its objects
+// are gone, ensure_popup builds it again.
+void on_overlay_delete(lv_event_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
+  if (g_live_timer) {
+    lv_timer_delete(g_live_timer);
+    g_live_timer = nullptr;
+  }
+  pop = Popup{};
 }
 
 void ensure_popup() {
   if (pop.card) return;
   const auto parts = create_popup_body(on_close, nullptr, pop.card_rgb);
   pop.overlay = parts.overlay;
+  lv_obj_add_event_cb(pop.overlay, on_overlay_delete, LV_EVENT_DELETE, nullptr);
   pop.card = parts.card;
   pop.title = parts.title;
   pop.icon = parts.icon;
@@ -1081,6 +1108,14 @@ void refresh(bool show) {
   if (pop.open) popup_shell_pulse_icon(pop.card, v.waiting || (*target && std::strcmp(target, d.state) != 0));
 }
 
+// The theme's default card, read with the theme: the caller may still hold
+// the surface of the popup opened before (after a filled Alarm tile the
+// white Lock tile got the dark theme's default card, V2 b365).
+uint32_t theme_default_card() {
+  const ui_theme::SurfaceScope theme = popup_surface::theme_scope();
+  return popup_surface::card_or_default(tileDefaultBgColor());
+}
+
 // The popup's background: the opening tile's color while that card lives
 // (tile_icon_source::popup_background also takes its header disc options).
 void open_for(const DevicePopupTarget& target) {
@@ -1091,8 +1126,11 @@ void open_for(const DevicePopupTarget& target) {
   }
   pop.target = target;
   if (!device_tile_alive(target.source)) pop.target.source = nullptr;
-  pop.card_rgb = pop.target.source ? tile_icon_source::popup_background(pop.target.source, tileDefaultBgColor())
-                                   : popup_surface::card_or_default(tileDefaultBgColor());
+  const uint32_t fallback = theme_default_card();
+  if (!pop.target.source) tile_icon_source::open_popup_without_tile();
+  pop.card_rgb = pop.target.source ? tile_icon_source::popup_background(pop.target.source, fallback) : fallback;
+  // Drawn with the surface its opener just set.
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   refresh(true);
 }
 
@@ -1123,6 +1161,7 @@ void show_lockout() {
 }
 
 void lockout_timer_cb(lv_timer_t*) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!g_code.open || !is_pin_popup_visible()) {
     if (g_code.lockout_timer) lv_timer_delete(g_code.lockout_timer);
     g_code.lockout_timer = nullptr;
@@ -1189,8 +1228,9 @@ void ask_code(const DevicePopupTarget& target, const char* action, bool from_til
   PinPopupInit init;
   init.title = target.title;
   init.icon_name = target.icon_name.length() ? target.icon_name : String(v.icon);
-  init.bg_color = g_code.target.source ? tile_icon_source::popup_background(g_code.target.source, tileDefaultBgColor())
-                                       : popup_surface::card_or_default(tileDefaultBgColor());
+  const uint32_t fallback = theme_default_card();
+  if (!g_code.target.source) tile_icon_source::open_popup_without_tile();
+  init.bg_color = g_code.target.source ? tile_icon_source::popup_background(g_code.target.source, fallback) : fallback;
   init.icon_color = v.color;
   init.hide_on_success = false;
   init.verify = capture_code;
@@ -1248,6 +1288,7 @@ void device_request(const DevicePopupTarget& target, const char* action, bool fr
 
 void device_popup_on_result(TileType type, const String& entity, const String& id, const char* status,
                             int retry_after) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   const bool ok = !std::strcmp(status, "ok") || !std::strcmp(status, "pending");
   if (g_code.in_flight && g_code.command_id == id) {
     g_code.in_flight = false;
@@ -1291,6 +1332,7 @@ void device_popup_on_result(TileType type, const String& entity, const String& i
 }
 
 void device_popup_on_no_reaction(const String& entity) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   // Lock and Alarm show only reported states, so this line is all that
   // tells a code the device rejected (Home Assistant answered ok) apart.
   if (!pop.open || (pop.target.type != TILE_LOCK && pop.target.type != TILE_ALARM) ||
@@ -1301,6 +1343,8 @@ void device_popup_on_no_reaction(const String& entity) {
 }
 
 void show_device_popup(const DevicePopupTarget& target) {
+  // Its opener is open_for (popup_background); until then the theme.
+  const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope();
   if (!target.entity.length()) return;
   hide_pin_popup();
   hide_light_popup();
@@ -1330,9 +1374,10 @@ void hide_device_popup() {
   lv_obj_remove_flag(pop.overlay, LV_OBJ_FLAG_CLICKABLE);
 }
 
-void preload_device_popup() { ensure_popup(); }
+void preload_device_popup() { const ui_theme::SurfaceScope popup_scope = popup_surface::theme_scope(); ensure_popup(); }
 
 void device_popup_follow_tile_color(uint32_t color) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   if (!pop.open || !pop.card) return;
   pop.card_rgb = color;
   lv_obj_set_style_bg_color(pop.card, lv_color_hex(color), 0);
@@ -1340,6 +1385,7 @@ void device_popup_follow_tile_color(uint32_t color) {
 }
 
 void device_popup_refresh(const String& entity) {
+  const ui_theme::SurfaceScope popup_scope = popup_surface::scope();
   // An open code entry follows its device: the card already took the tile's
   // new color, the header and the keys follow here (V2: the card turned
   // orange behind grey keys and the old state while the alarm armed).

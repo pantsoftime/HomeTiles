@@ -205,4 +205,27 @@ const previewPositionable = between(read('src/types/cover/admin.js'), 'function 
 assert.match(previewPositionable, /state\.deviceClass === 'garage' \|\| state\.deviceClass === 'gate'\) return false;/,
   'the Web preview must drop the bar for the same classes');
 
+// --- 8. Sensor folder target: last two scene_alias bytes, not upstream's ----
+// v0.9 stores the gauge decimals in scene_alias[11]; fork releases up to
+// v0.8.01 kept the target in bytes 11-12 (no panel used one when it moved).
+const tileConfigCpp = read('src/tiles/config/tile_config.cpp');
+assert.match(tileConfigCpp, /static constexpr size_t kSensorNavTargetByte = SCENE_MAX - 2;/);
+assert.match(tileConfigCpp, /out\.scene_alias\[kSensorNavTargetByte\] =\s*static_cast<char>\(in\.sensor_navigate_target & 0xFF\);/);
+assert.match(tileConfigCpp, /static_cast<uint8_t>\(in\.scene_alias\[kSensorNavTargetByte\]\) \|/);
+assert.doesNotMatch(tileConfigCpp, /scene_alias\[1[12]\][^\n]*sensor_navigate_target|sensor_navigate_target[^\n]*scene_alias\[1[12]\]/,
+  'bytes 11-12 belong to upstream (gauge decimals)');
+
+// --- 9. Icon circles: the fork keeps the global option upstream v0.9 removed --
+const surfaceStyle = read('src/ui/shared/ui_surface_style.cpp');
+assert.match(surfaceStyle, /bool icon_discs_shown\(\) \{ return configManager\.getConfig\(\)\.icon_discs; \}/);
+assert.match(surfaceStyle, /if \(mode == kIconDiscGlobalKey && !icon_discs_shown\(\)\) return LV_OPA_TRANSP;/,
+  'tile circles (Global mode) disappear with the option');
+const configCpp = read('src/core/config/config_manager.cpp');
+assert.match(configCpp, /config\.icon_discs = prefs\.getBool\("icon_disc", true\);/,
+  'the v0.7/v0.8 NVS key, so a panel keeps the choice it made then');
+assert.match(read('src/web/server/web_admin.cpp'), /"\/api\/display\/icon-discs"/);
+assert.match(read('src/web/server/render/web_admin_html.cpp'), /if \(!configManager\.getConfig\(\)\.icon_discs\) html \+= "\\" class=\\"icon-discs-off";/,
+  'the Web preview follows the option through the root class');
+assert.match(read('src/web/assets/admin.css'), /\.icon-discs-off \.tile:not\(\.empty\) > \.tile-icon::after \{ display:none !important; \}/);
+
 console.log('Compact-tile fork integration regressions passed.');

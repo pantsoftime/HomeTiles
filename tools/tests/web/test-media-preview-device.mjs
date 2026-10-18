@@ -71,6 +71,8 @@ ${radiusPolicyHost(root, 'Device::kGridCellH', 'Device::kGridGap')}
 #include "src/core/config/icon_glow.h"
 struct Config{bool tile_borders=true;bool icon_discs=true;uint8_t icon_glow=icon_glow::kDefault;int tile_radius=tile_radius::kMinimum;const char*language="en";};struct Manager{Config cfg;const Config&getConfig(){return cfg;}}configManager;
 ${surfaceStyleHost(root)}
+#include "src/types/climate/layout.h"
+#include "src/tiles/runtime/tile_press.h"
 ${strip(read('src/tiles/runtime/tile_icon_disc.h'))}
 namespace i18n{struct Strings{const char*media_state_playing="Playing";const char*media_state_paused="Paused";const char*media_state_idle="Idle";const char*media_state_standby="Standby";const char*media_state_off="Off";const char*media_no_playback="No playback";};
  inline const Strings&strings(const char*){static Strings s;return s;}inline String entity_state_label(const char*,const char*s){return std::string(s)=="unavailable"?"Unavailable":"Unknown";}}
@@ -181,6 +183,7 @@ document.documentElement.style.setProperty('--preview-cell-h', layout.cellH * sc
 document.documentElement.style.setProperty('--preview-gap', layout.gap * scale + 'px');
 document.fonts.load('400 20px "HomeTiles Inter"').then(() => {
   const results = [];
+  const kept = [];
   for (const device of ${JSON.stringify(tiles)}) {
     const el = document.createElement('div');
     el.className = 'tile media';
@@ -227,8 +230,18 @@ document.fonts.load('400 20px "HomeTiles Inter"').then(() => {
       boxes[name + 'Icon'] = {x: icon.left - card.left + (icon.width - size) / 2, y: icon.top - card.top, w: size, h: size};
     });
     results.push(boxes);
+    // A re-render with the same artwork keeps the shown picture (it blinked
+    // away until a new copy loaded, user 2026-10-08).
+    if (image) {
+      Object.defineProperty(image, 'complete', {value: true});
+      applyMediaPreview(el, state, {sensor_entity: 'media_player.test', span_w: device.spanW, span_h: device.spanH},
+                        'speaker', 'Player');
+      const again = el.querySelector('.media-preview-cover');
+      kept.push(again?.querySelector('img') === image && !again.hidden &&
+        el.querySelectorAll('.media-preview-cover').length === 1);
+    }
   }
-  document.getElementById('result').textContent = JSON.stringify({scale, results});
+  document.getElementById('result').textContent = JSON.stringify({scale, results, kept});
 });
 </script></body></html>`;
   const page = path.join(out, profile + '.html');
@@ -238,7 +251,8 @@ document.fonts.load('400 20px "HomeTiles Inter"').then(() => {
   assert.equal(run.status, 0, run.stderr);
   const match = /<pre id="result">([^<]*)<\/pre>/.exec(run.stdout);
   assert(match && match[1], profile + ': the preview harness did not finish\n' + run.stdout.slice(-2000));
-  const {scale, results} = JSON.parse(match[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
+  const {scale, results, kept} = JSON.parse(match[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
+  assert.ok(kept.length > 0 && kept.every(Boolean), profile + ': a re-render keeps the shown artwork');
   const report = [];
   tiles.forEach((device, index) => {
     const shownTile = results[index];

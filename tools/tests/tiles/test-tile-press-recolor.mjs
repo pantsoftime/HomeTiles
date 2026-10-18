@@ -16,7 +16,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const read = p => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
 // render_tile() applies it to every tile type.
 assert.match(read('src/tiles/runtime/tile_renderer.cpp'),
-  /tile_icon_disc::apply_tile_options\(tile_obj, tile\.icon_disc_mode, tile\.icon_glow\);\s*disable_pressed_recolor\(tile_obj\);/);
+  /tile_icon_disc::apply_tile_options\(tile_obj, 0, true\);\s*disable_pressed_recolor\(tile_obj\);/);
 const host = await lvglHost(root);
 if (!host) {
   console.log('SKIP: Tile press recolor needs LVGL and a host compiler');

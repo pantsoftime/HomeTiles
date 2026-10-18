@@ -4,6 +4,7 @@
 #include "src/devices/device_select.h"
 #include "src/devices/guition_esp32_4848s040/s3_diagnostics.h"
 #include "src/core/diagnostics/popup_timing.h"
+#include "src/tiles/config/grid_layout.h"
 #if defined(DEVICE_WAVESHARE_TOUCH_LCD_X) || \
     defined(DEVICE_GUITION_JC1060P470C_FAMILY)
 #include "src/devices/active_device.h"
@@ -25,6 +26,8 @@ lv_color_t* DisplayManager::buf2 = nullptr;
 uint32_t DisplayManager::last_activity_time = 0;
 uint8_t DisplayManager::rotation = 0;
 static bool g_ignore_touch_until_release = false;
+// Last touch read reported a pressed point (loop task only).
+static bool g_touch_held = false;
 static bool g_input_enabled = true;
 static volatile uint16_t g_flush_log_budget = 0;
 static size_t g_buffer_lines = 0;
@@ -44,7 +47,7 @@ static constexpr uintptr_t kCacheLineSize = 64;
 // failed LVGL's assert and the boot hung silently. Bands are allocated and
 // reported to LVGL rounded up.
 static size_t draw_buffer_bytes(size_t lines) {
-  const size_t bytes = static_cast<size_t>(SCREEN_WIDTH) * lines * g_bytes_per_pixel;
+  const size_t bytes = static_cast<size_t>(grid_layout::screen_w()) * lines * g_bytes_per_pixel;
   return (bytes + LV_DRAW_BUF_ALIGN - 1) / LV_DRAW_BUF_ALIGN * LV_DRAW_BUF_ALIGN;
 }
 static bool g_reverse_flush_once = false;
@@ -226,7 +229,7 @@ static bool ensure_reverse_buf() {
     g_reverse_buf_width = 0;
   }
   uint8_t bpp = g_bytes_per_pixel ? g_bytes_per_pixel : 2;
-  const size_t bytes = kReverseStripeWidth * SCREEN_HEIGHT * bpp;
+  const size_t bytes = kReverseStripeWidth * grid_layout::screen_h() * bpp;
   lv_color_t* buf = (lv_color_t*)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
   if (!buf) {
     buf = (lv_color_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
@@ -296,7 +299,7 @@ bool DisplayManager::allocDrawBuffers(size_t requested_lines, lv_display_render_
     g_bytes_per_pixel = lv_color_format_get_size(lv_display_get_color_format(disp));
     if (g_bytes_per_pixel == 0) g_bytes_per_pixel = 2;
   }
-  const size_t line_bytes = (size_t)SCREEN_WIDTH * g_bytes_per_pixel;
+  const size_t line_bytes = (size_t)grid_layout::screen_w() * g_bytes_per_pixel;
   if (line_bytes == 0) return false;
 
   lv_color_t* nb1 = nullptr;
@@ -392,7 +395,7 @@ bool DisplayManager::setBufferLines(size_t lines) {
 }
 
 bool DisplayManager::setSinglePsramBufferLines(size_t lines) {
-  if (!disp || lines == 0 || lines > SCREEN_HEIGHT) return false;
+  if (!disp || lines == 0 || lines > static_cast<size_t>(grid_layout::screen_h())) return false;
   if (g_preserved_draw_buffer_active) {
     if (g_single_psram_draw_buffer && g_buffer_lines == lines && buf1 &&
         !buf2) {
@@ -597,6 +600,21 @@ void DisplayManager::setRotation(uint8_t rotation_value) {
   }
 }
 
+void DisplayManager::applyShownScreen() {
+  if (!disp) return;
+  const int32_t w = grid_layout::screen_w();
+  const int32_t h = grid_layout::screen_h();
+  if (lv_display_get_horizontal_resolution(disp) == w && lv_display_get_vertical_resolution(disp) == h) return;
+  // Only a panel that can draw upright gets a turned layout
+  // (grid_layout::switchable); the driver first, then LVGL's screen.
+  BoardHAL::displaySetUpright(grid_layout::turned());
+  lv_display_set_resolution(disp, w, h);
+  // The bands keep their lines at the new width.
+  allocDrawBuffers(static_cast<size_t>(h) / Device::kDisplayFlushBands, g_render_mode);
+  Serial.printf("[Display] Screen %ldx%ld (%s)\n", static_cast<long>(w), static_cast<long>(h),
+                grid_layout::turned() ? "turned" : "panel's own");
+}
+
 void DisplayManager::setRotationFlipped(bool flipped) {
   setRotation(flipped ? Device::kRotationFlipped : Device::kRotationDefault);
 }
@@ -672,7 +690,8 @@ void IRAM_ATTR DisplayManager::flush_cb(lv_display_t *lv_disp, const lv_area_t *
       g_reverse_flush = false;
       g_reverse_flush_once = false;
     }
-    if (area->x1 == 0 && area->y1 == 0 && w == SCREEN_WIDTH && h == SCREEN_HEIGHT) {
+    if (area->x1 == 0 && area->y1 == 0 && w == static_cast<uint32_t>(grid_layout::screen_w()) &&
+        h == static_cast<uint32_t>(grid_layout::screen_h())) {
       g_fullscreen_flush_seq++;
     }
     commit_display_if_last(lv_disp);
@@ -741,7 +760,8 @@ void IRAM_ATTR DisplayManager::flush_cb(lv_display_t *lv_disp, const lv_area_t *
     }
   }
 
-  if (area->x1 == 0 && area->y1 == 0 && w == SCREEN_WIDTH && h == SCREEN_HEIGHT) {
+  if (area->x1 == 0 && area->y1 == 0 && w == static_cast<uint32_t>(grid_layout::screen_w()) &&
+      h == static_cast<uint32_t>(grid_layout::screen_h())) {
     g_fullscreen_flush_seq++;
   }
   commit_display_if_last(lv_disp);
@@ -762,6 +782,7 @@ void IRAM_ATTR DisplayManager::flush_cb(lv_display_t *lv_disp, const lv_area_t *
 // ========== Touch Callback ==========
 // IRAM_ATTR keeps frequent touch polling in internal RAM for responsive input.
 void IRAM_ATTR DisplayManager::touch_cb(lv_indev_t* indev_drv, lv_indev_data_t *data) {
+  g_touch_held = false;
   // Wake from display sleep only on real touch. The normal loop does not
   // drive this callback during sleep, but lvglServiceDuringBlockingWork()
   // can call lv_timer_handler(), for example while logList() prints a large
@@ -823,9 +844,21 @@ void IRAM_ATTR DisplayManager::touch_cb(lv_indev_t* indev_drv, lv_indev_data_t *
     }
 #endif
 
+    // The upright layout (grid_layout::turned()): the drivers report the
+    // landscape UI's point; every P4 driver turns the landscape UI into its
+    // upright panel the same way (landscape (x, y) at panel (w - 1 - y, x),
+    // with 180 the mirrored place in both), and the upright UI is the panel
+    // itself, so the upright point is the same turn for every rotation.
+    if (grid_layout::turned()) {
+      const int16_t landscape_x = mapped_x;
+      mapped_x = static_cast<int16_t>(grid_layout::screen_w() - 1 - mapped_y);
+      mapped_y = landscape_x;
+    }
+
     data->state = LV_INDEV_STATE_PRESSED;
     data->point.x = mapped_x;
     data->point.y = mapped_y;
+    g_touch_held = true;
 
     // Reset the activity timer and wake the power manager.
     last_activity_time = millis();
@@ -947,6 +980,10 @@ bool DisplayManager::init() {
 
   Serial.println("[OK] Display Manager initialized");
   return true;
+}
+
+bool DisplayManager::isTouchHeld() {
+  return g_touch_held;
 }
 
 void DisplayManager::resetActivityTimer() {

@@ -131,7 +131,9 @@ const sandbox = {
   requestAnimationFrame: noop,
   addEventListener: noop,
   getComputedStyle: element => ({
-    backgroundColor: element?.style?.background || '#353535'
+    backgroundColor: element?.style?.background || '#353535',
+    // No panel theme roles here: the dark theme (grid-preview.js panelVar).
+    getPropertyValue: () => ''
   }),
   fetch: () => Promise.reject(new Error('unexpected fetch')),
   FormData,
