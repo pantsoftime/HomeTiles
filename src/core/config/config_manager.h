@@ -182,7 +182,6 @@ public:
   bool saveScreensaverBrightness(uint8_t brightness_pct);
   bool saveTileBorders(bool enabled);
   bool saveIconDiscs(bool enabled);  // FORK
-  bool saveIconDiscs(bool enabled);  // FORK
   bool saveLayout(uint8_t layout);
   bool saveHeadGear(bool enabled);
   bool saveHeadClock(bool enabled);
