@@ -13,6 +13,11 @@ namespace {
 
 static constexpr int32_t kCurrentMainsThresholdMa = 50;
 static constexpr uint32_t kBatteryLogIntervalMs = 10000;
+// FORK: battery current dead band and hold for batteryStateFlow(). On the
+// workstation's weak USB port the pack sat at ~2 mA (idle); on battery the
+// panel draws ~85-130 mA; a charger pushes well above the band.
+static constexpr int32_t kFlowDeadBandMa = 30;
+static constexpr uint8_t kFlowHoldSamples = 6;  // 500 ms polls -> 3 s
 
 static constexpr uint32_t kPowerStateDebounceMs = 1200;
 static constexpr uint32_t kBatteryMissingDebounceMs = 3000;
@@ -78,6 +83,10 @@ bool is_battery_missing_raw(bool on_mains, int32_t level_pct, int32_t current_ma
 
 struct BatteryStateInternal {
   bool initialized = false;
+  // FORK: batteryStateFlow() hysteresis.
+  BatteryFlow flow = BatteryFlow::Unknown;
+  BatteryFlow flow_candidate = BatteryFlow::Unknown;
+  uint8_t flow_candidate_count = 0;
   bool power_candidate = false;
   uint32_t power_candidate_since_ms = 0;
   bool missing_candidate = false;
@@ -220,6 +229,26 @@ void batteryStateUpdate() {
   s.out.has_vbus = raw_vbus >= 0;
   s.out.charging = charging;
 
+  // FORK: current direction for the Settings tile indicator (battery_state.h).
+  BatteryFlow seen = BatteryFlow::Unknown;
+  if (!s.out.battery_missing) {
+    seen = raw_current > kFlowDeadBandMa    ? BatteryFlow::Charging
+         : raw_current < -kFlowDeadBandMa   ? BatteryFlow::Discharging
+                                            : BatteryFlow::Idle;
+  }
+  if (seen == s.flow) {
+    s.flow_candidate_count = 0;
+  } else if (seen == s.flow_candidate) {
+    if (++s.flow_candidate_count >= kFlowHoldSamples || s.flow == BatteryFlow::Unknown) {
+      s.flow = seen;
+      s.flow_candidate_count = 0;
+    }
+  } else {
+    s.flow_candidate = seen;
+    s.flow_candidate_count = 1;
+    if (s.flow == BatteryFlow::Unknown) s.flow = seen;  // first reading shows at once
+  }
+
   // Rate-limited raw telemetry. This is the only way to validate PMIC
   // readings on real hardware without a debugger, so it stays in the
   // release build. One bounded line per interval, no per-poll allocation.
@@ -244,6 +273,8 @@ const BatteryTelemetry& batteryStateGet() {
 bool batteryStateIsOnMains() {
   return g_state.out.on_mains;
 }
+
+BatteryFlow batteryStateFlow() { return g_state.flow; }
 
 bool batteryStateIsBatteryMissing() {
   return g_state.out.battery_missing;
@@ -292,6 +323,8 @@ const BatteryTelemetry& batteryStateGet() {
 bool batteryStateIsOnMains() {
   return true;
 }
+
+BatteryFlow batteryStateFlow() { return BatteryFlow::Unknown; }
 
 bool batteryStateIsBatteryMissing() {
   return true;

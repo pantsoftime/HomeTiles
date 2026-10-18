@@ -26,4 +26,11 @@ bool batteryStateHasDisplayPercent();
 int32_t batteryStateDisplayPercent();
 int32_t batteryStateRawPercent();
 
+// FORK: which way the battery current flows, for the Settings tile's
+// indicator. Decided from the measured current (CHG_STAT is unreliable on the
+// Tab5: it reads "charging" at ~2 mA) with a dead band and a hold, so a short
+// load spike does not flip it. Unknown without a measured battery.
+enum class BatteryFlow : uint8_t { Unknown, Charging, Discharging, Idle };
+BatteryFlow batteryStateFlow();
+
 #endif // BATTERY_STATE_H
