@@ -201,6 +201,17 @@ assert.match(cover, /const bool header = compact \|\| \(positionable && !cover_e
   'a full garage tile must render the classic layout, not the header with the bar');
 assert.match(cover, /const bool show_bar = positionable && !cover_end_stop_only\(state\);/,
   'a tile rendered before its class was known must hide the bar once it is');
+// ... and is then rebuilt in the classic layout by the loop, not inside
+// apply_state() (which still uses the widgets), from the state it just cached.
+const coverApply = between(cover, 'void apply_state(GridType grid_type, uint8_t index, const char* payload) {', '\n}\n');
+assert.match(coverApply, /if \(!widget\.compact && widget\.bar && cover_end_stop_only\(state\)\) \{\s*tiles_request_tile_rebuild\(grid_type, index\);/,
+  'a header-layout garage tile must ask for a rebuild once its class arrives');
+assert.match(cover, /!tiles_get_cached_entity_payload\(tile\.sensor_entity\.c_str\(\), initial\)\) \{\s*initial = haBridgeConfig\.findSensorInitialValue/,
+  'the rebuild must see the cached state, or it would build the header again and loop');
+const unified = read('src/ui/tabs/tiles/tab_tiles_unified.cpp');
+assert.match(between(unified, 'void tiles_process_tile_rebuilds() {', '\n}\n'), /rebuild_tile_at_index\(static_cast<GridType>\(idx\), i\);/);
+assert.match(read('src/tiles/runtime/tile_update_service.h'), /process_icon_source_updates\(\);\s*tiles_process_tile_rebuilds\(\);/,
+  'rebuild requests are drained on the loop task after the update queues');
 const previewPositionable = between(read('src/types/cover/admin.js'), 'function coverPreviewPositionable(', '\n  }\n');
 assert.match(previewPositionable, /state\.deviceClass === 'garage' \|\| state\.deviceClass === 'gate'\) return false;/,
   'the Web preview must drop the bar for the same classes');

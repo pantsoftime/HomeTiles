@@ -2086,6 +2086,31 @@ void tiles_invalidate_folder_only(uint16_t folder_id) {
 
 static void rebuild_tile_at_index(GridType grid_type, uint8_t index);
 
+// FORK: tiles whose renderer asked to be rebuilt (tiles_request_tile_rebuild),
+// one bit per slot and grid. A renderer must not delete its own widgets while
+// it applies a state, so the loop task rebuilds them afterwards.
+static_assert(TILES_PER_GRID <= 64, "one pending bit per tile slot");
+static std::atomic<uint64_t> g_tile_rebuild_pending[4]{};
+
+void tiles_request_tile_rebuild(GridType grid_type, uint8_t index) {
+  const uint8_t idx = static_cast<uint8_t>(grid_type);
+  if (idx < 4 && index < TILES_PER_GRID) {
+    g_tile_rebuild_pending[idx].fetch_or(uint64_t{1} << index);
+  }
+}
+
+void tiles_process_tile_rebuilds() {
+  for (uint8_t idx = 0; idx < 4; ++idx) {
+    uint64_t pending = g_tile_rebuild_pending[idx].exchange(0);
+    for (uint8_t i = 0; i < TILES_PER_GRID && pending; ++i) {
+      const uint64_t bit = uint64_t{1} << i;
+      if (!(pending & bit)) continue;
+      pending &= ~bit;
+      rebuild_tile_at_index(static_cast<GridType>(idx), i);
+    }
+  }
+}
+
 // A Web Admin edit changes a few tiles: unchanged tiles stay, moved tiles take
 // their new cells, and only changed, new or removed tiles are built or deleted
 // (rebuild_tile_at_index), instead of the whole grid being rebuilt

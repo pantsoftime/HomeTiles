@@ -6,6 +6,8 @@
 
 // tab_tiles_unified.cpp: recolors icon-and-title tiles from their source entity.
 void process_icon_source_updates();
+// FORK: tab_tiles_unified.cpp: rebuilds tiles a renderer asked for.
+void tiles_process_tile_rebuilds();
 
 enum class TileUpdateBudget : uint8_t {
   Active,
@@ -29,4 +31,5 @@ inline void process_tile_update_queues() {
   process_weather_update_queue(drain_all ? 0 : 4);
   process_media_update_queue(drain_all ? 0 : 2);
   process_icon_source_updates();
+  tiles_process_tile_rebuilds();  // FORK: after the queues that request them
 }

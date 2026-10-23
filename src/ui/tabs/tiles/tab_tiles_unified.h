@@ -35,6 +35,10 @@ bool tiles_get_cached_entity_payload(const char* entity_id, String& out);
 // tile_update_service.h). Editable values request their tile directly.
 void process_icon_source_updates();
 void tiles_request_rule_refresh(GridType grid_type, uint8_t index);
+// FORK: rebuild one tile on the loop task (tile_update_service.h), for a
+// renderer whose layout depends on state that arrived after it was built.
+void tiles_request_tile_rebuild(GridType grid_type, uint8_t index);
+void tiles_process_tile_rebuilds();
 bool tiles_get_cached_entity_payload_signature(const char* entity_id,
                                                uint32_t& hash_out,
                                                size_t& length_out);

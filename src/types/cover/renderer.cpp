@@ -23,6 +23,7 @@
 #include "src/ui/shared/command_pacer.h"
 #include "src/ui/shared/ui_pulse.h"
 #include "src/ui/shared/ui_theme.h"
+#include "src/ui/tabs/tiles/tab_tiles_unified.h"  // FORK: tiles_request_tile_rebuild
 
 namespace {
 
@@ -506,6 +507,12 @@ void apply_state(GridType grid_type, uint8_t index, const char* payload) {
   if (!state.valid) return;
   widget.last_payload_hash = hash;
   states[index] = state;
+  // FORK: built before its first state (at boot), a garage door or gate took
+  // the header layout; show_view() hides its bar, and the loop rebuilds it in
+  // the classic one (user 2026-10-23: "Garag... Closed" until a redraw).
+  if (!widget.compact && widget.bar && cover_end_stop_only(state)) {
+    tiles_request_tile_rebuild(grid_type, index);
+  }
   // State colors follow the tile's surface (tile_surface, tile_icon_disc.h).
   const ui_theme::SurfaceScope surface =
       tile_surface::scope(widget.icon_label ? widget.icon_label : widget.title_label);
@@ -624,9 +631,13 @@ lv_obj_t* render_cover_tile(lv_obj_t* parent, int col, int row,
   // with the cover position feature). A Cover without a position keeps the
   // centered state and position.
   const bool compact = tile_geometry::compact_cover(tile.type, tile.span_w, tile.span_h);
-  const String initial = tile.sensor_entity.length()
-                             ? haBridgeConfig.findSensorInitialValue(tile.sensor_entity)
-                             : String();
+  // FORK: the latest state first (the one apply_state() saw), so a tile
+  // rebuilt for its layout (tiles_request_tile_rebuild) is built for it.
+  String initial;
+  if (tile.sensor_entity.length() &&
+      !tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), initial)) {
+    initial = haBridgeConfig.findSensorInitialValue(tile.sensor_entity);
+  }
   const CoverState reported = initial.length() ? parse_cover_payload(initial.c_str()) : CoverState{};
   const bool positionable = !reported.valid || (reported.supported_features & COVER_FEATURE_SET_POSITION);
   // FORK: garage doors and gates keep the classic layout (cover_end_stop_only).
