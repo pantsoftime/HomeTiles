@@ -111,7 +111,9 @@ for (const call of ['registerSensorMeta', 'updateEntityMeta', 'updateSensorValue
 const batteryHeader = read('src/core/power/battery_state.h');
 assert.match(batteryHeader, /enum class BatteryFlow : uint8_t \{ Unknown, Charging, Discharging, Idle \};/);
 assert.match(battery, /static constexpr int32_t kFlowDeadBandMa = 30;/);
-assert.match(battery, /raw_current > kFlowDeadBandMa\s*\? BatteryFlow::Charging/);
+// The PMIC reads a draw as positive (detect_mains_raw), so charging is negative.
+assert.match(battery, /raw_current < -kFlowDeadBandMa\s*\? BatteryFlow::Charging/);
+assert.match(battery, /raw_current > kFlowDeadBandMa\s*\? BatteryFlow::Discharging/);
 assert.match(battery, /BatteryFlow batteryStateFlow\(\) \{ return BatteryFlow::Unknown; \}/,
   'boards without a measured battery never show an indicator');
 assert.doesNotMatch(battery.slice(battery.indexOf('BatteryFlow seen')), /^\s*seen = charging/m,

@@ -15,7 +15,8 @@ static constexpr int32_t kCurrentMainsThresholdMa = 50;
 static constexpr uint32_t kBatteryLogIntervalMs = 10000;
 // FORK: battery current dead band and hold for batteryStateFlow(). On the
 // workstation's weak USB port the pack sat at ~2 mA (idle); on battery the
-// panel draws ~85-130 mA; a charger pushes well above the band.
+// panel draws ~85-130 mA (read as positive); a charger pushes well past the
+// band on the negative side.
 static constexpr int32_t kFlowDeadBandMa = 30;
 static constexpr uint8_t kFlowHoldSamples = 6;  // 500 ms polls -> 3 s
 
@@ -232,8 +233,11 @@ void batteryStateUpdate() {
   // FORK: current direction for the Settings tile indicator (battery_state.h).
   BatteryFlow seen = BatteryFlow::Unknown;
   if (!s.out.battery_missing) {
-    seen = raw_current > kFlowDeadBandMa    ? BatteryFlow::Charging
-         : raw_current < -kFlowDeadBandMa   ? BatteryFlow::Discharging
+    // The Tab5's PMIC reads a draw as positive (detect_mains_raw: above
+    // 50 mA is battery mode), so charging is the negative side (user
+    // 2026-10-23: the bolt showed on battery with v0.9.32's opposite sign).
+    seen = raw_current < -kFlowDeadBandMa   ? BatteryFlow::Charging
+         : raw_current > kFlowDeadBandMa    ? BatteryFlow::Discharging
                                             : BatteryFlow::Idle;
   }
   if (seen == s.flow) {
