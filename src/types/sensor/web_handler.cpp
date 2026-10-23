@@ -15,11 +15,14 @@ void apply_sensor_fields_from_request(WebServer& server, Tile& tile) {
 
   // Optional folder to navigate to. Fires on whichever gesture is not opening
   // the popup, so popup_open_mode decides which press does which.
-  int nav = server.hasArg("sensor_navigate_target")
-                ? server.arg("sensor_navigate_target").toInt()
-                : 0;
-  if (nav < 0) nav = 0;
-  tile.sensor_navigate_target = static_cast<uint16_t>(nav);
+  // FORK: the Web Admin has no field for it, so a request without the
+  // argument keeps the stored target (user 2026-10-23: an edit wiped the
+  // Solar Now long press). Other tile types unpack it as 0.
+  if (server.hasArg("sensor_navigate_target")) {
+    int nav = server.arg("sensor_navigate_target").toInt();
+    if (nav < 0) nav = 0;
+    tile.sensor_navigate_target = static_cast<uint16_t>(nav);
+  }
 
   uint8_t decimals = 0xFF;
   if (server.hasArg("sensor_decimals")) {

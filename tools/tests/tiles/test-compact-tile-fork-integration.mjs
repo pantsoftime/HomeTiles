@@ -225,6 +225,15 @@ assert.match(tileConfigCpp, /out\.scene_alias\[kSensorNavTargetByte\] =\s*static
 assert.match(tileConfigCpp, /static_cast<uint8_t>\(in\.scene_alias\[kSensorNavTargetByte\]\) \|/);
 assert.doesNotMatch(tileConfigCpp, /scene_alias\[1[12]\][^\n]*sensor_navigate_target|sensor_navigate_target[^\n]*scene_alias\[1[12]\]/,
   'bytes 11-12 belong to upstream (gauge decimals)');
+// The export carries the target (a backup or a scripted rewrite read it from
+// there; before v0.9.43 it was missing and every rewrite set 0), and a save
+// without the argument -- the Web Admin has no field -- keeps it.
+assert.match(read('src/web/server/handlers/web_admin_tiles.cpp'),
+  /if \(tile\.type == TILE_SENSOR\) \{\s*out \+= ",\\"sensor_navigate_target\\":";\s*out \+= String\(tile\.sensor_navigate_target\);/);
+const sensorSave = read('src/types/sensor/web_handler.cpp');
+assert.match(sensorSave, /if \(server\.hasArg\("sensor_navigate_target"\)\) \{\s*int nav = server\.arg\("sensor_navigate_target"\)\.toInt\(\);/,
+  'a request without the target must keep the stored one');
+assert.doesNotMatch(sensorSave, /:\s*0;\s*if \(nav < 0\) nav = 0;/, 'no reset to 0 when the argument is absent');
 
 // --- 9. Icon circles: the fork keeps the global option upstream v0.9 removed --
 const surfaceStyle = read('src/ui/shared/ui_surface_style.cpp');

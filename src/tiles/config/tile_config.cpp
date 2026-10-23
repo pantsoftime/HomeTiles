@@ -1468,8 +1468,10 @@ static void packTile(const Tile& in, PackedTileV7& out) {
         in.sensor_gauge_decimals <= sensor_gauge::kMaxDecimals ? in.sensor_gauge_decimals : 0);
     // FORK: optional navigate target, in the LAST two bytes of this firmware-
     // managed blob. Fork releases up to v0.8.01 kept it in bytes 11-12, which
-    // upstream v0.9 gave to the gauge decimals above; no panel used a target
-    // then, so nothing was migrated. Upstream fills the blob from the front.
+    // upstream v0.9 gave to the gauge decimals above. Nothing was migrated:
+    // the check that no panel used a target read /api/tiles, which did not
+    // export it before v0.9.43, so the panels' targets were set again by hand
+    // (2026-10-23). Upstream fills the blob from the front.
     out.scene_alias[kSensorNavTargetByte] =
         static_cast<char>(in.sensor_navigate_target & 0xFF);
     out.scene_alias[kSensorNavTargetByte + 1] =

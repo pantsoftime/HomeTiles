@@ -573,6 +573,11 @@ void WebAdminServer::handleGetTiles() {
     out += String((tile.type == TILE_SWITCH && tile.sensor_decimals <= 3) ? tile.sensor_decimals : 0);
     out += ",\"navigate_target\":";
     out += String((tile.type == TILE_FOLDER) ? getNavigateTargetId(tile) : 0);
+    // FORK: a Sensor tile's folder target, so a backup and a rewrite keep it.
+    if (tile.type == TILE_SENSOR) {
+      out += ",\"sensor_navigate_target\":";
+      out += String(tile.sensor_navigate_target);
+    }
     // The editor prevents type changes for nonempty folders to keep their
     // content reachable. Deletion remains allowed.
     out += ",\"folder_empty\":";
