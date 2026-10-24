@@ -2277,6 +2277,10 @@ void setMicBoostDb(uint8_t db) {
 #endif
 }
 
+bool assistCapturing() {
+  return static_cast<assist::PublicState>(g_assist_state.load()) != assist::PublicState::Idle;
+}
+
 MicLevels micLevels() {
   MicLevels levels;
   const uint32_t end_ms = g_lvl_window_end_ms.load();

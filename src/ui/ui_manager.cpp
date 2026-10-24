@@ -28,6 +28,7 @@
 #include "src/fonts/ui_fonts.h"
 #include "src/ui/popups/popup_layout.h"
 #include "src/ui/shared/camera_indicator.h"
+#include "src/ui/shared/listening_dot_fork.h"  // FORK
 #include "src/ui/popups/popup_shell.h"
 #include "src/ui/popups/popup_first_frame.h"
 #include "src/ui/tabs/settings/settings_screen.h"
@@ -160,6 +161,8 @@ void UIManager::buildUI(scene_publish_cb_t scene_cb, hotspot_start_cb_t hotspot_
 
   access_gesture_eligible = false;
   mqttPublishDeviceSettings();
+  // FORK: orange dot in the top left corner while the microphone feeds Assist.
+  listening_dot::init();
   // Red frame in the outer margin while the built-in camera captures.
   camera_indicator::init();
 
@@ -499,6 +502,7 @@ void UIManager::switchToTab(uint8_t index) {
       // LVGL draws the dirty areas in this order: the stripe first, so its
       // faded ends do not appear only after the Settings controls.
       camera_indicator::invalidateVisible();
+      listening_dot::invalidateVisible();  // FORK
       for (uint32_t i = 0; i < child_count; ++i) {
         lv_obj_t* child = lv_obj_get_child(tab_panels[index], static_cast<int32_t>(i));
         if (child && !lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) {

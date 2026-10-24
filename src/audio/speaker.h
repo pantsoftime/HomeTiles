@@ -109,6 +109,11 @@ struct MicLevels {
 };
 MicLevels micLevels();
 
+// FORK: true while the microphone feeds Assist: from a wake word detection
+// (audio buffered for the handoff) to the end of the capture session. The
+// listening dot (listening_dot_fork.h) polls it. Any task.
+bool assistCapturing();
+
 // "audio_output" flag in the Bridge capabilities: codec found and ready.
 bool bridgeCapability();
 
