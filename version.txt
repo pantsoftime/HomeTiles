@@ -18,4 +18,5 @@
 // v0.9.31 = upstream v0.9.3 + the patch digit ({0,9,31}); releases are tagged
 // from v0.9.31 on so the panels find their icon file on this fork's release.
 // v0.9.41 = upstream v0.9.4 + the patch digit ({0,9,41}).
-#define FW_VERSION "v0.9.45"
+// v0.9.51 = upstream v0.9.5 + the patch digit ({0,9,51}).
+#define FW_VERSION "v0.9.51"
