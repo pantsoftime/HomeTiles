@@ -85,6 +85,30 @@ inline uint16_t micGainTenthsDb(uint8_t step) {
 uint8_t micGainStep();
 void setMicGainStep(uint8_t step);
 
+// FORK: which slot feeds the mono stream (mic_tuning::Channel: 0 mix, 1 left,
+// 2 right; ES8311 boards always take the left one) and a digital boost of
+// 0..24 dB on top of the analog gain (mic_tuning_fork.h). Stored; both apply
+// to the next captured chunk. Loop task only.
+uint8_t micChannel();
+void setMicChannel(uint8_t channel);
+uint8_t micBoostDb();
+void setMicBoostDb(uint8_t db);
+
+// FORK: levels of the last completed ~1 s of captured audio, in tenths of a
+// dBFS (-960 = silence): each I2S slot before mixing and the boosted mono
+// stream that the wake word and Assist get. age_ms is the time since that
+// window ended; the levels go stale while nothing reads the microphone.
+struct MicLevels {
+  int16_t left_peak = -960;
+  int16_t left_rms = -960;
+  int16_t right_peak = -960;
+  int16_t right_rms = -960;
+  int16_t out_peak = -960;
+  int16_t out_rms = -960;
+  uint32_t age_ms = UINT32_MAX;
+};
+MicLevels micLevels();
+
 // "audio_output" flag in the Bridge capabilities: codec found and ready.
 bool bridgeCapability();
 

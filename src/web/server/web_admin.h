@@ -79,6 +79,7 @@ public:
   void handleSaveHardwareIo();
   void handleSaveTileBorders();
   void handleSaveIconDiscs();  // FORK
+  void handleMicAudio();       // FORK: GET/POST /api/audio/mic
   void handleSaveHeadGear();
   void handleSaveHeadSwitch();
   void handleSaveHomeHead();

@@ -1,4 +1,5 @@
 #include "src/audio/speaker.h"
+#include "src/audio/mic_tuning_fork.h"  // FORK: pure, every profile
 
 #include "src/audio/speaker_select.h"
 
@@ -87,6 +88,15 @@ std::atomic<bool> g_mic_ready{false};
 std::atomic<bool> g_mic_enabled{false};
 // ES7210 mic gain step (stored), applied whenever the input opens.
 std::atomic<uint8_t> g_mic_gain{kDefaultMicGainStep};
+// FORK: slot choice and digital boost (mic_tuning_fork.h), stored.
+std::atomic<uint8_t> g_mic_channel{static_cast<uint8_t>(mic_tuning::Channel::Mix)};
+std::atomic<uint8_t> g_mic_boost{0};
+// FORK: last ~1 s window of each slot and of the mono output, in tenths of a
+// dBFS, written by the worker (micLevels()).
+std::atomic<int16_t> g_lvl_left_peak{-960}, g_lvl_left_rms{-960};
+std::atomic<int16_t> g_lvl_right_peak{-960}, g_lvl_right_rms{-960};
+std::atomic<int16_t> g_lvl_out_peak{-960}, g_lvl_out_rms{-960};
+std::atomic<uint32_t> g_lvl_window_end_ms{0};
 std::atomic<uint8_t> g_assist_state{static_cast<uint8_t>(assist::PublicState::Idle)};
 std::atomic<uint8_t> g_assist_error{static_cast<uint8_t>(assist::ErrorCode::None)};
 std::atomic<uint32_t> g_assist_state_generation{0};
@@ -133,6 +143,8 @@ constexpr const char* kPrefsWakeWordsKey = "wake_words";
 constexpr const char* kPrefsWakeListenKey = "wake_listen";
 constexpr const char* kPrefsMicKey = "mic_on";
 constexpr const char* kPrefsMicGainKey = "mic_gain";
+constexpr const char* kPrefsMicChannelKey = "mic_chan";   // FORK
+constexpr const char* kPrefsMicBoostKey = "mic_boost";    // FORK
 // Volume sliders send many steps; store once they settle and nothing plays
 // (flash writes stall both cores and would click in the output).
 constexpr uint32_t kPersistDelayMs = 3000;
@@ -1359,6 +1371,34 @@ assist::ErrorCode openInput() {
   return assist::ErrorCode::None;
 }
 
+// FORK: ~1 s level windows of each slot and of the boosted mono stream
+// (micLevels()); worker task only.
+constexpr uint64_t kForkLevelSamples = assist::kSampleRate;
+mic_level::Meter g_fork_left_meter;
+mic_level::Meter g_fork_right_meter;
+mic_level::Meter g_fork_out_meter;
+
+int16_t tenthsDb(float dbfs) { return static_cast<int16_t>(lroundf(dbfs * 10.0f)); }
+
+void meterForkLevels(const int16_t* stereo, const int16_t* mono, size_t frames) {
+  for (size_t i = 0; i < frames; ++i) {
+    g_fork_left_meter.add(&stereo[2 * i], 1);
+    g_fork_right_meter.add(&stereo[2 * i + 1], 1);
+  }
+  g_fork_out_meter.add(mono, frames);
+  if (g_fork_out_meter.samples() < kForkLevelSamples) return;
+  g_lvl_left_peak.store(tenthsDb(g_fork_left_meter.peakDbfs()));
+  g_lvl_left_rms.store(tenthsDb(g_fork_left_meter.rmsDbfs()));
+  g_lvl_right_peak.store(tenthsDb(g_fork_right_meter.peakDbfs()));
+  g_lvl_right_rms.store(tenthsDb(g_fork_right_meter.rmsDbfs()));
+  g_lvl_out_peak.store(tenthsDb(g_fork_out_meter.peakDbfs()));
+  g_lvl_out_rms.store(tenthsDb(g_fork_out_meter.rmsDbfs()));
+  g_lvl_window_end_ms.store(millis());
+  g_fork_left_meter.reset();
+  g_fork_right_meter.reset();
+  g_fork_out_meter.reset();
+}
+
 // Reads one 20 ms stereo chunk into g_mono. Returns the mono sample count,
 // or -1 when the microphone stopped answering.
 int readMono() {
@@ -1370,11 +1410,14 @@ int readMono() {
     return -1;
   }
   const size_t frames = bytes_read / (2 * sizeof(int16_t));
-  if (speaker_board::kInput == audio_chips::Input::Es8311) {
-    assist::stereoLeftToMono(g_chunk, frames, g_mono);
-  } else {
-    assist::stereoToMono(g_chunk, frames, g_mono);
-  }
+  // FORK: the chosen slot(s) and the digital boost (mic_tuning_fork.h); an
+  // ES8311 has data only on the left slot, as upstream's stereoLeftToMono().
+  const mic_tuning::Channel channel =
+      speaker_board::kInput == audio_chips::Input::Es8311
+          ? mic_tuning::Channel::Left
+          : static_cast<mic_tuning::Channel>(g_mic_channel.load());
+  mic_tuning::toMono(g_chunk, frames, channel, mic_tuning::boostQ8(g_mic_boost.load()), g_mono);
+  meterForkLevels(g_chunk, g_mono, frames);
   return static_cast<int>(frames);
 }
 
@@ -1801,6 +1844,8 @@ void storeSettings() {
   prefs.putBool(kPrefsWakeListenKey, g_wake_listen.load());
   prefs.putBool(kPrefsMicKey, g_mic_enabled.load());
   prefs.putUChar(kPrefsMicGainKey, g_mic_gain.load());
+  prefs.putUChar(kPrefsMicChannelKey, g_mic_channel.load());  // FORK
+  prefs.putUChar(kPrefsMicBoostKey, g_mic_boost.load());      // FORK
   if (!BatchedNvsWrite::finish(prefs)) {
     Serial.printf("%s Could not save the speaker settings\n", kLogPrefix);
   }
@@ -1889,6 +1934,11 @@ void begin() {
     g_mic_enabled.store(prefs.getBool(kPrefsMicKey, false));
     const uint8_t gain = prefs.getUChar(kPrefsMicGainKey, kDefaultMicGainStep);
     g_mic_gain.store(gain > kMaxMicGainStep ? kDefaultMicGainStep : gain);
+    // FORK: slot choice and digital boost (mic_tuning_fork.h).
+    const uint8_t channel = prefs.getUChar(kPrefsMicChannelKey, 0);
+    g_mic_channel.store(channel < mic_tuning::kChannelCount ? channel : 0);
+    const uint8_t boost = prefs.getUChar(kPrefsMicBoostKey, 0);
+    g_mic_boost.store(boost > mic_tuning::kMaxBoostDb ? 0 : boost);
     prefs.end();
   }
   g_request_mutex = xSemaphoreCreateMutex();
@@ -2198,6 +2248,48 @@ void setVolume(float volume) {
 }
 
 uint8_t micGainStep() { return g_mic_gain.load(); }
+
+// FORK: mic_tuning_fork.h. Both apply to the next captured chunk, so no
+// input reopen is needed (unlike the analog gain).
+uint8_t micChannel() { return g_mic_channel.load(); }
+
+void setMicChannel(uint8_t channel) {
+#if defined(HOMETILES_SPEAKER)
+  if (channel >= mic_tuning::kChannelCount) channel = 0;
+  if (g_mic_channel.exchange(channel) == channel) return;
+  g_persist_pending = true;
+  g_persist_due_ms = millis() + kPersistDelayMs;
+#else
+  (void)channel;
+#endif
+}
+
+uint8_t micBoostDb() { return g_mic_boost.load(); }
+
+void setMicBoostDb(uint8_t db) {
+#if defined(HOMETILES_SPEAKER)
+  if (db > mic_tuning::kMaxBoostDb) db = mic_tuning::kMaxBoostDb;
+  if (g_mic_boost.exchange(db) == db) return;
+  g_persist_pending = true;
+  g_persist_due_ms = millis() + kPersistDelayMs;
+#else
+  (void)db;
+#endif
+}
+
+MicLevels micLevels() {
+  MicLevels levels;
+  const uint32_t end_ms = g_lvl_window_end_ms.load();
+  if (end_ms == 0) return levels;
+  levels.left_peak = g_lvl_left_peak.load();
+  levels.left_rms = g_lvl_left_rms.load();
+  levels.right_peak = g_lvl_right_peak.load();
+  levels.right_rms = g_lvl_right_rms.load();
+  levels.out_peak = g_lvl_out_peak.load();
+  levels.out_rms = g_lvl_out_rms.load();
+  levels.age_ms = millis() - end_ms;
+  return levels;
+}
 
 void setMicGainStep(uint8_t step) {
 #if defined(HOMETILES_SPEAKER)

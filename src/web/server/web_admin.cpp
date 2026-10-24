@@ -216,6 +216,9 @@ bool WebAdminServer::start() {
     // FORK: icon circles on/off (upstream v0.9 removed the option).
     server.on("/api/display/icon-discs", HTTP_POST,
               guarded(withStorageHold([this]() { this->handleSaveIconDiscs(); })));
+    // FORK: microphone gain, slot and boost, with live levels.
+    server.on("/api/audio/mic", HTTP_GET, guarded([this]() { this->handleMicAudio(); }));
+    server.on("/api/audio/mic", HTTP_POST, guarded([this]() { this->handleMicAudio(); }));
     server.on("/api/display/tile-borders", HTTP_POST,
               guarded(withStorageHold([this]() { this->handleSaveTileBorders(); })));
     server.on("/api/display/gestures", HTTP_GET,

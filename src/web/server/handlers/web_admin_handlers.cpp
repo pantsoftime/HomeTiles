@@ -19,6 +19,7 @@
 #include "src/ui/shared/theme_schedule.h"
 #include "src/ui/shared/ui_theme.h"
 #include "src/ui/shared/ui_surface_style.h"
+#include "src/audio/speaker.h"  // FORK: handleMicAudio
 #include "src/core/config/swipe_gestures.h"
 #include "src/ui/screensaver/image_screensaver.h"
 #include "src/types/clock/clock_format.h"
@@ -893,6 +894,42 @@ void WebAdminServer::handleSaveIconDiscs() {
   server.send(200, "application/json",
               enabled ? "{\"success\":true,\"enabled\":true}"
                       : "{\"success\":true,\"enabled\":false}");
+}
+
+// FORK: GET reports and POST sets the microphone tuning: analog gain step
+// (0..14, the ES7210 steps), slot (0 mix, 1 left, 2 right) and digital boost
+// (0..24 dB), each optional on POST. The answer always carries the settings
+// and the last ~1 s levels per slot (dBFS); speak while polling to compare
+// the slots and see the level that the wake word and Assist get.
+void WebAdminServer::handleMicAudio() {
+  webAdminMarkActivity();
+  if (server.method() == HTTP_POST) {
+    if (server.hasArg("gain_step")) {
+      speaker::setMicGainStep(static_cast<uint8_t>(constrain(server.arg("gain_step").toInt(), 0,
+                                                             speaker::kMaxMicGainStep)));
+    }
+    if (server.hasArg("channel")) {
+      speaker::setMicChannel(static_cast<uint8_t>(constrain(server.arg("channel").toInt(), 0, 2)));
+    }
+    if (server.hasArg("boost_db")) {
+      speaker::setMicBoostDb(static_cast<uint8_t>(constrain(server.arg("boost_db").toInt(), 0, 24)));
+    }
+  }
+  const speaker::MicLevels levels = speaker::micLevels();
+  const uint8_t step = speaker::micGainStep();
+  const uint16_t gain = speaker::micGainTenthsDb(step);
+  char json[420];
+  snprintf(json, sizeof(json),
+           "{\"success\":true,\"mic\":%s,\"gain_step\":%u,\"gain_db\":%u.%u,\"channel\":%u,"
+           "\"boost_db\":%u,\"levels\":{\"age_ms\":%ld,\"left_peak\":%.1f,\"left_rms\":%.1f,"
+           "\"right_peak\":%.1f,\"right_rms\":%.1f,\"out_peak\":%.1f,\"out_rms\":%.1f}}",
+           speaker::micCapability() ? "true" : "false", static_cast<unsigned>(step),
+           static_cast<unsigned>(gain / 10), static_cast<unsigned>(gain % 10),
+           static_cast<unsigned>(speaker::micChannel()), static_cast<unsigned>(speaker::micBoostDb()),
+           levels.age_ms == UINT32_MAX ? -1L : static_cast<long>(levels.age_ms),
+           levels.left_peak / 10.0, levels.left_rms / 10.0, levels.right_peak / 10.0,
+           levels.right_rms / 10.0, levels.out_peak / 10.0, levels.out_rms / 10.0);
+  server.send(200, "application/json", json);
 }
 
 void WebAdminServer::handleSaveTileBorders() {
