@@ -72,7 +72,9 @@ assert.match(sensorHandler, /sensor_value_font_is_mono\(raw\)/, 'the sensor save
 for (const file of ['src/types/sensor/web_html.cpp', 'src/types/navigate/web_html.cpp']) {
   const html = read(file);
   for (const value of [200, 201, 202, 203]) {
-    assert.ok(html.includes(`<option value="${value}">`), `${file} must offer mono choice ${value}`);
+    // v0.9.6 builds the Sensor sizes as Switch-like choices ({"value", "label"}).
+    assert.ok(html.includes(`<option value="${value}">`) || html.includes(`{"${value}", "`),
+      `${file} must offer mono choice ${value}`);
   }
   assert.doesNotMatch(html, /<option value="[5-8]">\d+ Mono/, `${file} still offers a mono font under an upstream number`);
 }
@@ -80,8 +82,8 @@ for (const file of ['src/types/sensor/web_html.cpp', 'src/types/navigate/web_htm
 const adminJs = read('src/web/admin/tiles/layout.js');  // bundled into admin.js
 const sync = between(adminJs, 'function syncCompactValueFontOptions(', '\n  }\n');
 assert.match(sync, /const forkMono = \['200', '201', '202', '203'\];/);
-assert.match(sync, /\['0', '1', '2', '3', '4', \.\.\.forkMono\]/,
-  'full-size tiles must keep the mono options visible in the editor');
+assert.match(sync, /if \(!compact && !inside\) allowed\.push\(\.\.\.forkMono\);/,
+  'full-size value tiles must keep the mono options visible in the editor');
 
 const sensor = read('src/types/sensor/renderer.cpp');
 assert.match(sensor, /return tile_layout::value_font_for_choice\(tile\.sensor_value_font, FONT_VALUE\);/,
@@ -98,7 +100,9 @@ for (const call of ['lv_obj_align(', 'lv_obj_set_style_text_align(']) {
 }
 
 const render = between(sensor, 'const bool compact =', 'compact_sensor_layout::apply(');
-assert.match(render, /!gauge_enabled && !graph_enabled && !compact\) \{/,
+// display_mode 0 = the value alone: the gauge, the graph and the v0.9.6 looks
+// have no room for a second line either.
+assert.match(render, /display_mode == 0 && !compact\) \{/,
   'a compact tile must not get a caption label: it has no room for a second line');
 
 // v0.7.0 made Folder and Settings tiles half-height capable. The fork's folder
@@ -247,5 +251,31 @@ assert.match(read('src/web/server/web_admin.cpp'), /"\/api\/display\/icon-discs"
 assert.match(read('src/web/server/render/web_admin_html.cpp'), /if \(!configManager\.getConfig\(\)\.icon_discs\) html \+= "\\" class=\\"icon-discs-off";/,
   'the Web preview follows the option through the root class');
 assert.match(read('src/web/assets/admin.css'), /\.icon-discs-off \.tile:not\(\.empty\) > \.tile-icon::after \{ display:none !important; \}/);
+
+// --- v0.9.6 merge: units in their own label, graph and look headers -----------
+// Upstream v0.9.6 shows the unit a step smaller in its own label
+// (value_unit.h). The fork's caption (second line) and tables must go through
+// the same value_unit::show() so a tile never keeps a stale unit label, a
+// table keeps value and unit in one text, and the unit follows the
+// alignment the fork re-decides on every update.
+const valueUpdate = between(read('src/tiles/runtime/tile_renderer.cpp'),
+  'void update_sensor_tile_value(', '\n}\n');
+assert.ok(!/lv_label_set_text\(value_label,/.test(valueUpdate), 'every value text goes through value_unit::show()');
+assert.match(valueUpdate, /\} else if \(has_newline\) \{[\s\S]*?value_unit::show\(value_label, target\[grid_index\]\.unit_label, combined, String\(\)\);/,
+  'a table keeps its unit in its text');
+assert.match(valueUpdate, /sensor_split_subtitle\(combined, head, caption_text\);[\s\S]*?value_unit::split_unit\(head\.c_str\(\)/,
+  'a caption headline shows its unit a step smaller like any value');
+assert.match(valueUpdate, /sensor_apply_value_layout\([\s\S]*?\);\s*\/\/[^\n]*\n\s*value_unit::place\(value_label, target\[grid_index\]\.unit_label\);/,
+  'the unit follows the re-decided alignment');
+// The graph and the looks place their value in the Switch header or their
+// arc; the per-update layout must not move it back to the tile centre.
+const applyLayout = between(sensor, 'void sensor_apply_value_layout(', '\n}\n');
+assert.ok(applyLayout.indexOf('tile.sensor_display_mode >= 2) return;') >= 0 &&
+  applyLayout.indexOf('tile.sensor_display_mode >= 2) return;') < applyLayout.indexOf('lv_obj_align('),
+  'graph and look tiles keep their value where they were built');
+// Caption mode: every proportional face (0-5, 5 = upstream's 28 px since
+// v0.7.0) gets the caption, only the monospace faces keep the table.
+assert.match(read('src/types/sensor/renderer.h'),
+  /return !sensor_value_font_is_mono\(tile\.sensor_value_font\);/);
 
 console.log('Compact-tile fork integration regressions passed.');

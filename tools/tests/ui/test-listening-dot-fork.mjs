@@ -25,7 +25,10 @@ assert.match(speaker, /bool assistCapturing\(\) \{\s*return static_cast<assist::
 const manager = read('src/ui/ui_manager.cpp');
 assert.match(manager, /listening_dot::init\(\);\s*\/\/[^\n]*\n\s*camera_indicator::init\(\);/,
   'started with the UI, before camera_indicator (pinned last by upstream)');
-assert.match(manager, /camera_indicator::invalidateVisible\(\);\s*listening_dot::invalidateVisible\(\);/);
+// Upstream v0.9.6 redraws the whole Settings page instead of a black fill plus
+// one area per control; that redraw covers the system layer, so the dot needs
+// no own invalidation there (nor does camera_indicator).
+assert.doesNotMatch(manager, /displayFillScreen\(0x0000\);/);
 
 // --- Geometry ------------------------------------------------------------
 function findCompiler(candidates) {

@@ -102,6 +102,20 @@ struct Strings {
   const char* sensor_display_none;
   const char* sensor_display_gauge;
   const char* sensor_display_graph;
+  // The Sensor menu (types/sensor/web_html.cpp): layouts, forms, an open or
+  // closed ring, the value's place and the range (display modes 3-14).
+  const char* sensor_layout_value;
+  const char* sensor_layout_bar;
+  const char* sensor_layout_ring;
+  const char* sensor_form;
+  const char* sensor_form_level;
+  const char* sensor_form_line;
+  const char* sensor_form_stripes;
+  const char* sensor_ring_open;
+  const char* sensor_ring_closed;
+  const char* sensor_value_top;
+  const char* sensor_value_inside;
+  const char* sensor_gauge_range;
   const char* sensor_gauge_min;
   const char* sensor_gauge_max;
   const char* sensor_arc_degree;
@@ -844,6 +858,11 @@ struct Strings {
   const char* pages_title;
   // Web Admin: the tooltip on a full folder's greyed-out type list.
   const char* js_folder_type_locked;
+  // Switch and Fan tile Orientation field (bar_orientation.h): the bar
+  // horizontal or upright.
+  const char* bar_orientation;
+  const char* bar_horizontal;
+  const char* bar_upright;
   // Media tile: the popup's layout (Web Admin) and the popup's sub-views
   // (source and sound mode, the speakers to group, the library).
   const char* media_popup_layout;
@@ -859,6 +878,12 @@ struct Strings {
   const char* media_this_player;
   // Media library: the row that plays the opened playlist or album.
   const char* media_play_all;
+  // Web Admin Settings > Localization: the first day of the week, with its
+  // colon like the rows above it (the Calendar tile's label without one).
+  const char* week_start_label;
+  // Settings: the System category's name (Russian brought it into the
+  // tables, 2026-10-29).
+  const char* settings_system;
 };
 
 // Locale-specific display rules and short runtime strings shared by
@@ -952,6 +977,17 @@ struct LocaleProfile {
   // triggered, unavailable, unknown.
   const char* alarm_states[12];
 
+  // Calendar tile and popup (types/calendar), indexed by i18n::CalendarLabel.
+  const char* calendar_labels[25];
+  // Month names standing alone, for headings such as "October 2026"
+  // (month_names_in_date holds them as they stand in a date), January first.
+  const char* month_names[12];
+  // The first day of the week the Calendar tile uses unless the tile sets
+  // one (tm_wday: 0 Sunday, 1 Monday).
+  uint8_t first_weekday;
+  // The Power flow tile (types/power_flow), PowerFlowLabel order.
+  const char* power_flow_labels[9];
+
   // Shared Web Admin entity picker (tiles/entity-picker.js). Order: choose,
   // search, no match ({query}), load failed, try again, clear, none available,
   // released only (no Web Admin password), and the switch under the search:
@@ -962,11 +998,12 @@ struct LocaleProfile {
   // cover, climate, media_player, weather, camera, lock,
   // alarm_control_panel, number/input_number, select/input_select,
   // datetime/date/time/input_datetime, scene, script, button/input_button,
-  // automation, humidifier, siren, remote.
-  const char* entity_kind_labels[22];
-  // Icon picker of the tile head (tiles/tile-head.js). Order: automatic,
-  // automatic hint, no icon, no icon hint, no match ({query}).
-  const char* icon_picker_labels[5];
+  // automation, humidifier, siren, remote, calendar.
+  const char* entity_kind_labels[23];
+  // Icon picker of the tile head and the rules (tiles/tile-head.js). Order:
+  // automatic, automatic hint, no icon, no icon hint, no match ({query}),
+  // a rule's automatic hint (the tile's own icon stays).
+  const char* icon_picker_labels[6];
 
   // The clock's long dates (clock_tile::DATE_FORMAT_D_MONTH*, user
   // 2026-10-11, issue #13): the month names as they stand in a date
@@ -980,13 +1017,66 @@ struct LocaleProfile {
 
   // The panel keyboard (settings_keyboard), as data so a language brings
   // its own: the letter layout under Auto (0 QWERTY, 1 QWERTZ, 2 AZERTY,
-  // settings_keyboard::Layout) and the language's own letters and signs in
-  // lower case ("áčďéěíňóřšťúůýž"), first on the accent page and first
-  // among the forms of a held letter (keyboard_letters.h makes the
-  // capitals). Only characters of the panel fonts.
+  // 3 JCUKEN, settings_keyboard::Layout) and the language's own letters and
+  // signs in lower case ("áčďéěíňóřšťúůýž"), first on the accent page and
+  // first among the forms of a held letter (keyboard_letters.h makes the
+  // capitals; Russian "ёъ" are held е and ь, its accent key switches to
+  // QWERTY). Only characters of the panel fonts.
   uint8_t keyboard_layout;
   const char* keyboard_letters;
+
+  // The Energy popup's period buttons left of Today (EnergyPeriodLabel):
+  // this year by the month, this month and this week by the day.
+  const char* energy_period_labels[3];
+
 };
+
+// Index into LocaleProfile::energy_period_labels.
+enum class EnergyPeriodLabel : uint8_t { Year, Month, Week, Count };
+static_assert(static_cast<int>(EnergyPeriodLabel::Count) == 3, "LocaleProfile::energy_period_labels size");
+// Index into LocaleProfile::power_flow_labels.
+enum class PowerFlowLabel : uint8_t {
+  Type,
+  SolarPower,
+  GridPower,
+  BatteryPower,
+  BatteryCharge,
+  HomePower,
+  ShowHeader,
+  ShowCard,
+  InvertSign,
+  Count,
+};
+// Index into LocaleProfile::calendar_labels.
+enum class CalendarLabel : uint8_t {
+  TypeCalendar,
+  EntityCalendar,
+  CalendarN,  // printf pattern with one %u (the field number)
+  View,
+  ViewAgenda,
+  ViewWeek,
+  ViewMonth,
+  WeekStart,
+  Automatic,
+  AllDay,
+  NoEvents,
+  NothingPlanned,
+  InDays,          // printf pattern with one %u
+  InHours,         // printf pattern with one %u
+  InHoursMinutes,  // printf pattern with two %u (hours, minutes)
+  InMinutes,       // printf pattern with one %u
+  Now,
+  Until,  // printf pattern with one %s (a time)
+  UpNext,
+  EventCount,  // printf pattern with one %u (two or more)
+  OneEvent,
+  ViewList,
+  NoData,
+  ViewToday,
+  Next,
+  Count
+};
+static_assert(static_cast<int>(CalendarLabel::Count) == 25, "LocaleProfile::calendar_labels size");
 
 // Index into LocaleProfile::device_labels.
 enum class DeviceLabel : uint8_t {
@@ -1072,6 +1162,9 @@ const char* weather_tomorrow_label(const char* language_code);
 // 0 temperature sensor, 1 humidity sensor, 2 the empty "use the weather
 // entity's value" option.
 const char* weather_sensor_label(const char* language_code, uint8_t index);
+const char* power_flow_label(const char* language_code, PowerFlowLabel label);
+// The Energy popup's period buttons (EnergyPeriodLabel).
+const char* energy_period_label(const char* language_code, EnergyPeriodLabel label);
 const char* climate_tile_type_label(const char* language_code);
 const char* climate_entity_label(const char* language_code);
 const char* climate_target_temperature_label(const char* language_code);
@@ -1107,6 +1200,10 @@ const char* binary_sensor_state_label(const char* language_code,
 const char* device_label(const char* language_code, DeviceLabel label);
 const char* lock_state_label(const char* language_code, const char* state);
 const char* alarm_state_label(const char* language_code, const char* state);
+// Calendar tile and popup texts (CalendarLabel).
+const char* calendar_label(const char* language_code, CalendarLabel label);
+// A month standing alone (1 = January), for headings; "" outside 1..12.
+const char* month_name(const char* language_code, int month);
 
 }  // namespace i18n
 

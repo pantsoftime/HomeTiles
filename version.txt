@@ -19,4 +19,5 @@
 // from v0.9.31 on so the panels find their icon file on this fork's release.
 // v0.9.41 = upstream v0.9.4 + the patch digit ({0,9,41}).
 // v0.9.51 = upstream v0.9.5 + the patch digit ({0,9,51}).
-#define FW_VERSION "v0.9.51"
+// v0.9.61 = upstream v0.9.6 + the patch digit ({0,9,61}).
+#define FW_VERSION "v0.9.61"

@@ -1,3 +1,4 @@
+#include "src/types/calendar/calendar_store.h"
 #include "src/web/server/web_admin.h"
 #include "src/web/server/auth/web_admin_auth.h"
 #include "src/core/text/title_text.h"
@@ -11,6 +12,7 @@
 #include "src/network/mqtt/mqtt_handlers.h"
 #include "src/core/power/power_manager.h"
 #include "src/tiles/config/tile_config.h"
+#include "src/tiles/config/bar_orientation.h"
 #include "src/tiles/config/tile_layouts.h"
 #include "src/core/config/config_manager.h"
 #include "src/ui/tabs/tiles/tab_tiles_unified.h"
@@ -45,6 +47,8 @@ static String dynamicMqttEntityForTile(const Tile& tile) {
   // Weather temperature/humidity sensors subscribe to their states too.
   const String sensors = weatherSensorsRecord(tile);
   if (sensors.length()) entity += "|" + sensors;
+  // Power flow nodes too.
+  if (tile.type == TILE_POWER_FLOW && tile.flow_entities.length()) entity += "|" + tile.flow_entities;
   return entity;
 }
 
@@ -509,6 +513,11 @@ void WebAdminServer::handleGetTiles() {
       appendJsonEscaped(out, tile.weather_humidity_sensor);
       out += "\"";
     }
+    if (tile.type == TILE_POWER_FLOW) {
+      out += ",\"flow_entities\":\"";
+      appendJsonEscaped(out, tile.flow_entities);
+      out += "\"";
+    }
     out += ",\"bg_color\":";
     out += String(tile.bg_color);
     out += ",\"background_opacity\":";
@@ -570,7 +579,10 @@ void WebAdminServer::handleGetTiles() {
     out += ",\"popup_open_mode\":";
     out += String(getTilePopupOpenMode(tile));
     out += ",\"switch_style\":";
-    out += String((tile.type == TILE_SWITCH && tile.sensor_decimals <= 3) ? tile.sensor_decimals : 0);
+    out += String(tile.type == TILE_SWITCH ? static_cast<uint8_t>(switch_layout::from_stored(tile.sensor_decimals)) : 0);
+    // Switch and Fan: the bar upright (bar_orientation.h).
+    out += ",\"bar_orientation\":";
+    out += bar_orientation::upright(tile) ? "1" : "0";
     out += ",\"navigate_target\":";
     out += String((tile.type == TILE_FOLDER) ? getNavigateTargetId(tile) : 0);
     // FORK: a Sensor tile's folder target, so a backup and a rewrite keep it.
@@ -864,8 +876,10 @@ void WebAdminServer::handleSaveTiles() {
   }
   // Deletion: the old entity and options must not come back with a new tile.
   if (tile.type == TILE_EMPTY) clearEmptyTileFields(tile);
-  // Only Weather keeps its temperature/humidity sensors.
+  // Only Weather keeps its temperature/humidity sensors, only Power flow
+  // its node entities.
   normalizeWeatherSensors(tile);
+  normalizeFlowEntities(tile);
 
   DeletedFolderView deleted_view;
   if (deleting_folder) {
@@ -1231,6 +1245,19 @@ void WebAdminServer::handleGetSensorValues() {
   }
   json += "}";
 
+  // Calendar previews read the retained events (types/calendar).
+  json += ",\"calendar_values\":{";
+  bool first_calendar_value = true;
+  for (const auto& id : parseSensorList(ha.calendars_text)) {
+    const String payload = calendar_store::payload(id);
+    if (!payload.length()) continue;
+    if (!first_calendar_value) json += ',';
+    first_calendar_value = false;
+    json += '\"'; appendJsonEscaped(json, id); json += "\":\"";
+    appendJsonEscaped(json, payload); json += '\"';
+  }
+  json += "}";
+
   // Climate states include HVAC mode, action and unit alongside temperature.
   // Keep the complete JSON payload from the central entity cache because the
   // Web editor also uses it to derive the dynamic icon.
@@ -1452,6 +1479,7 @@ void WebAdminServer::handleGetEntityOptions() {
   appendList("locks", parseSensorList(ha.locks_text));
   appendList("alarm_panels", parseSensorList(ha.alarm_panels_text));
   appendList("fans", parseSensorList(ha.fans_text));
+  appendList("calendars", parseSensorList(ha.calendars_text));
   appendList("cameras", parseSensorList(ha.cameras_text));
   // The screensaver picture: released images, then cameras.
   std::vector<String> picture_ids = parseSensorList(ha.images_text);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "src/tiles/config/sensor_value_font_fork.h"
 #include "src/tiles/runtime/tile_renderer.h"
 
 lv_obj_t* render_sensor_tile(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index, GridType grid_type);
@@ -16,16 +17,17 @@ void sensor_apply_value_layout(lv_obj_t* value_label,
                                bool has_caption);
 
 // How a two-line value is presented, decided by the tile's font rather than by
-// a stored flag: fonts 5-8 are the monospace faces, which exist precisely so
-// that tabular data lines up, so those keep the left-aligned block. Every other
-// font is proportional and gets the headline-plus-small-caption treatment --
-// "82.2 °F\n55 %" reads as a temperature with humidity under it.
+// a stored flag: the monospace faces (200-203, sensor_value_font_fork.h) exist
+// precisely so that tabular data lines up, so those keep the left-aligned
+// block. Every other font (upstream's 0-5) is proportional and gets the
+// headline-plus-small-caption treatment -- "82.2 °F\n55 %" reads as a
+// temperature with humidity under it.
 //
 // This deliberately carries no configuration. key_code and key_modifier look
 // free on a sensor tile but are zeroed for TILE_SENSOR when the grid is
 // loaded, so a flag stored there does not survive a save/load cycle.
 static inline bool sensor_tile_caption_mode(const Tile& tile) {
-  return tile.sensor_value_font <= 4;
+  return !sensor_value_font_is_mono(tile.sensor_value_font);
 }
 
 // Optional second entity shown in the caption. Splitting one text state across
@@ -45,3 +47,8 @@ void sensor_split_subtitle(const String& combined, String& head, String& tail);
 
 // Y offset of the small second line, relative to the tile centre.
 lv_coord_t sensor_subtitle_y(const Tile& tile);
+
+// A finger came down on `pressed` (ui_manager, before it is a tap or a
+// swipe): on a sensor tile whose popup shows a numeric graph, its history is
+// asked now (sensor_popup_prefetch_history).
+void sensor_tile_touch_down(lv_obj_t* pressed);

@@ -17,6 +17,7 @@
 #include "src/types/switch/renderer.h"
 #include "src/types/text/renderer.h"
 #include "src/types/energy/renderer.h"
+#include "src/types/power_flow/renderer.h"
 #include "src/types/weather/renderer.h"
 #include "src/types/media/renderer.h"
 #include "src/types/climate/renderer.h"
@@ -35,12 +36,15 @@
 #include "src/types/switch/web_handler.h"
 #include "src/types/text/web_handler.h"
 #include "src/types/energy/web_handler.h"
+#include "src/types/power_flow/web_handler.h"
 #include "src/types/weather/web_handler.h"
 #include "src/types/media/web_handler.h"
 #include "src/types/climate/web_handler.h"
 #include "src/types/cover/web_handler.h"
 #include "src/types/camera/web_handler.h"
 #include "src/types/pixelanim/web_handler.h"
+#include "src/types/calendar/calendar_tile.h"
+#include "src/types/calendar/web.h"
 
 #include "src/types/clock/web_html.h"
 #include "src/types/navigate/web_html.h"
@@ -53,6 +57,7 @@
 #include "src/types/switch/web_html.h"
 #include "src/types/text/web_html.h"
 #include "src/types/energy/web_html.h"
+#include "src/types/power_flow/web_html.h"
 #include "src/types/weather/web_html.h"
 #include "src/types/media/web_html.h"
 #include "src/types/climate/web_html.h"
@@ -72,6 +77,7 @@
 #include "src/types/switch/web_scripts.h"
 #include "src/types/text/web_scripts.h"
 #include "src/types/energy/web_scripts.h"
+#include "src/types/power_flow/web_scripts.h"
 #include "src/types/weather/web_scripts.h"
 #include "src/types/media/web_scripts.h"
 #include "src/types/climate/web_scripts.h"
@@ -92,6 +98,7 @@
 #include "src/types/switch/web_styles.h"
 #include "src/types/text/web_styles.h"
 #include "src/types/energy/web_styles.h"
+#include "src/types/power_flow/web_styles.h"
 #include "src/types/weather/web_styles.h"
 #include "src/types/media/web_styles.h"
 #include "src/types/climate/web_styles.h"
@@ -241,6 +248,16 @@ lv_obj_t* render_energy_wrapper(lv_obj_t* parent,
   return render_energy_tile(parent, col, row, tile, index, grid_type);
 }
 
+lv_obj_t* render_power_flow_wrapper(lv_obj_t* parent,
+                                     int col,
+                                     int row,
+                                     const Tile& tile,
+                                     uint8_t index,
+                                     GridType grid_type,
+                                     scene_publish_cb_t) {
+  return render_power_flow_tile(parent, col, row, tile, index, grid_type);
+}
+
 lv_obj_t* render_media_wrapper(lv_obj_t* parent,
                                int col,
                                int row,
@@ -290,6 +307,18 @@ void append_fan_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
 }
 // DEVICE_I18N once for the three types.
 void append_no_scripts(String&) {}
+
+// Calendar (types/calendar).
+lv_obj_t* render_calendar_wrapper(lv_obj_t* parent, int col, int row, const Tile& tile, uint8_t index,
+                                  GridType grid_type, scene_publish_cb_t) {
+  return render_calendar_tile(parent, col, row, tile, index, grid_type);
+}
+bool apply_calendar_wrapper(WebServer& server, Tile& tile, const TileTypeApplyContext&) {
+  return apply_calendar_fields_from_request(server, tile);
+}
+void append_calendar_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
+  append_calendar_fields_html(html, safeString(ctx.tab_id));
+}
 
 lv_obj_t* render_camera_wrapper(lv_obj_t* parent,
                                 int col,
@@ -366,6 +395,11 @@ bool apply_weather_wrapper(WebServer& server, Tile& tile, const TileTypeApplyCon
 
 bool apply_energy_wrapper(WebServer& server, Tile& tile, const TileTypeApplyContext&) {
   apply_energy_fields_from_request(server, tile);
+  return true;
+}
+
+bool apply_power_flow_wrapper(WebServer& server, Tile& tile, const TileTypeApplyContext&) {
+  apply_power_flow_fields_from_request(server, tile);
   return true;
 }
 
@@ -465,6 +499,10 @@ void append_weather_fields_wrapper(String& html, const TileTypeWebContext& ctx) 
 
 void append_energy_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
   append_energy_fields_html(html, safeString(ctx.tab_id));
+}
+
+void append_power_flow_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
+  append_power_flow_fields_html(html, safeString(ctx.tab_id));
 }
 
 void append_media_fields_wrapper(String& html, const TileTypeWebContext& ctx) {
@@ -582,6 +620,24 @@ const TileTypeDescriptor kTileTypes[] = {
     append_energy_fields_wrapper,
     append_energy_styles,
     append_energy_scripts
+  },
+  {
+    TILE_POWER_FLOW,
+    "Leistungsfluss",
+    "power-flow",
+    "power_flow",
+    "power_flow",
+    nullptr,
+    "loadPowerFlowFields",
+    "savePowerFlowFields",
+    "resetPowerFlowFields",
+    0x2A2A2A,
+    false,
+    render_power_flow_wrapper,
+    apply_power_flow_wrapper,
+    append_power_flow_fields_wrapper,
+    append_power_flow_styles,
+    append_power_flow_scripts
   },
   {
     TILE_WEATHER,
@@ -762,6 +818,24 @@ const TileTypeDescriptor kTileTypes[] = {
     append_fan_fields_wrapper,
     append_no_scripts,
     append_no_scripts
+  },
+  {
+    TILE_CALENDAR,
+    "Kalender",
+    "calendar",
+    "calendar",
+    "calendar",
+    nullptr,
+    "loadCalendarFields",
+    "saveCalendarFields",
+    "resetCalendarFields",
+    0x2A2A2A,
+    false,
+    render_calendar_wrapper,
+    apply_calendar_wrapper,
+    append_calendar_fields_wrapper,
+    append_calendar_styles,
+    append_calendar_scripts
   },
   // The ESP32-S3 shows the camera too, decoded in software at a few frames
   // per second (camera_stream.cpp, user 2026-10-09).
@@ -960,6 +1034,7 @@ static const char* localized_tile_type_label(const TileTypeDescriptor& entry) {
     case TILE_DATETIME: return i18n::locale(language).editable_labels[2];
     case TILE_BINARY_SENSOR: return i18n::binary_sensor_label(language, 0);
     case TILE_ENERGY: return tr.tile_type_energy;
+    case TILE_POWER_FLOW: return i18n::power_flow_label(language, i18n::PowerFlowLabel::Type);
     case TILE_WEATHER: return tr.tile_type_weather;
     case TILE_SCENE: return tr.tile_type_scene;
     case TILE_FOLDER: return tr.tile_type_folder;
@@ -969,6 +1044,7 @@ static const char* localized_tile_type_label(const TileTypeDescriptor& entry) {
     case TILE_LOCK: return i18n::device_label(language, i18n::DeviceLabel::TypeLock);
     case TILE_ALARM: return i18n::device_label(language, i18n::DeviceLabel::TypeAlarm);
     case TILE_FAN: return i18n::device_label(language, i18n::DeviceLabel::TypeFan);
+    case TILE_CALENDAR: return i18n::calendar_label(language, i18n::CalendarLabel::TypeCalendar);
     case TILE_CAMERA: return tr.camera_tile_type;
     case TILE_CLIMATE: return i18n::climate_tile_type_label(language);
     case TILE_CLOCK: return tr.tile_type_clock;
