@@ -3048,12 +3048,12 @@ async function saveGestureEdge(select) {
     ['climate'], ['media_player'], ['weather'], ['camera'], ['lock'], ['alarm_control_panel'],
     ['number', 'input_number'], ['select', 'input_select'],
     ['datetime', 'date', 'time', 'input_datetime'], ['scene'], ['script'], ['button', 'input_button'],
-    ['automation'], ['humidifier'], ['siren'], ['remote'], ['calendar']
+    ['automation'], ['humidifier'], ['siren'], ['remote'], ['calendar'], ['vacuum']
   ];
   // Lists the Bridge searches (entity_search.py LIST_DOMAINS).
   const ENTITY_REMOTE_LISTS = new Set(['sensors', 'binary_sensors', 'numbers', 'selects', 'datetimes',
     'weathers', 'switches', 'media', 'climates', 'covers', 'cameras', 'images', 'locks', 'alarm_panels', 'fans',
-    'energy', 'scenes', 'calendars']);
+    'energy', 'scenes', 'calendars', 'vacuums']);
   const ENTITY_REMOTE_DELAY_MS = 250;
   const ENTITY_REMOTE_POLL_MS = 120;
   const ENTITY_REMOTE_TIMEOUT_MS = 5000;
@@ -4513,8 +4513,18 @@ async function saveGestureEdge(select) {
       tile.key_code = cameraTransparency(snapshot.camera_transparency);
       tile.key_modifier = cameraOptionFlags({head: snapshot.camera_head, tap: snapshot.camera_tap});
     }
-    for (const kind of ['lock', 'alarm', 'fan']) {
+    for (const kind of ['lock', 'alarm', 'fan', 'vacuum']) {
       if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, kind + '_entity')) tile.sensor_entity = snapshot[kind + '_entity'] || '';
+    }
+    // The Vacuum popup's layout (types/device/web.cpp vacuum_layout).
+    if (Number(tile.type) === 29 && snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'vacuum_layout')) {
+      tile.sensor_display_mode = String(snapshot.vacuum_layout) === '1' ? 1 : 0;
+    }
+    if (Number(tile.type) === 29 && snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'vacuum_map')) {
+      tile.vacuum_map = snapshot.vacuum_map || '';
+    }
+    if (Number(tile.type) === 29 && snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'vacuum_every')) {
+      tile.image_slideshow_sec = Math.max(3, Math.min(60, Number(snapshot.vacuum_every) || 5));
     }
     // Calendar: the view and the first day of the week (types/calendar/web.h).
     if (Number(tile.type) === 27 && snapshot) {
@@ -4615,12 +4625,12 @@ async function saveGestureEdge(select) {
   // (tileTypeHasFixedIconColorOnly / tileTypeRulesUseOwnEntity in
   // tile_type_policy.h).
   const ICON_COLOR_FIXED_TYPES = ['2', '4', '8', '9', '10', '18'];
-  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23', '24', '25', '26'];
+  const ICON_COLOR_OWN_TYPES = ['1', '5', '12', '14', '15', '17', '19', '20', '21', '22', '23', '24', '25', '26', '29'];
   // The own entity field of each type (pairs, not an object with numeric keys).
   const ICON_COLOR_ENTITY_FIELDS = [['1', '_sensor_entity'], ['5', '_switch_entity'], ['12', '_weather_entity'],
     ['14', '_energy_entity'], ['15', '_media_entity'], ['17', '_climate_entity'], ['19', '_cover_entity'],
     ['20', '_binary_sensor_entity'], ['21', '_number_entity'], ['22', '_select_entity'], ['23', '_datetime_entity'],
-    ['24', '_lock_entity'], ['25', '_alarm_entity'], ['26', '_fan_entity']];
+    ['24', '_lock_entity'], ['25', '_alarm_entity'], ['26', '_fan_entity'], ['29', '_vacuum_entity']];
   // Domains shown by the Switch tile (tile_icon_source.cpp switch_domain).
   const ICON_COLOR_SWITCH_DOMAINS = ['light', 'switch', 'input_boolean', 'automation', 'fan',
     'humidifier', 'remote', 'siren'];
@@ -6680,7 +6690,7 @@ async function saveGestureEdge(select) {
   // Switch and Cover show their state (tile_geometry::compact_switch,
   // compact_cover).
   function supportsHalfSize(type) {
-    return isCompactSensorType(type) || isEditableValueType(type) || [2, 4, 5, 7, 8, 9, 10, 17, 18, 19, 24, 25, 26, 27].includes(Number(type));
+    return isCompactSensorType(type) || isEditableValueType(type) || [2, 4, 5, 7, 8, 9, 10, 17, 18, 19, 24, 25, 26, 27, 29].includes(Number(type));
   }
   // Every type resizes in half steps from 1x1; only half-size types may be half
   // a row high (mirrors tile_geometry::supported).
@@ -6784,7 +6794,7 @@ async function saveGestureEdge(select) {
     const compactIconTitle = [2, 4, 7, 8, 18].includes(Number(type)) && halfHeight;
     // Half-height Switch: icon, title and state like a compact Sensor.
     // A half-height Calendar: the next event's time and title (compact_calendar).
-    const compactSwitch = [5, 17, 19, 24, 25, 26, 27].includes(Number(type)) && halfHeight;
+    const compactSwitch = [5, 17, 19, 24, 25, 26, 27, 29].includes(Number(type)) && halfHeight;
     // Number, Select and Date/Time like a compact Sensor.
     const compactEditable = isEditableValueType(type) && halfHeight;
     if (compactEditable) valueFont = editableCompactValueFont(valueFont);
@@ -6798,8 +6808,10 @@ async function saveGestureEdge(select) {
     // (switch_layout::sensor_look).
     // The Cover position bar uses the same header (tile_header.h).
     // Lock, Alarm panel and Fan too (types/device).
-    const switchHeader = [5, 19, 24, 25, 26].includes(Number(type)) && el.classList.contains('switch-bar');
+    const switchHeader = [5, 19, 24, 25, 26, 29].includes(Number(type)) && el.classList.contains('switch-bar');
     // An upright bar keeps the header beside the disc (bar_orientation.h).
+    // A two-by-two Vacuum takes the tall title and state size too; its state
+    // stands beside its map (render_vacuum_tile, applyVacuumPreview).
     const switchTall = switchHeader && Number(layout?.span_h) > 1 && !el.classList.contains('switch-upright');
     el.classList.toggle('switch-tall', switchTall);
     if (switchTall) el.style?.setProperty?.('--switch-span-h', String(Number(layout.span_h)));
@@ -7929,6 +7941,12 @@ async function saveGestureEdge(select) {
       bindLive(document.getElementById(prefix + id), 'change', id === '_fan_orientation' ? 'fanOrientation' : 'switchOrientation',
         () => { updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     }
+    // The Vacuum popup's layout (map left or centred).
+    bindLive(document.getElementById(prefix + '_vacuum_layout'), 'change', 'vacuumLayout', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    // The Vacuum's map (empty: the map the Bridge finds on its device).
+    bindLive(document.getElementById(prefix + '_vacuum_map'), 'change', 'vacuumMap', () => { updateDraft(tab); scheduleAutoSave(tab); });
+    // A camera map's interval.
+    bindLive(document.getElementById(prefix + '_vacuum_every'), 'change', 'vacuumEvery', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(switchPopupModeSelect, 'change', 'switchPopupMode', () => { updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(mediaSelect, 'change', 'mediaEntity', () => { maybeFillTitleFromMedia(tab); updateTilePreview(tab); updateMediaValuePreview(tab); updateDraft(tab); scheduleAutoSave(tab); });
     bindLive(climateSelect, 'change', 'climateEntity', () => {
@@ -7956,8 +7974,8 @@ async function saveGestureEdge(select) {
       updateDraft(tab);
       scheduleAutoSave(tab);
     });
-    // Lock, Alarm panel and Fan: entity, state size and popup gesture.
-    for (const kind of ['lock', 'alarm', 'fan']) {
+    // Lock, Alarm panel, Fan and Vacuum: entity, state size and popup gesture.
+    for (const kind of ['lock', 'alarm', 'fan', 'vacuum']) {
       const select = document.getElementById(prefix + '_' + kind + '_entity');
       bindLive(document.getElementById(prefix + '_' + kind + '_value_font'), 'change', kind + 'ValueFont', () => {
         updateTilePreview(tab); updateDraft(tab); scheduleAutoSave(tab);
@@ -8367,7 +8385,7 @@ async function saveGestureEdge(select) {
     if (deviceKind) {
       devicePreviewState = parseDevicePreviewPayload(deviceDetailPayload(iconEntity));
       if (!normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) {
-        iconName = devicePreviewIcon(deviceKind, devicePreviewState);
+        iconName = devicePreviewIcon(deviceKind, devicePreviewState, '', iconName);
       }
     }
     if (calendarTile && !normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) iconName = 'calendar';
@@ -8641,7 +8659,10 @@ async function saveGestureEdge(select) {
         span_w: tileSpan('span_w')});
     }
     if (previewKind === 'cover') applyCoverPreview(tileElem, coverPreviewState, halfHeight);
-    if (deviceKind) applyDevicePreview(tileElem, deviceKind, devicePreviewState, halfHeight, fanUpright);
+    if (deviceKind) {
+      applyDevicePreview(tileElem, deviceKind, devicePreviewState, halfHeight, fanUpright,
+        {w: tileSpan('span_w'), h: tileSpan('span_h')});
+    }
     if (wasActive) tileElem.classList.add('active');
     if (typeWas !== type && wasActive) {
       tileElem.classList.add('active');
@@ -10322,10 +10343,15 @@ async function saveGestureEdge(select) {
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
-    } else if (safeType === 24 || safeType === 25 || safeType === 26) {
+    } else if (safeType === 24 || safeType === 25 || safeType === 26 || safeType === 29) {
       const kind = devicePreviewKind(safeType);
       fd.append(kind + '_entity', tile.sensor_entity || tile[kind + '_entity'] || '');
       if (safeType === 26) fd.append('bar_orientation', Number(tile.bar_orientation) === 1 ? '1' : '0');
+      if (safeType === 29) {
+        fd.append('vacuum_layout', Number(tile.sensor_display_mode) === 1 ? '1' : '0');
+        fd.append('vacuum_map', tile.vacuum_map || '');
+        fd.append('vacuum_every', String(Math.max(3, Math.min(60, Number(tile.image_slideshow_sec) || 5))));
+      }
       if (tile.popup_open_mode !== undefined && tile.popup_open_mode !== null) {
         fd.append('popup_open_mode', tile.popup_open_mode);
       }
@@ -11324,7 +11350,7 @@ async function saveGestureEdge(select) {
       if (deviceKind) {
         devicePreviewState = parseDevicePreviewPayload(deviceDetailPayload(tile.sensor_entity || '', sensorMeta));
         if (!normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) {
-          iconName = devicePreviewIcon(deviceKind, devicePreviewState);
+          iconName = devicePreviewIcon(deviceKind, devicePreviewState, '', iconName);
         }
       }
       if (previewKind === 'calendar' && !normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) {
@@ -11489,7 +11515,7 @@ async function saveGestureEdge(select) {
       }
       if (deviceKind) {
         applyDevicePreview(el, deviceKind, devicePreviewState, Number(tile.span_h) === 0.5,
-          Number(tile.bar_orientation) === 1);
+          Number(tile.bar_orientation) === 1, {w: Number(tile.span_w) || 1, h: Number(tile.span_h) || 1});
         applyCompactSensorPreview(el, typeValue, tile, tile.sensor_display_mode, tile.sensor_value_font);
       }
       if (typeValue === '9') {
@@ -18494,7 +18520,8 @@ function maybeFillTitleFromSwitch(tab) {
   // The Climate tile's Layout and the Camera tile's choices use the same
   // segmented choice.
   const SWITCH_CHOICE_FIELDS = ['switch_style', 'switch_value_font', 'switch_popup_open_mode', 'climate_view', 'media_layout',
-    'cover_value_font', 'lock_value_font', 'alarm_value_font', 'fan_value_font', 'camera_display', 'camera_fit',
+    'cover_value_font', 'lock_value_font', 'alarm_value_font', 'fan_value_font', 'vacuum_value_font', 'vacuum_layout',
+    'camera_display', 'camera_fit',
     'camera_head', 'camera_tap', 'switch_orientation', 'fan_orientation', 'sensor_layout', 'sensor_form',
     'sensor_orientation', 'sensor_ring', 'sensor_place', 'sensor_value_font', 'sensor_popup_open_mode',
     'energy_value_font', 'energy_display_mode', 'energy_popup_open_mode'];
@@ -19257,10 +19284,12 @@ function maybeFillTitleFromSwitch(tab) {
     if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
   }
   // Lock (24), Alarm panel (25) and Fan (26): the Switch tile's header with
-  // a control bar (types/device/device_tile.cpp). The preview mirrors the
+  // a control bar (types/device/device_tile.cpp); Vacuum (29) with its
+  // buttons and map (types/vacuum/vacuum_tile.cpp). The preview mirrors the
   // device: the state colors and icons of device_visual.h, the bar of
   // bar_model() and the words of DEVICE_I18N (types/device/web.cpp).
-  const DEVICE_COLORS = {green: '#4CAF50', red: '#F44336', orange: '#FF9800', grey: '#9E9E9E', cyan: '#00BCD4'};
+  const DEVICE_COLORS = {green: '#4CAF50', red: '#F44336', orange: '#FF9800', grey: '#9E9E9E', cyan: '#00BCD4',
+    vacuum: '#29B6F6'};
   // Home Assistant's alarm modes: state, feature bit, icon.
   const DEVICE_ALARM_MODES = [
     ['armed_home', 1, 'home'], ['armed_away', 2, 'lock'], ['armed_night', 4, 'moon-waning-crescent'],
@@ -19269,7 +19298,8 @@ function maybeFillTitleFromSwitch(tab) {
 
   function devicePreviewKind(type) {
     const value = String(type);
-    return value === '24' ? 'lock' : (value === '25' ? 'alarm' : (value === '26' ? 'fan' : ''));
+    return value === '24' ? 'lock' : (value === '25' ? 'alarm' : (value === '26' ? 'fan' :
+      (value === '29' ? 'vacuum' : '')));
   }
 
   // The retained detail state (/api/sensor_values device_values).
@@ -19280,7 +19310,7 @@ function maybeFillTitleFromSwitch(tab) {
   // device_detail::parse(): a missing state stays apart from a known one.
   function parseDevicePreviewPayload(value) {
     const out = {valid: false, available: false, state: '', features: 0, percentage: null,
-      step: null, preset: ''};
+      step: null, preset: '', battery: null, area: null, areaUnit: ''};
     const text = value === undefined || value === null ? '' : String(value).trim();
     if (!text.startsWith('{')) return out;
     try {
@@ -19297,6 +19327,17 @@ function maybeFillTitleFromSwitch(tab) {
         out.step = obj.percentage_step;
       }
       out.preset = typeof obj.preset_mode === 'string' ? obj.preset_mode : '';
+      // Vacuum (vacuum_detail::parse): the battery stays apart from 0.
+      if (typeof obj.battery === 'number' && Number.isFinite(obj.battery)) {
+        out.battery = Math.max(0, Math.min(100, Math.round(obj.battery)));
+      }
+      // The cleaned area needs its value and its unit.
+      const area = obj.cleaned_area;
+      if (area && typeof area.value === 'number' && Number.isFinite(area.value) && area.value >= 0 &&
+          typeof area.unit === 'string' && area.unit) {
+        out.area = area.value;
+        out.areaUnit = area.unit;
+      }
     } catch (e) {}
     return out;
   }
@@ -19318,7 +19359,8 @@ function maybeFillTitleFromSwitch(tab) {
   // device_visual::visual(): label, icon and state color.
   function devicePreviewVisual(kind, d) {
     const words = typeof DEVICE_I18N === 'object' ? (DEVICE_I18N[kind] || {}) : {};
-    const out = {label: '--', icon: kind === 'lock' ? 'lock' : (kind === 'alarm' ? 'shield' : 'fan-off'),
+    const out = {label: '--', icon: kind === 'lock' ? 'lock' : (kind === 'alarm' ? 'shield' :
+      (kind === 'vacuum' ? 'robot-vacuum' : 'fan-off')),
       color: panelRoleHex('icon-inactive', DEVICE_COLORS.grey), waiting: false};
     if (!d.valid) return out;
     const state = d.available ? d.state : 'unavailable';
@@ -19340,6 +19382,23 @@ function maybeFillTitleFromSwitch(tab) {
         out.color = DEVICE_COLORS.red;
         out.waiting = true;
       }
+      return out;
+    }
+    if (kind === 'vacuum') {
+      // vacuum_visual::visual(): the vacuum's blue in every reported state,
+      // red on an error; the state and the battery, the state alone.
+      out.label = words[state] || words.unknown || state;
+      out.state = out.label;
+      if (!d.available) {
+        out.icon = 'robot-vacuum-off';
+        return out;
+      }
+      out.color = DEVICE_COLORS.vacuum;
+      if (state === 'error') {
+        out.icon = 'robot-vacuum-alert';
+        out.color = DEVICE_COLORS.red;
+      }
+      if (d.battery !== null && d.battery !== undefined) out.label += ' · ' + d.battery + ' %';
       return out;
     }
     if (kind === 'alarm') {
@@ -19384,7 +19443,10 @@ function maybeFillTitleFromSwitch(tab) {
     return out;
   }
 
-  function devicePreviewIcon(kind, d, fallback = '') {
+  // The Vacuum's automatic icon is Home Assistant's icon of the entity
+  // (vacuum_visual::icon_name): `entityIcon` when known.
+  function devicePreviewIcon(kind, d, fallback = '', entityIcon = '') {
+    if (kind === 'vacuum' && entityIcon) return entityIcon;
     return fallback || devicePreviewVisual(kind, d).icon;
   }
 
@@ -19395,6 +19457,10 @@ function maybeFillTitleFromSwitch(tab) {
   // The state line beside the disc and, for full tiles, the bar.
   function devicePreviewExtraHtml(kind, d, halfHeight) {
     let html = '<div class="tile-value tile-switch-state">' + unitTextHtml(devicePreviewVisual(kind, d).label) + '</div>';
+    if (kind === 'vacuum') {
+      if (!halfHeight) html += '<div class="tile-vacuum"></div>';
+      return html;
+    }
     if (!halfHeight) {
       html += '<div class="tile-switch" data-bar="none">' +
         '<div class="tile-switch-fill"><span class="tile-switch-handle"></span></div>' +
@@ -19409,10 +19475,119 @@ function maybeFillTitleFromSwitch(tab) {
       (icon ? '<i class="mdi mdi-' + escapeHtml(icon) + '"></i>' : '') + '</span>';
   }
 
+  // vacuum_visual::values_line(): the battery and the cleaned area, only
+  // what the vacuum reports.
+  function vacuumValuesLine(d) {
+    if (!d.valid || !d.available) return '';
+    const parts = [];
+    if (d.battery !== null && d.battery !== undefined) parts.push(d.battery + ' %');
+    if (d.area !== null && d.area !== undefined) {
+      const number = localizeNumericText(d.area.toFixed(d.area < 10 ? 1 : 0));
+      parts.push(number + ' ' + d.areaUnit);
+    }
+    return parts.join(' \u00b7 ');
+  }
+
+  // render_vacuum_tile(): equal buttons with icon and text across the row,
+  // one column Clean, two Clean and Dock, from three Clean, Stop and Dock;
+  // two columns and rows the Media tile's arrangement: the title top right,
+  // the map in the cover's place, the state alone and the values line right
+  // of it (placeVacuumMapPreview).
+  function applyVacuumPreview(tileElem, d, halfHeight, spans) {
+    tileElem.classList.toggle('switch-bar', !halfHeight);
+    const box = tileElem.querySelector('.tile-vacuum');
+    const w = Number(spans?.w) || 1;
+    const h = Number(spans?.h) || 1;
+    const withMap = !!box && w >= 2 && h >= 2;
+    tileElem.classList.toggle('vacuum-map', withMap);
+    let mapEl = tileElem.querySelector(':scope > .tile-vacuum-map');
+    let values = tileElem.querySelector(':scope > .tile-vacuum-values');
+    if (!withMap) {
+      mapEl?.remove();
+      values?.remove();
+    }
+    if (!box) return;
+    const words = typeof DEVICE_I18N === 'object' ? (DEVICE_I18N.vacuum || {}) : {};
+    const count = w >= 3 ? 3 : (w >= 2 ? 2 : 1);
+    const pauses = d.state === 'cleaning' && (d.features & 4);
+    const ready = d.valid && d.available;
+    const button = (icon, text, on) => '<span class="tile-vacuum-button' + (on ? '' : ' off') + '">' +
+      '<i class="mdi mdi-' + icon + '"></i><span>' + escapeHtml(text) + '</span></span>';
+    let html = button(pauses ? 'pause' : 'play', pauses ? (words.pause || 'Pause') : (words.clean || 'Clean'),
+      ready && (pauses || (d.features & 8192)));
+    if (count === 3) html += button('stop', words.stop || 'Stop', ready && (d.features & 8));
+    if (count >= 2) html += button('home-import-outline', words.dock || 'Dock', ready && (d.features & 16));
+    box.innerHTML = html;
+    box.dataset.count = String(count);
+    if (!withMap) return;
+    if (!mapEl) {
+      mapEl = document.createElement('span');
+      mapEl.className = 'tile-vacuum-map';
+      mapEl.innerHTML = '<i class="mdi mdi-map-outline"></i>';
+      tileElem.appendChild(mapEl);
+    }
+    if (!values) {
+      values = document.createElement('div');
+      values.className = 'tile-value tile-vacuum-values';
+      tileElem.appendChild(values);
+    }
+    const state = tileElem.querySelector(':scope > .tile-switch-state');
+    if (state) state.innerHTML = unitTextHtml(devicePreviewVisual('vacuum', d).state || '--');
+    const line = vacuumValuesLine(d);
+    values.innerHTML = unitTextHtml(line);
+    values.hidden = !line;
+    placeVacuumMapPreview(tileElem);
+    if (typeof ResizeObserver === 'function' && !tileElem.__vacuumObserved) {
+      tileElem.__vacuumObserved = true;
+      new ResizeObserver(() => {
+        if (tileElem.classList.contains('vacuum-map')) placeVacuumMapPreview(tileElem);
+      }).observe(tileElem);
+    }
+  }
+
+  // render_vacuum_tile's Map layout: the map one inset in from the card,
+  // from the content top down to one gap above the row, at most 42 % of the
+  // card's width (the Media cover's share); state and values one Media
+  // text gap right of it, the two lines centred on the map. Positions from
+  // the card's edge less the preview's 3 px frame line.
+  function placeVacuumMapPreview(tileElem) {
+    const style = getComputedStyle(tileElem);
+    const value = name => parseFloat(style.getPropertyValue(name)) || 0;
+    const inset = value('--climate-margin-x');
+    const button = value('--switch-bar-height');
+    const gap = value('--climate-grid-gap');
+    const top = value('--climate-slots-top');
+    const textGap = value('--vacuum-text-gap');
+    const discInset = value('--compact-inset');
+    const tileWidth = tileElem.offsetWidth;
+    const tileHeight = tileElem.offsetHeight;
+    if (!tileWidth || !tileHeight) return;
+    const rowTop = tileHeight - inset - button;
+    const edge = Math.max(0, Math.min(rowTop - gap - top, Math.floor(tileWidth * 42 / 100)));
+    const map = tileElem.querySelector(':scope > .tile-vacuum-map');
+    if (map) Object.assign(map.style, {left: (inset - 3) + 'px', top: (top - 3) + 'px',
+      width: edge + 'px', height: edge + 'px'});
+    const textX = inset + edge + textGap;
+    const state = tileElem.querySelector(':scope > .tile-switch-state');
+    const values = tileElem.querySelector(':scope > .tile-vacuum-values');
+    const stateH = state ? state.offsetHeight : 0;
+    const valuesH = values && !values.hidden ? values.offsetHeight : 0;
+    const blockTop = top + edge / 2 - (stateH + valuesH) / 2;
+    const right = Math.max(0, 2 * discInset - 3) + 'px';
+    if (state) Object.assign(state.style, {left: (textX - 3) + 'px', right, top: (blockTop - 3) + 'px'});
+    if (values) Object.assign(values.style, {left: (textX - 3) + 'px', right,
+      top: (blockTop + stateH - 3) + 'px'});
+  }
+
   // bar_model(): the bar the device draws for this state. `upright`: a
-  // Fan's bar stands below the header (bar_orientation.h).
-  function applyDevicePreview(tileElem, kind, d, halfHeight, upright = false) {
+  // Fan's bar stands below the header (bar_orientation.h). `spans`: the
+  // tile's size ({w, h}), for the Vacuum's layouts.
+  function applyDevicePreview(tileElem, kind, d, halfHeight, upright = false, spans = null) {
     if (!tileElem) return;
+    if (kind === 'vacuum') {
+      applyVacuumPreview(tileElem, d, halfHeight, spans);
+      return;
+    }
     tileElem.classList.toggle('switch-bar', !halfHeight);
     tileElem.classList.toggle('switch-upright', !halfHeight && kind === 'fan' && !!upright);
     const bar = tileElem.querySelector('.tile-switch');
@@ -19517,6 +19692,14 @@ function maybeFillTitleFromSwitch(tab) {
     // A Fan's bar upright (bar_orientation.h).
     const orientation = document.getElementById(tab + '_' + prefix + '_orientation');
     if (orientation) orientation.value = Number(data.bar_orientation) === 1 ? '1' : '0';
+    // A Vacuum's popup layout (sensor_display_mode: 0 map left, 1 centred).
+    const layout = document.getElementById(tab + '_' + prefix + '_layout');
+    if (layout) layout.value = Number(data.sensor_display_mode) === 1 ? '1' : '0';
+    // A Vacuum's chosen map (empty: the map the Bridge finds on its device).
+    const map = document.getElementById(tab + '_' + prefix + '_map');
+    if (map) map.value = data.vacuum_map || '';
+    const every = document.getElementById(tab + '_' + prefix + '_every');
+    if (every) every.value = String(Math.max(3, Math.min(60, Number(data.image_slideshow_sec) || 5)));
     if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
     maybeFillTitleFromEntity(tab, '_' + prefix + '_entity');
   }
@@ -19532,6 +19715,12 @@ function maybeFillTitleFromSwitch(tab) {
     if (popup) formData.append('popup_open_mode', popup.value || '1');
     const orientation = document.getElementById(tab + '_' + prefix + '_orientation');
     if (orientation) formData.append('bar_orientation', orientation.value === '1' ? '1' : '0');
+    const layout = document.getElementById(tab + '_' + prefix + '_layout');
+    if (layout) formData.append('vacuum_layout', layout.value === '1' ? '1' : '0');
+    const map = document.getElementById(tab + '_' + prefix + '_map');
+    if (map) formData.append('vacuum_map', map.value || '');
+    const every = document.getElementById(tab + '_' + prefix + '_every');
+    if (every) formData.append('vacuum_every', String(Math.max(3, Math.min(60, Number(every.value) || 5))));
   }
 
   function resetDeviceFields(tab, prefix) {
@@ -19544,6 +19733,12 @@ function maybeFillTitleFromSwitch(tab) {
     if (popup) popup.value = '1';
     const orientation = document.getElementById(tab + '_' + prefix + '_orientation');
     if (orientation) orientation.value = '0';
+    const layout = document.getElementById(tab + '_' + prefix + '_layout');
+    if (layout) layout.value = '0';
+    const map = document.getElementById(tab + '_' + prefix + '_map');
+    if (map) map.value = '';
+    const every = document.getElementById(tab + '_' + prefix + '_every');
+    if (every) every.value = '5';
     if (typeof syncSwitchChoices === 'function') syncSwitchChoices(tab);
   }
 
@@ -19557,6 +19752,9 @@ function maybeFillTitleFromSwitch(tab) {
   function loadFanFields(tab, data) { loadDeviceFields(tab, data, 'fan'); }
   function saveFanFields(tab, formData) { saveDeviceFields(tab, formData, 'fan'); }
   function resetFanFields(tab) { resetDeviceFields(tab, 'fan'); }
+  function loadVacuumFields(tab, data) { loadDeviceFields(tab, data, 'vacuum'); }
+  function saveVacuumFields(tab, formData) { saveDeviceFields(tab, formData, 'vacuum'); }
+  function resetVacuumFields(tab) { resetDeviceFields(tab, 'vacuum'); }
   // Calendar (27): up to four Home Assistant calendars in their own colors
   // (types/calendar/calendar_tile.cpp). The preview mirrors the device: the
   // events payload of /api/sensor_values calendar_values (calendar_events.h),

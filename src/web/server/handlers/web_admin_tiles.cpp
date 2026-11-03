@@ -23,6 +23,7 @@
 #include "src/web/server/handlers/preview_payload.h"
 #include "src/types/types_registry.h"
 #include "src/types/navigate/web_handler.h"
+#include "src/types/scene/web_handler.h"
 #include "src/types/energy/energy_data.h"
 #include "src/types/sensor/gauge_range.h"
 #include "src/tiles/icons/mdi_icons.h"
@@ -47,8 +48,8 @@ static String dynamicMqttEntityForTile(const Tile& tile) {
   // Weather temperature/humidity sensors subscribe to their states too.
   const String sensors = weatherSensorsRecord(tile);
   if (sensors.length()) entity += "|" + sensors;
-  // Power flow nodes too.
-  if (tile.type == TILE_POWER_FLOW && tile.flow_entities.length()) entity += "|" + tile.flow_entities;
+  // Power flow nodes and a Vacuum's chosen map too.
+  if (tileKeepsFlowEntities(tile.type) && tile.flow_entities.length()) entity += "|" + tile.flow_entities;
   return entity;
 }
 
@@ -518,6 +519,11 @@ void WebAdminServer::handleGetTiles() {
       appendJsonEscaped(out, tile.flow_entities);
       out += "\"";
     }
+    if (tile.type == TILE_VACUUM) {
+      out += ",\"vacuum_map\":\"";
+      appendJsonEscaped(out, tile.flow_entities);
+      out += "\"";
+    }
     out += ",\"bg_color\":";
     out += String(tile.bg_color);
     out += ",\"background_opacity\":";
@@ -568,8 +574,9 @@ void WebAdminServer::handleGetTiles() {
     out += ",\"image_slideshow_sec\":";
     out += String(tile.image_slideshow_sec);
     out += ",\"scene_alias\":\"";
-    // A Scene tile shows its target here (alias or entity id, sceneTarget).
-    appendJsonEscaped(out, tile.type == TILE_SCENE ? sceneTarget(tile) : tile.scene_alias);
+    // A Scene tile shows its target here: the entity id, also for an alias
+    // the Bridge maps to one (scene_picker_value).
+    appendJsonEscaped(out, tile.type == TILE_SCENE ? scene_picker_value(tile) : tile.scene_alias);
     out += "\",\"key_macro\":\"";
     appendJsonEscaped(out, tile.key_macro);
     out += "\",\"key_code\":";
@@ -1233,7 +1240,7 @@ void WebAdminServer::handleGetSensorValues() {
   // Lock, Alarm panel and Fan previews read the retained detail state.
   json += ",\"device_values\":{";
   bool first_device_value = true;
-  for (const String* list : {&ha.locks_text, &ha.alarm_panels_text, &ha.fans_text}) {
+  for (const String* list : {&ha.locks_text, &ha.alarm_panels_text, &ha.fans_text, &ha.vacuums_text}) {
     for (const auto& id : parseSensorList(*list)) {
       const String payload = haBridgeConfig.findDetailValue(id);
       if (!payload.length()) continue;
@@ -1410,8 +1417,8 @@ void WebAdminServer::handleGetEntityOptions() {
   const HaBridgeConfigData& ha = haBridgeConfig.get();
 
   // The entities the Bridge released, one list per tile field, for the shared
-  // entity picker (tiles/entity-picker.js): v = entity id (scene alias),
-  // t = name, i = MDI icon when the Bridge sent one, e = scene entity.
+  // entity picker (tiles/entity-picker.js): v = entity id, t = name, i = MDI
+  // icon when the Bridge sent one, e = the entity when it differs from v.
   String json = "{\"success\":true";
   auto appendEntry = [&](const String& value, const String& name, const String& icon,
                          const String& entity, bool& first) {
@@ -1479,6 +1486,7 @@ void WebAdminServer::handleGetEntityOptions() {
   appendList("locks", parseSensorList(ha.locks_text));
   appendList("alarm_panels", parseSensorList(ha.alarm_panels_text));
   appendList("fans", parseSensorList(ha.fans_text));
+  appendList("vacuums", parseSensorList(ha.vacuums_text));
   appendList("calendars", parseSensorList(ha.calendars_text));
   appendList("cameras", parseSensorList(ha.cameras_text));
   // The screensaver picture: released images, then cameras.
@@ -1525,9 +1533,11 @@ void WebAdminServer::handleGetEntityOptions() {
   json += "],\"scenes\":[";
   {
     bool first = true;
+    // The value is the entity id, never the Bridge alias: an alias went into
+    // scene_alias and lost every character past 31 (issue #138).
     for (const auto& scene : parseSceneList(ha.scene_alias_text)) {
-      appendEntry(scene.alias, humanizeIdentifier(scene.alias, false),
-                  haBridgeConfig.findEntityIcon(scene.entity), scene.entity, first);
+      appendEntry(scene.entity, humanizeIdentifier(scene.alias, false),
+                  haBridgeConfig.findEntityIcon(scene.entity), String(), first);
     }
   }
   json += "]}";

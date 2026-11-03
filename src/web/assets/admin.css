@@ -2243,6 +2243,48 @@
     .tile-device-part.button { background:var(--device-button, rgba(255,255,255,0.18)); }
     .tile-device-part.lit { background:var(--switch-accent, #9E9E9E); color:var(--switch-card, #1A1A1A); }
     .tile-switch.is-unavailable > * { display:none !important; }
+    /* Vacuum (render_vacuum_tile) in the device's own measures: the row in
+       the level bar's place (inset from the card, one bar high), equal
+       buttons one gap apart, each the controls' fill with the level bar's
+       radius (concentric with the card), glyph at the icon size and text at
+       the title size in the text color. Two columns and rows (vacuum-map):
+       the tall title top right, the map in the Media cover's place, the
+       state and the values line beside it (placeVacuumMapPreview). */
+    .tile.device.switch-bar > .tile-vacuum {
+      position:absolute;
+      left:calc(var(--climate-margin-x, 5px) - 3px);
+      right:calc(var(--climate-margin-x, 5px) - 3px);
+      bottom:calc(var(--climate-slots-bottom, 3px) - 3px);
+      height:var(--switch-bar-height, 30px);
+      display:flex; gap:var(--climate-grid-gap, 7px);
+    }
+    .tile-vacuum-button {
+      flex:1 1 0; min-width:0; height:100%; box-sizing:border-box;
+      display:flex; align-items:center; justify-content:center; gap:var(--vacuum-glyph-gap, 2px);
+      padding:0 var(--vacuum-button-pad, 4px);
+      border-radius:var(--climate-control-radius, 8px);
+      background:var(--control-fill, rgba(255,255,255,0.12)); color:var(--pv-text, #fff);
+      font-size:var(--fs20, 10px); white-space:nowrap; overflow:hidden;
+    }
+    .tile-vacuum-button i { font-size:var(--icon-size, 24px); line-height:1; }
+    .tile-vacuum-button span { overflow:hidden; text-overflow:ellipsis; }
+    .tile-vacuum .off { opacity:.4; }
+    .tile.device.switch-bar.switch-tall.vacuum-map > .tile-switch-state,
+    .tile.device.switch-bar.switch-tall.vacuum-map > .tile-vacuum-values {
+      position:absolute; transform:none; text-align:left;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .tile.device.switch-bar.switch-tall.vacuum-map > .tile-vacuum-values {
+      margin:0; padding:0; width:auto; max-width:none;
+      font-size:var(--compact-value-font, 10px); line-height:var(--compact-value-line, 12px);
+    }
+    .tile-vacuum-map {
+      position:absolute;
+      display:flex; align-items:center; justify-content:center; box-sizing:border-box;
+      border-radius:var(--climate-control-radius, 8px); background:#000;
+      color:#fff; font-size:var(--icon-size, 24px);
+    }
+    .tile-vacuum-map i { opacity:.4; }
     /* Upright (bar_orientation.h): the bar below the header over the rest
        of the tile; the fill rises from the bottom with the handle line
        across it, the switch is on at the top, a Fan's speeds stack from the

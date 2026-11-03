@@ -12,18 +12,19 @@ Last reviewed: 2026-10-29
 
 ## Releases and builds
 
-- FW + Bridge v0.9.6 released 2026-10-29; v0.9.5 hotfix 2026-10-23.
-- Pairing by IP, no mDNS (#114, Bridge #16): `GET /api/link`; HA ok (b513).
-- Test builds stay `v0.6.12bNNN` on purpose (System Update offers releases); beta define in `firmware_version.h`, last b619.
+- FW + Bridge v0.9.7 released 2026-10-30.
+- Pairing by IP, no mDNS (#114, Bridge #16): `GET /api/link`.
+- Test builds stay `v0.6.12bNNN` on purpose (System Update offers releases); beta define in `firmware_version.h`, last b632.
 - Run `node tools/fast-build-check.mjs --build-path <cache>` before every build (warm: only repo headers changed, same LVGL config hash).
 - Docs CI: Chrome for Testing 154.0.8037.57; dispatch docs (`main`) after a release.
 - Factory images carry the icon file (`release-helper/factory-icon-file.js`); test builds need icons on HomeTiles-staging (tag = FW_VERSION).
 
 ## Active work
 
+- Vacuum tile 29 (#50, `src/types/vacuum/`), Bridge level 6; V2 HW ok, others pending.
 - Power flow tile 28 ("Leistungsfluss", `src/types/power_flow/`, picture 65): nodes in `/_tile_flow_entities`, options in key_code, node tap = Sensor popup; V2 HW ok b542; smooth lines/dots b568.
 - Media popup: layouts `sensor_display_mode` 0 cover left, 1 centre; controls only with their HA feature bit; menu box: speakers, source, library; tile/head icon state form (`state_icon.h`).
-- #116 (JC4880 camera popup ended after 18-60 min): Bridge waits 45 s for a chunk ACK (v0.9.4b5); FW logs gaps >= 1 s. Reporter pending.
+- #116 (JC4880 camera popup ends after 18-60 min): Bridge waits 45 s per chunk ACK; reporter pending.
 - Issue #119 (Guition V1): own Helix (b501, `src/audio/helix_mp3`): the core's overran on MPEG-2.5; TLS in PSRAM. Speaker audio from the Bridge (`docs-dev/audio-stream.md`): FFmpeg -> mono PCM over the camera tcp-ack listener (`HTAUD/1`); panels announce `"stream":"tcp-ack-v1"`. HW ok. Camera sound: lip-synced live track (b507 HW ok, b508 even gaps HW pending).
 - Voice: mic/wake word off on a new panel (b500), listening its own setting, the word stays; Bridge v0.9.4b6 Listening switch. HW/HA test pending. Mic button + audio settings: mockup first; #91 declined.
 
@@ -48,7 +49,7 @@ Last reviewed: 2026-10-29
 - LCD-4 Rev 4.0 contributor-tested (display/touch/Wi-Fi/MQTT/OTA); older revisions and SD unsupported.
 - JC4880P443 (PR #46): portrait 480x800, contributor-tested; landscape later. Open: SD DEINIT_ARG, P4 DSI groups.
 - JC1060 V2 rotation pair 0/2 (b478, #108); `test-rotation-profiles` checks every profile.
-- P4 v3 images (post_v3 301-399): WS 10.1 (PR #48, tested v3.2), WS 7B `_rev3` (#41; 30 s Wi-Fi join, PR #120), JC8012 V3 = V2 code (#44), WS 4.3 `_rev3` (#135); HW pending.
+- P4 v3 images (post_v3 301-399): WS 10.1 (PR #48, v3.2 ok), WS 7B `_rev3` (#41; 30 s Wi-Fi join, PR #120), JC8012 V3 = V2 code (#44), WS 4.3/8 `_rev3` (#135/#140); HW pending.
 - New in v0.9.3, HW pending by the reporters: GS-T3E v2 (#93, S3, relays GPIO45/46/44 at once), Waveshare 5-inch (#76, HX8394, own `dsi_driver`, pre-v3 + `_rev3`).
 - Voice (b477) HW ok 2026-10-16 on V2, Tab5, 8-inch, 4B; per-board `kVolumeLimit` (Guition 0.6, Tab5 0.9); none on S3 and JC1060 V1.
 

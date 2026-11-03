@@ -33,6 +33,7 @@
 #include "src/io/hardware_io.h"
 #include "src/network/bridge/entity_search.h"
 #include "src/network/bridge/bridge_images.h"
+#include "src/types/vacuum/vacuum_map.h"
 #include "src/web/server/web_admin.h"
 #include "src/video/local_camera/local_camera.h"
 #include "src/audio/speaker.h"
@@ -1542,6 +1543,7 @@ void mqttSetTilePictures(const String* entities, const String* suffixes, size_t 
 
 static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
   routes.clear();
+  vacuum_map::prefetch_clear();
 
   auto add_route = [&](const String& entity, int slot_index, const char* suffix = "state") {
     String ent = entity;
@@ -1588,6 +1590,7 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
   } offered[] = {{&cfg.numbers_text, "control"}, {&cfg.selects_text, "control"},
                  {&cfg.datetimes_text, "control"}, {&cfg.locks_text, "detail"},
                  {&cfg.alarm_panels_text, "detail"}, {&cfg.fans_text, "detail"},
+                 {&cfg.vacuums_text, "detail"},
                  // Calendar tiles read the events of every offered calendar.
                  {&cfg.calendars_text, "events"}};
   // Events of calendars the Bridge stopped offering go.
@@ -1616,8 +1619,9 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
       const FolderEntitySlotView& slot = slots[i];
       // Rules on another entity (tile_icon_colors.h).
       if (slot.rule_entity[0]) add_route(String(slot.rule_entity), -1, "state");
-      // Weather temperature/humidity sensors, one entity per line.
-      for (const char* extra = slot.extra_entities; *extra;) {
+      // Weather temperature/humidity sensors, one entity per line (a
+      // Vacuum's chosen map comes as a picture, not as a state).
+      for (const char* extra = slot.type == TILE_VACUUM ? "" : slot.extra_entities; *extra;) {
         const char* end = strchr(extra, '\n');
         const size_t length = end ? static_cast<size_t>(end - extra) : strlen(extra);
         if (length) add_route(String(extra).substring(0, length), -1, "state");
@@ -1636,6 +1640,8 @@ static void rebuildDynamicRoutes(std::vector<DynamicSensorRoute>& routes) {
         // whatever the last full config snapshot carried.
         if (slot.caption[0]) add_route(String(slot.caption), -1, "state");
         if (tileTypeIsEditableValue(slot.type)) has_media_tiles = true;
+        // A Vacuum's map picture from the start, like a player's cover.
+        if (slot.type == TILE_VACUUM) vacuum_map::prefetch(slot.entity, slot.extra_entities);
         if (slot.type == TILE_MEDIA) {
           has_media_tiles = true;
           // New bridges publish cover-free state changes here first. Keep the
@@ -2210,6 +2216,7 @@ static void processMqttMessage(char* topic, uint8_t* payload, unsigned int lengt
     if (haBridgeConfig.applyIconUpdate(large_buf)) {
       tiles_request_icon_refresh();
       queue_sensor_popup_icon_refresh();
+      device_control::refresh_all();
     }
     return;
   }

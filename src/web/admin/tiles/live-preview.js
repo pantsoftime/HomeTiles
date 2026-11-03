@@ -169,7 +169,7 @@
     if (deviceKind) {
       devicePreviewState = parseDevicePreviewPayload(deviceDetailPayload(iconEntity));
       if (!normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) {
-        iconName = devicePreviewIcon(deviceKind, devicePreviewState);
+        iconName = devicePreviewIcon(deviceKind, devicePreviewState, '', iconName);
       }
     }
     if (calendarTile && !normalizeMdiIconName(rawIcon) && !isExplicitlyDisabledValue(rawIcon)) iconName = 'calendar';
@@ -443,7 +443,10 @@
         span_w: tileSpan('span_w')});
     }
     if (previewKind === 'cover') applyCoverPreview(tileElem, coverPreviewState, halfHeight);
-    if (deviceKind) applyDevicePreview(tileElem, deviceKind, devicePreviewState, halfHeight, fanUpright);
+    if (deviceKind) {
+      applyDevicePreview(tileElem, deviceKind, devicePreviewState, halfHeight, fanUpright,
+        {w: tileSpan('span_w'), h: tileSpan('span_h')});
+    }
     if (wasActive) tileElem.classList.add('active');
     if (typeWas !== type && wasActive) {
       tileElem.classList.add('active');
