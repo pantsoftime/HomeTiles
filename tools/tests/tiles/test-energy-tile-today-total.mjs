@@ -54,4 +54,24 @@ const liveTail = tiles.slice(liveIndex, tiles.indexOf('tile_icon_source_matches(
 assert.ok(!/\bcontinue;/.test(liveTail),
           'The live state path must not skip the rest of the loop for Energy tiles');
 
+// The day answer must not overwrite a real entity's cached state: a Sensor
+// tile on the same lifetime counter restored today's total on folder open.
+// Aggregate IDs without a domain ("grid_total") still cache their total.
+const queueStart = data.indexOf('void queue_energy_tile_update_for_entry(');
+assert.ok(queueStart >= 0, 'queue_energy_tile_update_for_entry must exist');
+const queueBody = data.slice(queueStart, data.indexOf('\n}\n', queueStart));
+assert.ok(queueBody.includes(
+            "if (entry.id.indexOf('.') < 0) tiles_cache_entity_payload(entry.id.c_str(), raw_value.c_str());"),
+          'Only aggregate Energy IDs may write today\'s total into the entity cache');
+assert.ok(!/^\s*tiles_cache_entity_payload\(entry\.id/m.test(queueBody),
+          'No unconditional cache write of today\'s total may remain');
+
+// The screensaver's Energy tiles take the day total like the grids.
+const screensaver = read('src/ui/screensaver/image_screensaver.cpp');
+assert.ok(screensaver.includes(
+            'const bool energy_today = tile.type == TILE_ENERGY && energy_day_total_text(tile.sensor_entity, payload);') &&
+          screensaver.includes(
+            'if (!energy_today && !tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) {'),
+          'Screensaver Energy tiles must prefer the day total over the cached state');
+
 console.log('PASS: energy tile keeps today\'s total over the entity state');

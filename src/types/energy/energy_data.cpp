@@ -193,7 +193,12 @@ void queue_energy_tile_update_for_entry(const EnergyEntryData& entry) {
   if (!entry.id.length()) return;
 
   String raw_value = format_energy_total(entry.total, entry.is_cost);
-  tiles_cache_entity_payload(entry.id.c_str(), raw_value.c_str());
+  // FORK: only aggregate IDs ("grid_total", no domain) keep today's total in
+  // the shared entity cache; they have no state of their own. A real entity's
+  // cache slot holds its state: with today's total there, a Sensor tile on a
+  // lifetime counter (the Envoy's "Lifetime") showed today's total after a
+  // folder open. Energy tiles read the total via energy_day_total_text().
+  if (entry.id.indexOf('.') < 0) tiles_cache_entity_payload(entry.id.c_str(), raw_value.c_str());
 
   if (powerManager.isInSleep()) return;
   if (!tiles_is_loaded(GridType::TAB0)) return;

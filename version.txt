@@ -22,4 +22,5 @@
 // v0.9.61 = upstream v0.9.6 + the patch digit ({0,9,61}).
 // v0.9.71 = upstream v0.9.7 + the patch digit ({0,9,71}).
 // v0.9.72 = upstream v0.9.7 + the patch digit ({0,9,72}); .72 adds the Energy tile today-total fix.
-#define FW_VERSION "v0.9.72"
+// v0.9.73 = .72 plus: the day total no longer overwrites a real entity's cached state; screensaver Energy tiles take the day total.
+#define FW_VERSION "v0.9.73"

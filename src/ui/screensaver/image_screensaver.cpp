@@ -1481,7 +1481,10 @@ void refresh_slot_values(ScreensaverState* st) {
     if (tileTypeHasFixedIconColorOnly(tile.type)) continue;
     if (!tile.sensor_entity.length()) continue;
     String payload;
-    if (!tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) {
+    // FORK: an Energy tile shows today's total once a day answer exists
+    // (energy_day_total_text), not its entity's state.
+    const bool energy_today = tile.type == TILE_ENERGY && energy_day_total_text(tile.sensor_entity, payload);
+    if (!energy_today && !tiles_get_cached_entity_payload(tile.sensor_entity.c_str(), payload)) {
       payload = haBridgeConfig.findSensorInitialValue(tile.sensor_entity);
     }
     if (!payload.length()) continue;
