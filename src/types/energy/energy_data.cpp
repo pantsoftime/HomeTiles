@@ -434,6 +434,13 @@ bool energy_find_entry(const String& id, const char* period, EnergyEntryData& ou
   return false;
 }
 
+bool energy_day_total_text(const String& id, String& out) {
+  EnergyEntryData entry;
+  if (!energy_find_entry(id, "day", entry) || !isfinite(entry.total)) return false;
+  out = format_energy_total(entry.total, entry.is_cost);
+  return true;
+}
+
 String energy_find_cached_unit(const String& id) {
   return cached_unit_for_entry(id);
 }

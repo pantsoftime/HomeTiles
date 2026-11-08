@@ -24,6 +24,8 @@ function extractFunction(signature) {
 
 const production = [
   'static bool get_cached_or_initial_payload(',
+  // FORK: Energy tiles prefer today's total from the day answer.
+  'static bool energy_tile_today_value(',
   'static bool is_disabled_token(',
   'static String resolve_tile_sensor_unit(',
   'static inline void enqueue_cached_tile_state(',
@@ -79,7 +81,7 @@ struct TileGridConfig { std::array<Tile, TILES_PER_GRID> tiles{}; };
 #include <atomic>
 static std::atomic<uint64_t> g_icon_source_pending{0};
 
-static std::map<std::string, String> cache, initial_values, bridge_units, energy_units;
+static std::map<std::string, String> cache, initial_values, bridge_units, energy_units, energy_days;
 static std::vector<std::string> events;
 struct Bridge {
   String findEditableValue(const String& entity) { return initial_values[entity.c_str()]; }
@@ -92,6 +94,14 @@ struct Bridge {
     return bridge_units[entity.c_str()];
   }
 } haBridgeConfig;
+// FORK: the day answer's total, when one arrived.
+static bool energy_day_total_text(const String& entity, String& out) {
+  const auto found = energy_days.find(entity.c_str());
+  if (found == energy_days.end()) return false;
+  events.push_back("energy-day");
+  out = found->second;
+  return true;
+}
 static String energy_find_cached_unit(const String& entity) {
   events.push_back("energy-unit");
   return energy_units[entity.c_str()];
@@ -136,7 +146,7 @@ static void refresh_editable_tile(GridType grid, uint8_t index) { record("editab
 ${production}
 
 static void clear() {
-  cache.clear(); initial_values.clear(); bridge_units.clear(); energy_units.clear();
+  cache.clear(); initial_values.clear(); bridge_units.clear(); energy_units.clear(); energy_days.clear();
   events.clear(); queued.clear();
 }
 
@@ -254,6 +264,15 @@ int main() {
     apply_cached_state_for_index(GridType::TAB0, config, 7);
     expect_one("sensor", GridType::TAB0, 7, "17.55");
     assert((events == std::vector<std::string>{"cache", "bridge-unit", "queue"}));
+
+    // FORK: with a day answer an Energy tile shows today's total, not the
+    // cached state (a lifetime counter's 16875.416); a Sensor tile on the
+    // same entity keeps the cached state.
+    clear(); cache["entity.state"] = "16875.416"; energy_days["entity.state"] = "9.812";
+    tile.sensor_unit = "kWh";
+    apply_cached_state_for_index(GridType::TAB0, config, 7);
+    expect_one("sensor", GridType::TAB0, 7, type == TILE_ENERGY ? "9.812" : "16875.416", "kWh");
+    assert((std::find(events.begin(), events.end(), "cache") != events.end()) == (type != TILE_ENERGY));
   }
 
   // Batch enqueue order follows tile indices; hidden grids omit only Media.

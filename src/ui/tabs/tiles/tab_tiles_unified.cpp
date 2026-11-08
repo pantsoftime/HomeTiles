@@ -630,6 +630,16 @@ static bool get_cached_or_initial_payload(const Tile& tile, String& out) {
   return true;
 }
 
+// FORK: an Energy tile shows today's total from the Bridge's day answer
+// (queue_energy_tile_update_for_entry), but its entity is also a plain sensor
+// whose live state and cache restores reach the same value label. Upstream
+// assumes the Energy Dashboard source is a daily sensor, so both agree; a
+// lifetime counter (the Envoy's solar source) then showed the lifetime total
+// over today's. Once a day answer exists the tile keeps today's total.
+static bool energy_tile_today_value(const Tile& tile, String& out) {
+  return tile.type == TILE_ENERGY && energy_day_total_text(tile.sensor_entity, out);
+}
+
 static bool is_url_path_local(const String& value) {
   return value.startsWith("http://") || value.startsWith("https://");
 }
@@ -1545,7 +1555,7 @@ static inline void enqueue_cached_tile_state(GridType grid_type, const Tile& til
   if (tileTypeIsEditableValue(tile.type)) { refresh_editable_tile(grid_type, index); return; }
 
   String payload;
-  if (!get_cached_or_initial_payload(tile, payload)) return;
+  if (!energy_tile_today_value(tile, payload) && !get_cached_or_initial_payload(tile, payload)) return;
 
   if (tile.type == TILE_SENSOR || tile.type == TILE_ENERGY ||
       tile.type == TILE_FOLDER) {
@@ -2984,7 +2994,11 @@ void tiles_update_sensor_by_entity(GridType grid_type, const char* entity_id, co
         tile.sensor_entity.equalsIgnoreCase(entity_id)) {
       String unit = resolve_tile_sensor_unit(tile);
       const char* unit_cstr = unit.length() > 0 ? unit.c_str() : nullptr;
-      queue_sensor_tile_update(grid_type, i, value, unit_cstr);
+      // FORK: an Energy tile keeps today's total, not the entity's live state
+      // (energy_tile_today_value above).
+      String energy_today;
+      const bool energy_kept = energy_tile_today_value(tile, energy_today);
+      queue_sensor_tile_update(grid_type, i, energy_kept ? energy_today.c_str() : value, unit_cstr);
       if (changed && tile_queue_log_due(grid_type, i)) {
         Serial.printf("[%s] %s %s@%u queued: %s %s\n",
                       getGridName(grid_type),

@@ -39,6 +39,11 @@ bool energy_request_waiting();
 bool energy_period_fresh(const char* period);
 void energy_service_periodic();
 bool energy_find_entry(const String& id, const char* period, EnergyEntryData& out);
+// FORK: today's total of an Energy source as the tile shows it, from the last
+// day answer; false before one arrived. An Energy tile shows this instead of
+// its entity's live state, which for a lifetime counter (the Envoy's solar
+// source) is the lifetime total rather than today's.
+bool energy_day_total_text(const String& id, String& out);
 // Get the unit from any previously received Energy period. Aggregate Energy
 // IDs need not exist as normal HA entities and can therefore be absent from
 // the general HaBridgeConfig unit index.
